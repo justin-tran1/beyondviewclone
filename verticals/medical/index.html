@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Medical &amp; Life Sciences – Previsio</title>
+  <meta name="description" content="Photoreal 3D spec suites and interactive tours for medical office buildings, research labs and life science facilities. Show tenants the finished space before construction starts.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Medical &amp; Life Sciences – Previsio">
+  <meta property="og:description" content="Interactive 3D spec suites for medical offices, labs and life science facilities.">
+  <meta property="og:image" content="../../assets/img/renders/og-image.jpg">
+  <meta name="theme-color" content="#363e4a">
+  <link rel="icon" href="../../assets/img/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600&family=Roboto:wght@400;500&display=swap">
+  <link rel="stylesheet" href="../../assets/css/styles.css">
+  <link rel="preload" as="image" href="../../assets/img/renders/hero-lab.jpg">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../../assets/vendor/three/three.module.min.js",
+        "three/addons/": "../../assets/vendor/three/addons/"
+      }
+    }
+  </script>
+  <script src="../../assets/js/main.js" defer></script>
+  <script src="../../assets/js/tour.js" type="module"></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <div class="utility-bar">
+    <div class="container">
+      <ul>
+        <li><a href="#site-footer">About Us</a></li>
+        <li><a href="#get-started">Contact Us</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <div class="container site-header__inner">
+      <a class="brand" href="../../" aria-label="Previsio home">
+        <img class="brand__mark" src="../../assets/img/logo-mark.svg" alt="" width="38" height="38">
+        <span class="brand__name">previsio</span>
+      </a>
+
+      <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="primary-nav">
+        <span class="visually-hidden">Menu</span>
+        <svg class="icon-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        <svg class="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+
+      <nav class="primary-nav" id="primary-nav" aria-label="Main">
+        <ul>
+          <li class="nav-item"><a class="nav-link" href="../../">Home</a></li>
+          <li class="nav-item is-active">
+            <button class="nav-link" type="button" data-dropdown aria-expanded="false" aria-controls="menu-verticals">
+              Verticals
+              <svg viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M1 1.5l5 5 5-5"/></svg>
+            </button>
+            <ul class="dropdown" id="menu-verticals">
+              <li><a href="../../#verticals">Office &amp; Retail</a></li>
+              <li><a href="./" aria-current="page">Medical &amp; Life Sciences</a></li>
+              <li><a href="../../#verticals">Multi-family</a></li>
+              <li><a href="../../#verticals">New Construction</a></li>
+            </ul>
+          </li>
+          <li class="nav-item">
+            <button class="nav-link" type="button" data-dropdown aria-expanded="false" aria-controls="menu-solutions">
+              Solutions
+              <svg viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M1 1.5l5 5 5-5"/></svg>
+            </button>
+            <ul class="dropdown" id="menu-solutions">
+              <li><a href="../../#portfolio">Brokers</a></li>
+              <li><a href="../../#portfolio">Owners &amp; Operators</a></li>
+            </ul>
+          </li>
+          <li class="nav-item"><a class="nav-link" href="#get-started">Pricing</a></li>
+          <li class="nav-item mobile-only"><a class="nav-link" href="#faq">FAQ</a></li>
+          <li class="mobile-only"><a class="btn btn--primary" href="#get-started">Get Started</a></li>
+        </ul>
+      </nav>
+
+      <a class="btn btn--light btn--sm header-cta" href="#get-started">Get Started</a>
+    </div>
+  </header>
+
+  <main id="content">
+    <!-- Hero -->
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero__media">
+        <img src="../../assets/img/renders/hero-lab.jpg" alt="" width="2400" height="1200" fetchpriority="high">
+      </div>
+      <div class="container">
+        <div class="hero__content">
+          <nav class="breadcrumbs" aria-label="Breadcrumb">
+            <ol>
+              <li><a href="../../">Home</a></li>
+              <li><a href="../../#verticals">Verticals</a></li>
+              <li><span aria-current="page">Medical &amp; Life Sciences</span></li>
+            </ol>
+          </nav>
+          <h1 id="hero-title">Medical &amp; Life Sciences</h1>
+          <p class="hero__sub">Clinics, research labs and cGMP suites are hard to lease from a floor plan. Show tenants exactly what they will get before a single wall goes up.</p>
+          <div class="btn-row">
+            <a class="btn btn--light" href="#tour">See It In Action</a>
+            <a class="btn btn--primary" href="#get-started">Get Started Today</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Intro -->
+    <section class="band band--white intro" aria-label="Overview">
+      <div class="container container--narrow" data-reveal>
+        <p class="lead">Photoreal 3D spec suites let developers, operators and prospective tenants walk through a medical or lab space long before construction or renovation begins.</p>
+        <p>We model the details clinical and scientific users care about most: casework and equipment placement, clearances around fume hoods and exam tables, utility drops, and how patients, staff and samples move through the suite. Decision-makers get an accurate, interactive preview, so programming conversations start earlier and leases close with fewer surprises.</p>
+      </div>
+
+      <div class="container" style="margin-top: clamp(48px, 6vw, 72px)">
+        <div class="card-grid card-grid--3">
+          <article class="feature" data-reveal>
+            <div class="icon-badge" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h18v9H3zM7 8v4M11 8v6M15 8v4M19 8v6"/></svg>
+            </div>
+            <h3>Equipment-true layouts</h3>
+            <p>Fume hoods, biosafety cabinets, freezers, imaging rooms and exam casework are placed at real dimensions, so users can check fit and adjacency at a glance.</p>
+          </article>
+          <article class="feature" data-reveal>
+            <div class="icon-badge" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 3h6v3H9zM9 13l2 2 4-4"/></svg>
+            </div>
+            <h3>The details that drive approvals</h3>
+            <p>Make accessible clearances, eyewash locations, safety zones and the separation between clinical and public areas easy to see and discuss with planners and consultants.</p>
+          </article>
+          <article class="feature" data-reveal>
+            <div class="icon-badge" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7"/></svg>
+            </div>
+            <h3>Workflows you can walk</h3>
+            <p>Trace the path from check-in to procedure room, or from receiving dock to wet lab, and spot bottlenecks while changes are still cheap.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Trust band -->
+    <section class="band band--steel on-dark" aria-labelledby="trust-title">
+      <div class="container">
+        <h2 id="trust-title" class="text-center" style="margin-bottom: clamp(36px, 5vw, 64px)">Trusted by healthcare real estate leaders</h2>
+        <ul class="logo-wall" data-reveal>
+          <li class="logo-chip">
+            <svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="3" width="28" height="28" rx="7"/><path d="M17 10v14M10 17h14"/></svg>
+            <span>Healthcare REIT<small>Client logo</small></span>
+          </li>
+          <li class="logo-chip">
+            <svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M4 28L17 5l13 23z"/><path d="M11 28l6-10 6 10"/></svg>
+            <span>Life Science Developer<small>Client logo</small></span>
+          </li>
+          <li class="logo-chip">
+            <svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3 17h7l3-8 6 16 3-8h9"/></svg>
+            <span>Medical Office Owner<small>Client logo</small></span>
+          </li>
+          <li class="logo-chip">
+            <svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="17" cy="17" r="13"/><path d="M17 4c-5 6-5 20 0 26M17 4c5 6 5 20 0 26M5 13h24M5 21h24"/></svg>
+            <span>Health System<small>Client logo</small></span>
+          </li>
+          <li class="logo-chip">
+            <svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 4h10M14 4v9L6 27a2 2 0 0 0 1.8 3h18.4a2 2 0 0 0 1.8-3L20 13V4"/><path d="M10 21h14"/></svg>
+            <span>Research Campus<small>Client logo</small></span>
+          </li>
+        </ul>
+        <p class="logo-note">Placeholder marks. Replace them with real client logos once you have permission to use them.</p>
+      </div>
+    </section>
+
+    <!-- Before / after -->
+    <section class="band band--night on-dark" aria-labelledby="compare-title">
+      <div class="container container--mid">
+        <div class="section-head">
+          <span class="eyebrow">Virtual build-out</span>
+          <h2 id="compare-title">From empty shell to move-in-ready lab</h2>
+          <p>Drag the slider to compare the space as it stands today with the lab a tenant could occupy. No demolition, no speculative construction.</p>
+        </div>
+        <div class="text-center">
+          <div class="chip-group" role="group" aria-label="Compare the lab fit-out with" data-compare-chips="compare-medical">
+            <button class="chip" type="button" aria-pressed="false" data-label="As-is shell" data-src="../../assets/img/renders/compare-raw.jpg" data-alt="The suite as it stands today: exposed ductwork, raw concrete and construction debris">As-is shell</button>
+            <button class="chip" type="button" aria-pressed="true" data-label="Whitebox" data-src="../../assets/img/renders/compare-whitebox.jpg" data-alt="The suite as an empty whitebox with finished ceiling and floor">Whitebox</button>
+          </div>
+        </div>
+        <div class="compare" id="compare-medical" data-compare data-reveal>
+          <img src="../../assets/img/renders/compare-lab.jpg" alt="The same suite fitted out as a wet lab with island benches, reagent shelving and fume hoods" width="1600" height="1060" loading="lazy">
+          <div class="compare__before">
+            <img src="../../assets/img/renders/compare-whitebox.jpg" alt="The suite as an empty whitebox with finished ceiling and floor" width="1600" height="1060" loading="lazy">
+          </div>
+          <input class="compare__range" type="range" min="0" max="100" value="50" aria-label="Reveal more of the before or after image">
+          <span class="compare__divider" aria-hidden="true"></span>
+          <span class="compare__handle" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l-6 6 6 6M15 6l6 6-6 6"/></svg>
+          </span>
+          <span class="compare__label compare__label--before">Whitebox</span>
+          <span class="compare__label compare__label--after">Lab fit-out</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Property types -->
+    <section class="band band--white" aria-labelledby="types-title">
+      <div class="container">
+        <div class="section-head">
+          <h2 id="types-title">Built for every kind of healthcare and science space</h2>
+          <p>From a single exam suite to a multi-floor research building, each model is tailored to how that facility actually works.</p>
+        </div>
+        <div class="type-grid" data-reveal>
+          <article class="type">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 21v-5h6v5M12 8v4M10 10h4"/></svg>Medical office buildings</h3>
+            <p>Exam suites, waiting rooms and specialty clinics fitted out to a practice's standards, ready for physician groups and health systems to review.</p>
+          </article>
+          <article class="type">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6M10 3v6.5L4.6 18.2A1.8 1.8 0 0 0 6.1 21h11.8a1.8 1.8 0 0 0 1.5-2.8L14 9.5V3M7.5 15h9"/></svg>Research &amp; wet labs</h3>
+            <p>Bench layouts, fume hood runs, write-up zones and support rooms for biotech startups, pharma tenants and university programs.</p>
+          </article>
+          <article class="type">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"/></svg>Ambulatory &amp; surgery centers</h3>
+            <p>Pre-op, procedure and recovery flows that help providers picture patient throughput and staff circulation.</p>
+          </article>
+          <article class="type">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3.5"/></svg>Imaging &amp; diagnostics</h3>
+            <p>Shielded rooms, control areas and equipment footprints for MRI, CT and X-ray, shown with the clearances operators need.</p>
+          </article>
+          <article class="type">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>cGMP &amp; cleanroom suites</h3>
+            <p>Gowning sequences, airlocks and classified rooms laid out clearly for manufacturing and cell and gene therapy tenants.</p>
+          </article>
+          <article class="type">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 19c0-8 5-14 15-14 0 10-6 15-14 15M5 19l7-7"/></svg>Wellness &amp; outpatient care</h3>
+            <p>Therapy gyms, behavioral health suites and urgent care clinics that feel welcoming to patients before the first visit.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Interactive tour -->
+    <section class="band band--mist band--dark-text" id="tour" aria-labelledby="tour-title">
+      <div class="container">
+        <div class="section-head">
+          <h2 id="tour-title">Take a Look Around</h2>
+          <p>Drag to look around, jump between viewpoints, and switch between the as-is shell, a whitebox and the full lab fit-out.</p>
+        </div>
+        <div class="tour" data-tour data-mode="lab" data-view="entry">
+          <div class="tour__stage" style="background-image: url('../../assets/img/renders/tour-poster.jpg')">
+            <div class="tour__status" role="status">
+              <span class="spinner" aria-hidden="true"></span>
+              <p>Loading interactive tour…</p>
+              <noscript><p>Turn on JavaScript to explore the interactive tour.</p></noscript>
+            </div>
+            <span class="tour__hint" aria-hidden="true">Drag to look around · Scroll to zoom</span>
+            <div class="tour__hud">
+              <div class="tour__group" role="group" aria-label="Viewpoint">
+                <button class="tour__btn" type="button" data-tour-view="entry" aria-pressed="true">Entry</button>
+                <button class="tour__btn" type="button" data-tour-view="aisle" aria-pressed="false">Bench aisle</button>
+                <button class="tour__btn" type="button" data-tour-view="hoods" aria-pressed="false">Fume hoods</button>
+                <button class="tour__btn" type="button" data-tour-view="writeup" aria-pressed="false">Write-up</button>
+              </div>
+              <div class="tour__group" role="group" aria-label="Build-out stage">
+                <button class="tour__btn" type="button" data-tour-mode="raw" aria-pressed="false">As-is</button>
+                <button class="tour__btn" type="button" data-tour-mode="whitebox" aria-pressed="false">Whitebox</button>
+                <button class="tour__btn" type="button" data-tour-mode="lab" aria-pressed="true">Lab fit-out</button>
+                <button class="tour__btn tour__icon-btn" type="button" data-tour-fullscreen aria-label="Toggle full screen">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="tour__caption">
+            <a class="btn btn--dark btn--sm" href="tour.html" target="_blank" rel="noopener">Open In New Tab</a>
+            <small>Sample 4,500 sq ft wet lab suite, modeled from a floor plan and site photos.</small>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Process -->
+    <section class="band band--sky on-dark" aria-labelledby="process-title">
+      <div class="container">
+        <div class="section-head">
+          <h2 id="process-title">Start with the files you already have</h2>
+          <p>No site visit required. A plan and a few photos are enough to get going.</p>
+        </div>
+        <ol class="steps" data-reveal>
+          <li class="step">
+            <div class="step__art" aria-hidden="true">
+              <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="8" width="36" height="32" rx="2"/><path d="M6 22h14v18M20 8v8M28 22h14M28 22v8M34 40v-6"/></svg>
+            </div>
+            <h3>Send a floor plan</h3>
+            <p>A PDF, CAD file or even a marked-up sketch. We confirm dimensions and room program before modeling.</p>
+          </li>
+          <li class="step">
+            <div class="step__art" aria-hidden="true">
+              <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="13" width="30" height="24" rx="3"/><circle cx="14" cy="22" r="3"/><path d="M5 33l9-8 7 6 5-4 9 8"/><path d="M13 13v-2a2 2 0 0 1 2-2h26a2 2 0 0 1 2 2v20a2 2 0 0 1-2 2h-6"/></svg>
+            </div>
+            <h3>Add a few photos</h3>
+            <p>Phone photos of the existing space capture finishes, windows and views so the model feels like the real building.</p>
+          </li>
+          <li class="step">
+            <div class="step__art" aria-hidden="true">
+              <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 5l17 9.5v19L24 43 7 33.5v-19z"/><path d="M7 14.5L24 24l17-9.5M24 24v19"/></svg>
+            </div>
+            <h3>Share your spec suite</h3>
+            <p>Receive renderings, a 360° tour and a walkthrough video you can add to listings, decks and tenant emails.</p>
+          </li>
+        </ol>
+        <div class="btn-row btn-row--center" style="margin-top: 48px">
+          <a class="btn btn--light" href="#get-started">Plan your first suite</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="band band--white" id="faq" aria-labelledby="faq-title">
+      <div class="container">
+        <div class="section-head">
+          <h2 id="faq-title">Questions from healthcare and lab owners</h2>
+        </div>
+        <div class="faq">
+          <details>
+            <summary>How accurate are the models?</summary>
+            <p>Every model is built to the dimensions on your floor plan, and equipment is placed using typical manufacturer footprints. If something on the plan does not add up, we flag it before modeling starts.</p>
+          </details>
+          <details>
+            <summary>Can you show specialized equipment like MRI rooms or fume hoods?</summary>
+            <p>Yes. Our library covers common lab and clinical equipment, from biosafety cabinets and ultra-low freezers to exam tables and imaging rooms. Custom items can be modeled from spec sheets.</p>
+          </details>
+          <details>
+            <summary>Do you need access to the building?</summary>
+            <p>No. A floor plan and a handful of photos are usually all we need. For ground-up projects, architectural drawings work just as well.</p>
+          </details>
+          <details>
+            <summary>Can we show more than one layout?</summary>
+            <p>Yes. Many owners show a whitebox alongside one or two fit-out options, such as a wet lab and a dry lab, so prospective tenants can compare.</p>
+          </details>
+          <details>
+            <summary>How do tenants view the tour?</summary>
+            <p>Share a link or embed the tour on a listing page. It runs in any modern browser on desktop, tablet or phone, with nothing to install.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- Lead form -->
+    <section class="band band--slate on-dark" id="get-started" aria-labelledby="form-title">
+      <div class="container">
+        <div class="lead-form" data-lead-form>
+          <h2 id="form-title">Get Started Today</h2>
+          <p>Tell us about your property and a member of our team will reach out to plan your first medical or lab spec suite.</p>
+          <form novalidate>
+            <div class="field">
+              <label for="f-name">Your name</label>
+              <input id="f-name" name="name" type="text" autocomplete="name">
+            </div>
+            <div class="field">
+              <label for="f-email">Your email address (required)</label>
+              <input id="f-email" name="email" type="email" autocomplete="email" required aria-describedby="f-email-err">
+              <p class="field__error" id="f-email-err">Please enter a valid email address.</p>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="f-phone">Your phone number (optional)</label>
+                <input id="f-phone" name="phone" type="tel" autocomplete="tel">
+              </div>
+              <div class="field">
+                <label for="f-type">Property type</label>
+                <select id="f-type" name="property_type">
+                  <option>Medical office building</option>
+                  <option>Research or wet lab</option>
+                  <option>Ambulatory or surgery center</option>
+                  <option>Imaging or diagnostics</option>
+                  <option>cGMP or cleanroom</option>
+                  <option>Other</option>
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="f-project">Tell us about your project</label>
+              <textarea id="f-project" name="project"></textarea>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn--dark" type="submit">Send</button>
+              <p class="form-note">We will only use your details to respond to this request.</p>
+            </div>
+          </form>
+          <div class="form-success" role="status">
+            <h3>Thanks, we have your request</h3>
+            <p>A member of our team will be in touch within one business day.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer" id="site-footer">
+    <div class="container site-footer__grid">
+      <div class="site-footer__about">
+        <a class="brand" href="../../" aria-label="Previsio home">
+          <img class="brand__mark" src="../../assets/img/logo-mark.svg" alt="" width="38" height="38">
+          <span class="brand__name">previsio</span>
+        </a>
+        <p>Photoreal 3D spec suites, tours and renderings that help commercial real estate teams lease space faster.</p>
+      </div>
+      <nav aria-labelledby="ft-explore">
+        <h2 id="ft-explore">Explore</h2>
+        <ul>
+          <li><a href="../../">Home</a></li>
+          <li><a href="../../#verticals">Verticals</a></li>
+          <li><a href="#get-started">Pricing</a></li>
+          <li><a href="#site-footer">About</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="ft-verticals">
+        <h2 id="ft-verticals">Verticals</h2>
+        <ul>
+          <li><a href="../../#verticals">Office &amp; Retail</a></li>
+          <li><a href="./" aria-current="page">Medical &amp; Life Sciences</a></li>
+          <li><a href="../../#verticals">Multi-family</a></li>
+          <li><a href="../../#verticals">New Construction</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="ft-company">
+        <h2 id="ft-company">Company</h2>
+        <ul>
+          <li><a href="#site-footer">Careers</a></li>
+          <li><a href="#site-footer">Press</a></li>
+          <li><a href="#site-footer">Terms of Service</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="site-footer__legal">
+      <p>Copyright © <span data-year>2026</span> Previsio</p>
+      <p>Press inquiries: <a href="mailto:press@example.com">press@example.com</a></p>
+    </div>
+  </footer>
+</body>
+</html>

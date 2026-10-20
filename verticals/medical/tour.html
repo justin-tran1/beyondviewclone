@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab Suite Tour – Previsio</title>
+  <meta name="description" content="Interactive 3D tour of a sample wet lab suite, from as-is shell to whitebox to full lab fit-out.">
+  <meta name="theme-color" content="#20242c">
+  <link rel="icon" href="../../assets/img/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600&family=Roboto:wght@400;500&display=swap">
+  <link rel="stylesheet" href="../../assets/css/styles.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../../assets/vendor/three/three.module.min.js",
+        "three/addons/": "../../assets/vendor/three/addons/"
+      }
+    }
+  </script>
+  <script src="../../assets/js/tour.js" type="module"></script>
+</head>
+<body class="tour-page">
+  <div class="tour-page__bar">
+    <a class="brand" href="../../" aria-label="Previsio home">
+      <img class="brand__mark" src="../../assets/img/logo-mark.svg" alt="" width="30" height="30">
+      <span class="brand__name">previsio</span>
+    </a>
+    <a class="btn btn--light btn--sm" href="./#get-started">Get Started</a>
+  </div>
+
+  <main class="tour" data-tour data-mode="lab" data-view="entry">
+    <h1 class="visually-hidden">Sample wet lab suite tour</h1>
+    <div class="tour__stage" style="background-image: url('../../assets/img/renders/tour-poster.jpg')">
+      <div class="tour__status" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <p>Loading interactive tour…</p>
+        <noscript><p>Turn on JavaScript to explore the interactive tour.</p></noscript>
+      </div>
+      <span class="tour__hint" aria-hidden="true">Drag to look around · Scroll to zoom</span>
+      <div class="tour__hud">
+        <div class="tour__group" role="group" aria-label="Viewpoint">
+          <button class="tour__btn" type="button" data-tour-view="entry" aria-pressed="true">Entry</button>
+          <button class="tour__btn" type="button" data-tour-view="aisle" aria-pressed="false">Bench aisle</button>
+          <button class="tour__btn" type="button" data-tour-view="hoods" aria-pressed="false">Fume hoods</button>
+          <button class="tour__btn" type="button" data-tour-view="writeup" aria-pressed="false">Write-up</button>
+          <button class="tour__btn" type="button" data-tour-view="corner" aria-pressed="false">Overview</button>
+        </div>
+        <div class="tour__group" role="group" aria-label="Build-out stage">
+          <button class="tour__btn" type="button" data-tour-mode="raw" aria-pressed="false">As-is</button>
+          <button class="tour__btn" type="button" data-tour-mode="whitebox" aria-pressed="false">Whitebox</button>
+          <button class="tour__btn" type="button" data-tour-mode="lab" aria-pressed="true">Lab fit-out</button>
+          <button class="tour__btn tour__icon-btn" type="button" data-tour-fullscreen aria-label="Toggle full screen">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

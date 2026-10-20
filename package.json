@@ -1,0 +1,16 @@
+{
+  "name": "beyondview-clone",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static marketing site for a 3D commercial real estate visualization product, modeled on the BeyondView site with a focus on its Medical & Life Sciences vertical.",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.mjs 8080",
+    "render": "node scripts/render.mjs",
+    "check": "node scripts/check-links.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  },
+  "license": "UNLICENSED"
+}

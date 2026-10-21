@@ -1,13 +1,12 @@
 {
-  "name": "beyondview-clone",
+  "name": "cbre-virtual-walkthrough",
   "version": "1.0.0",
   "private": true,
-  "description": "Static marketing site for a 3D commercial real estate visualization product, modeled on the BeyondView site with a focus on its Medical & Life Sciences vertical.",
+  "description": "Internal CBRE tool: trace a floor plan image, furnish it and walk through it in 3D.",
   "type": "module",
   "scripts": {
     "start": "node scripts/serve.mjs 8080",
-    "render": "node scripts/render.mjs",
-    "check": "node scripts/check-links.mjs"
+    "smoke": "node dev/tests/smoke.mjs http://localhost:8080/ smoke-out"
   },
   "devDependencies": {
     "playwright": "1.56.1"

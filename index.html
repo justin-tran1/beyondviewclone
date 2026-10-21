@@ -3,458 +3,100 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Previsio – Market and manage your real estate in 3D</title>
-  <meta name="description" content="Photoreal 3D spec suites, virtual whiteboxing, 360° tours and walkthrough videos that help commercial real estate teams lease space faster.">
-  <meta property="og:type" content="website">
-  <meta property="og:title" content="Previsio – Market and manage your real estate in 3D">
-  <meta property="og:description" content="Photoreal 3D spec suites and tours for commercial real estate.">
-  <meta property="og:image" content="assets/img/renders/og-image.jpg">
-  <meta name="theme-color" content="#0c5eb2">
+  <title>CBRE Virtual Walkthrough</title>
+  <meta name="description" content="Internal CBRE tool to trace a floor plan, lay out furniture and equipment, and walk through the space in 3D.">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#003F2D">
   <link rel="icon" href="assets/img/favicon.svg" type="image/svg+xml">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600&family=Roboto:wght@400;500&display=swap">
-  <link rel="stylesheet" href="assets/css/styles.css">
-  <script src="assets/js/main.js" defer></script>
+  <link rel="stylesheet" href="assets/css/app.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./assets/vendor/three/three.module.min.js",
+        "three/addons/": "./assets/vendor/three/addons/"
+      }
+    }
+  </script>
+  <script type="module" src="src/app.js"></script>
 </head>
-<body>
-  <a class="skip-link" href="#content">Skip to content</a>
+<body data-mode="plan">
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="topbar-left">
+        <img class="brand-logo" src="assets/img/cbre-logo-white.png" alt="CBRE" width="88" height="22">
+        <span class="brand-divider" aria-hidden="true"></span>
+        <span class="brand-name">Virtual Walkthrough</span>
+        <span class="plan-name-wrap">
+          <input class="plan-name" id="plan-name" type="text" aria-label="Plan name" spellcheck="false" autocomplete="off" data-tip="Rename the plan">
+        </span>
+      </div>
 
-  <div class="utility-bar">
-    <div class="container">
-      <ul>
-        <li><a href="#site-footer">About Us</a></li>
-        <li><a href="#get-started">Contact Us</a></li>
-        <li><a href="verticals/medical/#faq">FAQ</a></li>
-      </ul>
+      <div class="topbar-center">
+        <div class="segmented segmented-dark modes" role="group" aria-label="View">
+          <button type="button" class="seg" data-mode="plan" aria-pressed="true" data-tip="Plan only" data-key="Ctrl 1"><span class="icon" data-icon="plan"></span><span class="btn-label">Plan</span></button>
+          <button type="button" class="seg" data-mode="split" aria-pressed="false" data-tip="Plan and 3D side by side" data-key="Ctrl 2"><span class="icon" data-icon="split"></span><span class="btn-label">Split</span></button>
+          <button type="button" class="seg" data-mode="walk" aria-pressed="false" data-tip="Walk through in 3D" data-key="Ctrl 3"><span class="icon" data-icon="cube"></span><span class="btn-label">Walk</span></button>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <button type="button" class="bar-btn" id="undo" aria-label="Undo" data-tip="Undo" data-key="Ctrl Z" disabled><span class="icon" data-icon="undo"></span></button>
+        <button type="button" class="bar-btn" id="redo" aria-label="Redo" data-tip="Redo" data-key="Ctrl Shift Z" disabled><span class="icon" data-icon="redo"></span></button>
+        <span class="bar-sep" aria-hidden="true"></span>
+        <button type="button" class="bar-btn bar-btn-text" id="open-menu" aria-label="Open"><span class="icon" data-icon="folder"></span><span class="btn-label">Open</span><span class="icon icon-chevron" data-icon="chevron-down"></span></button>
+        <button type="button" class="bar-btn bar-btn-text" id="save" aria-label="Save plan" data-tip="Download the plan file" data-key="Ctrl S"><span class="icon" data-icon="save"></span><span class="btn-label">Save</span></button>
+        <button type="button" class="bar-btn" id="save-image" aria-label="Save image" data-tip="Save an image of the plan"><span class="icon" data-icon="photo"></span></button>
+        <span class="bar-sep" aria-hidden="true"></span>
+        <button type="button" class="bar-btn" id="settings" aria-label="Settings" data-tip="Settings"><span class="icon" data-icon="settings"></span></button>
+        <button type="button" class="bar-btn" id="help" aria-label="Help and shortcuts" data-tip="Help and shortcuts" data-key="?"><span class="icon" data-icon="help"></span></button>
+      </div>
+    </header>
+
+    <aside class="panel panel-left" id="left-panel" aria-label="Tools and library">
+      <section class="tools" id="tools" aria-label="Tools"></section>
+      <section class="library" id="library" aria-label="Furniture and equipment"></section>
+    </aside>
+
+    <main class="stage" id="stage">
+      <div class="pane plan-pane" id="plan-pane">
+        <canvas id="plan-canvas" class="plan-canvas" tabindex="0" aria-label="Floor plan editor. Use the tools on the left, or press V, W, R, D, N or C to switch tools."></canvas>
+        <div class="coach" id="coach" hidden>
+          <span class="coach-icon icon" data-icon="calibrate"></span>
+          <div class="coach-text">
+            <strong class="coach-title">Set the image scale</strong>
+            <span class="coach-step" id="coach-step"></span>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm coach-cancel" id="coach-cancel">Cancel</button>
+        </div>
+        <div class="empty-state" id="empty-state" hidden>
+          <h2 class="empty-title">Start your floor plan</h2>
+          <p class="empty-text">Import a floor plan image to trace over, or draw walls from scratch.</p>
+          <div class="empty-actions">
+            <button type="button" class="btn btn-primary" id="empty-import"><span class="icon" data-icon="upload"></span><span class="btn-label">Import floor plan image</span></button>
+            <button type="button" class="btn btn-secondary" id="empty-walls"><span class="icon" data-icon="wall"></span><span class="btn-label">Draw walls</span></button>
+          </div>
+          <button type="button" class="link-btn" id="empty-samples">Or open a sample plan</button>
+        </div>
+      </div>
+      <div class="split-divider" id="split-divider" role="separator" aria-orientation="vertical" aria-label="Resize the plan and 3D views" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" tabindex="0"></div>
+      <div class="pane walk-pane" id="walk-pane">
+        <div class="walk-view" id="walk-view"></div>
+      </div>
+    </main>
+
+    <aside class="panel panel-right" id="right-panel" aria-label="Properties"></aside>
+
+    <footer class="statusbar" id="statusbar"></footer>
+  </div>
+
+  <div class="drop-overlay" id="drop-overlay" hidden>
+    <div class="drop-card">
+      <span class="icon drop-icon" data-icon="drop"></span>
+      <strong>Drop to open</strong>
+      <span>A floor plan image (PNG, JPG, WebP or SVG) or a saved plan file</span>
     </div>
   </div>
 
-  <header class="site-header site-header--blue">
-    <div class="container site-header__inner">
-      <a class="brand" href="./" aria-label="Previsio home">
-        <img class="brand__mark" src="assets/img/logo-mark.svg" alt="" width="38" height="38">
-        <span class="brand__name">previsio</span>
-      </a>
-
-      <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="primary-nav">
-        <span class="visually-hidden">Menu</span>
-        <svg class="icon-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-        <svg class="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-      </button>
-
-      <nav class="primary-nav" id="primary-nav" aria-label="Main">
-        <ul>
-          <li class="nav-item"><a class="nav-link" href="./" aria-current="page">Home</a></li>
-          <li class="nav-item">
-            <button class="nav-link" type="button" data-dropdown aria-expanded="false" aria-controls="menu-verticals">
-              Verticals
-              <svg viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M1 1.5l5 5 5-5"/></svg>
-            </button>
-            <ul class="dropdown" id="menu-verticals">
-              <li><a href="#verticals">Office &amp; Retail</a></li>
-              <li><a href="verticals/medical/">Medical &amp; Life Sciences</a></li>
-              <li><a href="#verticals">Multi-family</a></li>
-              <li><a href="#verticals">New Construction</a></li>
-            </ul>
-          </li>
-          <li class="nav-item">
-            <button class="nav-link" type="button" data-dropdown aria-expanded="false" aria-controls="menu-solutions">
-              Solutions
-              <svg viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M1 1.5l5 5 5-5"/></svg>
-            </button>
-            <ul class="dropdown" id="menu-solutions">
-              <li><a href="#portfolio">Brokers</a></li>
-              <li><a href="#portfolio">Owners &amp; Operators</a></li>
-            </ul>
-          </li>
-          <li class="nav-item"><a class="nav-link" href="#get-started">Pricing</a></li>
-          <li class="mobile-only"><a class="btn btn--primary" href="#get-started">Get Started</a></li>
-        </ul>
-      </nav>
-
-      <a class="btn btn--light btn--sm header-cta" href="#get-started">Get Started</a>
-    </div>
-  </header>
-
-  <main id="content">
-    <!-- Hero -->
-    <section class="band--royal on-dark home-hero" aria-labelledby="home-title">
-      <div class="container home-hero__grid">
-        <div class="home-hero__media">
-          <img src="assets/img/renders/home-hero-raw.jpg" alt="An unfinished commercial suite with exposed ductwork, raw concrete floors and construction materials" width="1600" height="1000" fetchpriority="high">
-          <span class="home-hero__badge">Before: as-is shell</span>
-        </div>
-        <div>
-          <h1 id="home-title" class="visually-hidden">3D visualization for commercial real estate</h1>
-          <p class="home-hero__statement">Show every vacancy finished, furnished and ready to lease, without paying to build it first.</p>
-          <div class="btn-row">
-            <a class="btn btn--primary" href="#get-started">Get Started Today</a>
-            <a class="btn btn--ghost" href="verticals/medical/#tour">Explore a lab tour</a>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Trust + testimonials -->
-    <section class="band band--night on-dark" aria-labelledby="trust-title">
-      <div class="container">
-        <h2 id="trust-title" class="text-center" style="margin-bottom: 44px">Trusted by owners, operators and brokers</h2>
-      </div>
-      <div class="marquee" aria-label="Client logos (placeholders)">
-        <div class="marquee__track">
-          <ul class="logo-wall">
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="3" width="28" height="28" rx="7"/><path d="M17 10v14M10 17h14"/></svg><span>Healthcare REIT<small>Client logo</small></span></li>
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M5 30V9l12-5 12 5v21M11 30V14h12v16"/></svg><span>Office Landlord<small>Client logo</small></span></li>
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M4 28L17 5l13 23z"/><path d="M11 28l6-10 6 10"/></svg><span>Investment Manager<small>Client logo</small></span></li>
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M5 30V16L17 6l12 10v14M13 30v-8h8v8"/></svg><span>Multifamily Developer<small>Client logo</small></span></li>
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 4h10M14 4v9L6 27a2 2 0 0 0 1.8 3h18.4a2 2 0 0 0 1.8-3L20 13V4"/><path d="M10 21h14"/></svg><span>Life Science Owner<small>Client logo</small></span></li>
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="17" cy="17" r="13"/><path d="M17 4c-5 6-5 20 0 26M17 4c5 6 5 20 0 26M5 13h24M5 21h24"/></svg><span>Brokerage<small>Client logo</small></span></li>
-          </ul>
-          <ul class="logo-wall" aria-hidden="true">
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="28" height="28" rx="7"/><path d="M17 10v14M10 17h14"/></svg><span>Healthcare REIT<small>Client logo</small></span></li>
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 30V9l12-5 12 5v21M11 30V14h12v16"/></svg><span>Office Landlord<small>Client logo</small></span></li>
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 28L17 5l13 23z"/><path d="M11 28l6-10 6 10"/></svg><span>Investment Manager<small>Client logo</small></span></li>
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 30V16L17 6l12 10v14M13 30v-8h8v8"/></svg><span>Multifamily Developer<small>Client logo</small></span></li>
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 4h10M14 4v9L6 27a2 2 0 0 0 1.8 3h18.4a2 2 0 0 0 1.8-3L20 13V4"/><path d="M10 21h14"/></svg><span>Life Science Owner<small>Client logo</small></span></li>
-            <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="17" cy="17" r="13"/><path d="M17 4c-5 6-5 20 0 26M17 4c5 6 5 20 0 26M5 13h24M5 21h24"/></svg><span>Brokerage<small>Client logo</small></span></li>
-          </ul>
-        </div>
-      </div>
-      <div class="container">
-        <div class="quotes">
-          <figure class="quote" data-reveal>
-            <span class="tag">Sample</span>
-            <blockquote>“We shared the finished suite with prospects months before the build-out started. Tenants stopped asking what the space could be and started negotiating terms.”</blockquote>
-            <figcaption><span class="quote__avatar" aria-hidden="true">LD</span><span><span class="quote__name">Leasing Director</span><br><span class="quote__role">Suburban office portfolio</span></span></figcaption>
-          </figure>
-          <figure class="quote" data-reveal>
-            <span class="tag">Sample</span>
-            <blockquote>“The tour became the centerpiece of our pre-leasing campaign. Residents could pick a floor plan and see the view from their balcony before we topped out.”</blockquote>
-            <figcaption><span class="quote__avatar" aria-hidden="true">VP</span><span><span class="quote__name">VP of Marketing</span><br><span class="quote__role">Multifamily developer</span></span></figcaption>
-          </figure>
-          <figure class="quote" data-reveal>
-            <span class="tag">Sample</span>
-            <blockquote>“Lab tenants are specific about what they need. Being able to show benches, hoods and support rooms in 3D made our spec suites far easier to lease.”</blockquote>
-            <figcaption><span class="quote__avatar" aria-hidden="true">AM</span><span><span class="quote__name">Asset Manager</span><br><span class="quote__role">Medical and life science owner</span></span></figcaption>
-          </figure>
-        </div>
-      </div>
-    </section>
-
-    <!-- CRE visualization -->
-    <section class="band band--royal on-dark" id="verticals" aria-labelledby="viz-title">
-      <div class="container">
-        <div class="section-head">
-          <h2 id="viz-title">Commercial Real Estate Visualization</h2>
-          <p>Present every space at its best with virtual whiteboxing and spec suites.</p>
-        </div>
-        <div class="card-grid card-grid--2">
-          <article class="viz-card" data-reveal>
-            <h3>Whitebox</h3>
-            <div class="compare" data-compare>
-              <img src="assets/img/renders/compare-whitebox.jpg" alt="The suite after virtual whiteboxing, with a clean ceiling, walls and floor" width="1600" height="1060" loading="lazy">
-              <div class="compare__before"><img src="assets/img/renders/compare-raw.jpg" alt="The suite before: exposed ducts, unfinished walls and debris" width="1600" height="1060" loading="lazy"></div>
-              <input class="compare__range" type="range" min="0" max="100" value="50" aria-label="Compare the as-is space with the whitebox">
-              <span class="compare__divider" aria-hidden="true"></span>
-              <span class="compare__handle" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l-6 6 6 6M15 6l6 6-6 6"/></svg></span>
-              <span class="compare__label compare__label--before">As-is</span>
-              <span class="compare__label compare__label--after">Whitebox</span>
-            </div>
-            <p>Clear out a tired or half-demolished space in days instead of months, and share move-in-ready visuals without paying for the work up front.</p>
-          </article>
-          <article class="viz-card" data-reveal>
-            <h3>Reposition</h3>
-            <div class="compare" data-compare>
-              <img src="assets/img/renders/reposition-lab.jpg" alt="The same floor repositioned as a lab with benches and glass-walled write-up area" width="1600" height="1060" loading="lazy">
-              <div class="compare__before"><img src="assets/img/renders/reposition-whitebox.jpg" alt="An empty whitebox floor" width="1600" height="1060" loading="lazy"></div>
-              <input class="compare__range" type="range" min="0" max="100" value="50" aria-label="Compare the whitebox with the repositioned lab">
-              <span class="compare__divider" aria-hidden="true"></span>
-              <span class="compare__handle" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l-6 6 6 6M15 6l6 6-6 6"/></svg></span>
-              <span class="compare__label compare__label--before">Whitebox</span>
-              <span class="compare__label compare__label--after">Lab</span>
-            </div>
-            <p>Test a new use, like converting office to lab, and market the version tenants want most before committing capital to build it.</p>
-          </article>
-        </div>
-        <nav class="pill-links" aria-label="Verticals">
-          <a class="btn btn--light btn--sm" href="#get-started">Office &amp; Retail</a>
-          <a class="btn btn--light btn--sm" href="verticals/medical/">Medical &amp; Life Sciences</a>
-          <a class="btn btn--light btn--sm" href="#get-started">Multi-family</a>
-          <a class="btn btn--light btn--sm" href="#get-started">New Construction</a>
-        </nav>
-      </div>
-    </section>
-
-    <!-- Gallery -->
-    <section class="band band--soft" aria-labelledby="gallery-title">
-      <div class="container">
-        <div class="section-head">
-          <h2 id="gallery-title">Renderings that set your listing apart</h2>
-          <p class="lead" style="color: var(--navy)">Win tenants at the rents you are targeting with detailed interiors and believable views out every window.</p>
-        </div>
-        <div class="carousel" data-carousel>
-          <ul class="carousel__track" aria-label="Rendering gallery">
-            <li><figure><img src="assets/img/renders/gallery-entry.jpg" alt="Wet lab seen from the entry, with island benches and window wall" width="1600" height="900" loading="lazy"><figcaption>Wet lab, entry view</figcaption></figure></li>
-            <li><figure><img src="assets/img/renders/gallery-aisle.jpg" alt="Central aisle between two lab benches with stools and reagent shelving" width="1600" height="900" loading="lazy"><figcaption>Bench aisle</figcaption></figure></li>
-            <li><figure><img src="assets/img/renders/gallery-hoods.jpg" alt="Row of fume hoods and tall storage cabinets along the back wall" width="1600" height="900" loading="lazy"><figcaption>Fume hood wall</figcaption></figure></li>
-            <li><figure><img src="assets/img/renders/gallery-writeup.jpg" alt="Write-up desks along the windows behind a glass partition" width="1600" height="900" loading="lazy"><figcaption>Write-up zone</figcaption></figure></li>
-            <li><figure><img src="assets/img/renders/gallery-corner.jpg" alt="Elevated overview of the full lab suite" width="1600" height="900" loading="lazy"><figcaption>Suite overview</figcaption></figure></li>
-          </ul>
-          <button class="carousel__nav carousel__nav--prev" type="button" aria-label="Previous image"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
-          <button class="carousel__nav carousel__nav--next" type="button" aria-label="Next image"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></button>
-          <div class="carousel__dots"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Healthcare callout -->
-    <section class="band band--steel on-dark" aria-labelledby="health-title">
-      <div class="container">
-        <h2 id="health-title" class="text-center" style="margin-bottom: 44px">Built for healthcare and life science real estate</h2>
-        <div class="callout" data-reveal>
-          <div class="callout__media"><img src="assets/img/renders/gallery-aisle.jpg" alt="Rendered wet lab with island benches" width="1600" height="900" loading="lazy"></div>
-          <div class="callout__body">
-            <h3>Medical &amp; Life Sciences</h3>
-            <p>Medical office, lab and cGMP tenants need to see equipment, clearances and workflows before they sign. Give them a suite they can walk through today.</p>
-            <ul class="logo-wall">
-              <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="3" width="28" height="28" rx="7"/><path d="M17 10v14M10 17h14"/></svg><span>Healthcare REIT</span></li>
-              <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 4h10M14 4v9L6 27a2 2 0 0 0 1.8 3h18.4a2 2 0 0 0 1.8-3L20 13V4"/><path d="M10 21h14"/></svg><span>Lab Developer</span></li>
-              <li class="logo-chip"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3 17h7l3-8 6 16 3-8h9"/></svg><span>Health System</span></li>
-            </ul>
-            <a class="btn btn--light" href="verticals/medical/">Explore Medical &amp; Life Sciences</a>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Materials -->
-    <section class="band band--sky on-dark" aria-labelledby="materials-title">
-      <div class="container">
-        <div class="section-head">
-          <h2 id="materials-title">No site visit. Just a plan and a few photos.</h2>
-          <p>Send us a couple of files and we take it from there.</p>
-        </div>
-        <ol class="steps" data-reveal>
-          <li class="step">
-            <div class="step__art" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="8" width="36" height="32" rx="2"/><path d="M6 22h14v18M20 8v8M28 22h14M28 22v8M34 40v-6"/></svg></div>
-            <h3>A floor plan</h3>
-            <p>Any format works, from CAD to a scanned PDF.</p>
-          </li>
-          <li class="step">
-            <div class="step__art" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="13" width="30" height="24" rx="3"/><circle cx="14" cy="22" r="3"/><path d="M5 33l9-8 7 6 5-4 9 8"/><path d="M13 13v-2a2 2 0 0 1 2-2h26a2 2 0 0 1 2 2v20a2 2 0 0 1-2 2h-6"/></svg></div>
-            <h3>A few photos</h3>
-            <p>Quick phone shots of the space and the views.</p>
-          </li>
-          <li class="step">
-            <div class="step__art" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 5l17 9.5v19L24 43 7 33.5v-19z"/><path d="M7 14.5L24 24l17-9.5M24 24v19"/></svg></div>
-            <h3>Your virtual spec suite</h3>
-            <p>Renderings, tour and video, typically within days.</p>
-          </li>
-        </ol>
-        <a class="split__media" href="verticals/medical/#tour" style="display: block; position: relative; max-width: 860px; margin: 56px auto 0" aria-label="Open the interactive lab tour">
-          <img src="assets/img/renders/tour-poster.jpg" alt="" width="1440" height="810" loading="lazy">
-          <span class="play-badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l12-7.5z"/></svg></span>
-        </a>
-      </div>
-    </section>
-
-    <!-- Product features -->
-    <section class="band band--mist band--dark-text" aria-labelledby="product-title">
-      <div class="container">
-        <div class="section-head">
-          <h2 id="product-title">Tour any property from anywhere</h2>
-          <p>Walk clients through a space entirely online, on their schedule.</p>
-        </div>
-        <div class="card-grid card-grid--2">
-          <article class="product-card" data-reveal>
-            <h3>Video walkthroughs</h3>
-            <div class="product-card__media pano">
-              <img src="assets/img/renders/gallery-writeup.jpg" alt="Frame from a walkthrough video of the lab write-up zone" width="1600" height="900" loading="lazy">
-              <span class="play-badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l12-7.5z"/></svg></span>
-            </div>
-            <p>Build interest with smooth, cinematic videos that move through the key areas of a building in rich detail.</p>
-          </article>
-          <article class="product-card" data-reveal>
-            <h3>360° panoramas</h3>
-            <div class="product-card__media pano">
-              <img src="assets/img/renders/gallery-hoods.jpg" alt="Panorama viewpoint along a row of fume hoods" width="1600" height="900" loading="lazy">
-              <span class="pano__compass" aria-hidden="true"></span>
-              <span class="pano__dot" style="left: 30%; top: 70%" aria-hidden="true"></span>
-              <span class="pano__dot" style="left: 62%; top: 62%" aria-hidden="true"></span>
-            </div>
-            <p>Let prospects explore on their own, looking in any direction from the best vantage points in the building.</p>
-          </article>
-          <article class="product-card" data-reveal>
-            <h3>3D maps</h3>
-            <div class="product-card__media map-mock">
-              <svg viewBox="0 0 320 200" aria-label="Illustrated neighborhood map with the property highlighted" role="img">
-                <rect width="320" height="200" fill="#e6edf1"/>
-                <path d="M0 140 C80 120 120 160 200 135 S300 110 320 120 V200 H0Z" fill="#cfe3d1"/>
-                <path d="M-10 60 L330 95" stroke="#ffffff" stroke-width="12"/>
-                <path d="M120 -10 L150 210" stroke="#ffffff" stroke-width="10"/>
-                <path d="M240 -10 L215 210" stroke="#ffffff" stroke-width="6"/>
-                <g fill="#c3ced6">
-                  <path d="M30 20h40v28H30zM80 22h28v26H80zM170 16h36v34h-36zM260 30h40v40h-40zM30 110h50v22H30zM250 120h46v30h-46z"/>
-                </g>
-                <g>
-                  <path d="M160 108l26-12 26 12-26 12z" fill="#7fb1ea"/>
-                  <path d="M160 108v34l26 12v-34z" fill="#4180d8"/>
-                  <path d="M212 108v34l-26 12v-34z" fill="#2f6bc0"/>
-                </g>
-                <g fill="#41cbd8"><circle cx="60" cy="80" r="6"/><circle cx="275" cy="100" r="6"/><circle cx="110" cy="160" r="6"/></g>
-                <rect x="196" y="70" width="98" height="24" rx="12" fill="#363e4a"/>
-                <text x="245" y="86" fill="#fff" font-size="11" font-family="Roboto, sans-serif" text-anchor="middle">4 min to transit</text>
-              </svg>
-            </div>
-            <p>Put the property in context with the neighborhood, nearby amenities and transit, all in one interactive map.</p>
-          </article>
-          <article class="product-card" data-reveal>
-            <h3>Engagement metrics</h3>
-            <div class="product-card__media">
-              <div class="metrics-mock" aria-label="Example analytics dashboard" role="img">
-                <div class="metrics-mock__stats">
-                  <div class="metrics-mock__stat"><b>1,284</b><span>Tour views</span></div>
-                  <div class="metrics-mock__stat"><b>3m 42s</b><span>Avg. time</span></div>
-                  <div class="metrics-mock__stat"><b>38%</b><span>From listings</span></div>
-                </div>
-                <div class="metrics-mock__chart">
-                  <i style="height: 35%"></i><i style="height: 48%"></i><i style="height: 42%"></i><i style="height: 60%"></i><i style="height: 55%"></i><i style="height: 72%"></i><i style="height: 66%"></i><i style="height: 84%"></i><i style="height: 78%"></i><i style="height: 92%"></i>
-                </div>
-              </div>
-            </div>
-            <p>See how many people view each asset, how long they stay and where your traffic comes from.</p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- AR -->
-    <section class="band band--night on-dark" aria-labelledby="ar-title">
-      <div class="container split">
-        <div>
-          <span class="eyebrow">Augmented reality</span>
-          <h2 id="ar-title">Show the finished space in the real one</h2>
-          <p>Hold up a tablet in an empty or under-construction suite and see the fully staged build-out in place, at true scale. Site tours stop being an exercise in imagination.</p>
-          <a class="btn btn--light" href="#get-started">Book a demo</a>
-        </div>
-        <div class="tablet" data-reveal>
-          <div class="tablet__screen">
-            <img src="assets/img/renders/compare-raw.jpg" alt="Tablet camera view of an unfinished suite" width="1600" height="1060" loading="lazy">
-            <div class="tablet__ar"><img src="assets/img/renders/compare-lab.jpg" alt="The finished lab overlaid on the camera view" width="1600" height="1060"></div>
-            <svg class="tablet__frame" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polygon points="14,18 88,10 92,86 10,92" fill="none" stroke="#fff" stroke-width="1.5" stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/></svg>
-            <span class="tablet__chip">AR preview</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Portfolio -->
-    <section class="band band--white" id="portfolio" aria-labelledby="portfolio-title">
-      <div class="container split split--reverse">
-        <div>
-          <h2 id="portfolio-title">One dashboard for every property</h2>
-          <p>Brokers, owners and operators can find and share the right materials for one property or fifty in seconds.</p>
-          <ul class="checklist">
-            <li>Every property and asset in a single dashboard</li>
-            <li>Progress updates as each model is built</li>
-            <li>Invite teammates to review and collaborate</li>
-            <li>Control which agents can view and share</li>
-          </ul>
-        </div>
-        <div class="dash" data-reveal role="img" aria-label="Example portfolio dashboard listing properties and their status">
-          <div class="dash__bar"><i></i><i></i><i></i><span>Portfolio</span></div>
-          <div class="dash__body">
-            <div class="dash__side"><b class="is-on">Properties</b><b>Tours</b><b>Analytics</b><b>Team</b></div>
-            <div class="dash__main">
-              <div class="dash__prop"><img src="assets/img/renders/gallery-entry.jpg" alt="" loading="lazy"><div><strong>Lab Suite 300</strong><em>Wet lab · 4,500 sq ft</em><br><span class="dash__status">Live</span></div></div>
-              <div class="dash__prop"><img src="assets/img/renders/reposition-whitebox.jpg" alt="" loading="lazy"><div><strong>Suite 410</strong><em>Whitebox · 6,200 sq ft</em><br><span class="dash__status">Live</span></div></div>
-              <div class="dash__prop"><img src="assets/img/renders/home-hero-raw.jpg" alt="" loading="lazy"><div><strong>Building B, Floor 2</strong><em>Spec suite · 12,000 sq ft</em><br><span class="dash__status dash__status--wip">In progress</span></div></div>
-              <div class="dash__prop"><img src="assets/img/renders/gallery-writeup.jpg" alt="" loading="lazy"><div><strong>Clinic 120</strong><em>Medical office · 3,100 sq ft</em><br><span class="dash__status">Live</span></div></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Lead form -->
-    <section class="band band--slate on-dark" id="get-started" aria-labelledby="form-title">
-      <div class="container">
-        <div class="lead-form" data-lead-form>
-          <h2 id="form-title">Get Started Today</h2>
-          <p>Have one of our team reach out to plan a spec suite and help you lease your property faster.</p>
-          <form novalidate>
-            <div class="field">
-              <label for="f-name">Your name</label>
-              <input id="f-name" name="name" type="text" autocomplete="name">
-            </div>
-            <div class="field">
-              <label for="f-email">Your email address (required)</label>
-              <input id="f-email" name="email" type="email" autocomplete="email" required aria-describedby="f-email-err">
-              <p class="field__error" id="f-email-err">Please enter a valid email address.</p>
-            </div>
-            <div class="field">
-              <label for="f-phone">Your phone number (optional)</label>
-              <input id="f-phone" name="phone" type="tel" autocomplete="tel">
-            </div>
-            <div class="field">
-              <label for="f-project">Tell us about your project</label>
-              <textarea id="f-project" name="project"></textarea>
-            </div>
-            <div class="form-actions">
-              <button class="btn btn--dark" type="submit">Send</button>
-              <p class="form-note">We will only use your details to respond to this request.</p>
-            </div>
-          </form>
-          <div class="form-success" role="status">
-            <h3>Thanks, we have your request</h3>
-            <p>A member of our team will be in touch within one business day.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <footer class="site-footer" id="site-footer">
-    <div class="container site-footer__grid">
-      <div class="site-footer__about">
-        <a class="brand" href="./" aria-label="Previsio home">
-          <img class="brand__mark" src="assets/img/logo-mark.svg" alt="" width="38" height="38">
-          <span class="brand__name">previsio</span>
-        </a>
-        <p>Photoreal 3D spec suites, tours and renderings that help commercial real estate teams lease space faster.</p>
-      </div>
-      <nav aria-labelledby="ft-explore">
-        <h2 id="ft-explore">Explore</h2>
-        <ul>
-          <li><a href="./">Home</a></li>
-          <li><a href="#verticals">Verticals</a></li>
-          <li><a href="#get-started">Pricing</a></li>
-          <li><a href="#site-footer">About</a></li>
-        </ul>
-      </nav>
-      <nav aria-labelledby="ft-verticals">
-        <h2 id="ft-verticals">Verticals</h2>
-        <ul>
-          <li><a href="#verticals">Office &amp; Retail</a></li>
-          <li><a href="verticals/medical/">Medical &amp; Life Sciences</a></li>
-          <li><a href="#verticals">Multi-family</a></li>
-          <li><a href="#verticals">New Construction</a></li>
-        </ul>
-      </nav>
-      <nav aria-labelledby="ft-company">
-        <h2 id="ft-company">Company</h2>
-        <ul>
-          <li><a href="#site-footer">Careers</a></li>
-          <li><a href="#site-footer">Press</a></li>
-          <li><a href="#site-footer">Terms of Service</a></li>
-        </ul>
-      </nav>
-    </div>
-    <div class="site-footer__legal">
-      <p>Copyright © <span data-year>2026</span> Previsio</p>
-      <p>Press inquiries: <a href="mailto:press@example.com">press@example.com</a></p>
-    </div>
-  </footer>
+  <noscript><p class="noscript">CBRE Virtual Walkthrough needs JavaScript to run.</p></noscript>
 </body>
 </html>

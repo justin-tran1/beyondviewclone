@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Walkthrough Test</title>
+  <script type="importmap">
+    { "imports": { "three": "../assets/vendor/three/three.module.min.js", "three/addons/": "../assets/vendor/three/addons/" } }
+  </script>
+  <style>
+    :root {
+      --green: #003f2d; --dark-green: #012a2d; --accent: #17e88f; --text: #435254; --light: #cad1d3;
+      --tint: #f6f6f6; --divider: #c7c8ca; --cement: #7f8480;
+    }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body { background: var(--dark-green); color: var(--text); font: 14px/1.4 Calibre, "Segoe UI", system-ui, sans-serif; }
+    #walk { position: fixed; inset: 0; }
+    .bar {
+      position: fixed; top: 16px; left: 16px; right: 16px; z-index: 5; display: flex; align-items: flex-start; gap: 8px;
+      pointer-events: none;
+    }
+    .bar > * { pointer-events: auto; }
+    .brand {
+      display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 14px; border-radius: 10px;
+      background: var(--green); color: #fff; box-shadow: 0 6px 20px rgba(1, 42, 45, 0.22);
+    }
+    .brand img { height: 15px; width: auto; display: block; }
+    .brand span { width: 1px; height: 18px; background: rgba(255, 255, 255, 0.3); }
+    .brand strong { font: 400 17px/1 "Financier Display", Georgia, serif; white-space: nowrap; }
+    .group {
+      display: flex; gap: 2px; padding: 4px; border-radius: 10px; background: rgba(255, 255, 255, 0.95);
+      box-shadow: 0 6px 20px rgba(1, 42, 45, 0.16); flex-wrap: wrap;
+    }
+    .group[hidden] { display: none; }
+    .spacer { flex: 1; pointer-events: none; }
+    button {
+      font: 500 13px/1 Calibre, "Segoe UI", system-ui, sans-serif; color: var(--text); background: transparent;
+      border: 0; border-radius: 7px; height: 32px; padding: 0 12px; cursor: pointer; white-space: nowrap;
+    }
+    button:hover { background: var(--tint); color: var(--dark-green); }
+    button[aria-pressed="true"] { background: var(--green); color: #fff; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button kbd {
+      display: inline-block; min-width: 16px; margin-right: 6px; padding: 2px 0; border-radius: 4px; font: inherit;
+      font-size: 11px; text-align: center; background: var(--tint); color: var(--cement);
+    }
+    button[aria-pressed="true"] kbd { background: rgba(255, 255, 255, 0.16); color: #fff; }
+    .hint {
+      position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 4; padding: 9px 16px;
+      border-radius: 999px; background: rgba(1, 42, 45, 0.82); color: #fff; font-size: 13px; white-space: nowrap;
+      pointer-events: none; transition: opacity 400ms ease;
+    }
+    .hint.gone { opacity: 0; }
+    #err { position: fixed; left: 16px; top: 72px; max-width: 60%; color: #8a1f1f; background: #fff; white-space: pre-wrap; z-index: 9; }
+    #err:empty { display: none; }
+    @media (max-width: 1100px) {
+      #views button span { display: none; }
+      #views button kbd { margin-right: 0; }
+    }
+    @media (max-width: 1000px) {
+      .hint { display: none; }
+    }
+    @media (max-width: 760px) {
+      .brand strong { display: none; }
+    }
+    @media (max-width: 640px) {
+      #views { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="walk"></div>
+  <div class="bar">
+    <div class="brand"><img src="../assets/img/cbre-logo-white.png" alt="CBRE"><span></span><strong>Walkthrough test</strong></div>
+    <div class="group" id="modes">
+      <button type="button" data-mode="walk" aria-pressed="true">Walk</button>
+      <button type="button" data-mode="overview" aria-pressed="false">Overview</button>
+    </div>
+    <div class="group" id="views"></div>
+    <div class="spacer"></div>
+    <div class="group"><button type="button" id="shot">Save image</button></div>
+  </div>
+  <div class="hint" id="hint">Drag to look around. Use W, A, S, D to move. Click the floor to walk there.</div>
+  <div id="err"></div>
+  <script type="module" src="walkthrough-test.js"></script>
+</body>
+</html>

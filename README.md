@@ -1,89 +1,64 @@
-# BeyondView clone: Medical & Life Sciences
+# CBRE Virtual Walkthrough
 
-A static marketing site for a 3D commercial real estate visualization product. It follows the
-layout and visual style of [beyondview.com](https://beyondview.com/), with the focus on its
-[Medical & Life Sciences](https://beyondview.com/verticals/medical/) vertical.
+Internal CBRE tool for turning a floor plan into a space you can walk through. Trace a plan image,
+lay out furniture and equipment, then explore it in 3D at eye height or from an overview.
 
-The structure, section order and look (dark slate header, Quicksand and Roboto type, pill
-buttons, gradient bands) follow the reference site. The copy, imagery and logo are all new:
-
-- **Brand**: shipped under a placeholder name, **Previsio**, with an original logo mark.
-- **Copy**: written fresh for this project. None of the reference site's text is reused.
-- **Imagery**: every picture is rendered from a procedural Three.js lab scene in this repo
-  (`assets/js/lab-scene.js`), so there are no licensing questions.
-- **Interactive tour**: the reference page embeds a hosted 360° tour. Here it is a real-time 3D
-  walkthrough of a lab suite that you can switch between *As-is shell*, *Whitebox* and
-  *Lab fit-out*.
-
-## Pages
-
-| Path | What it is |
-| --- | --- |
-| `verticals/medical/` | **Main page.** Hero, overview, feature cards, trust band, before/after slider, property types, interactive 3D tour, process, FAQ and lead form |
-| `verticals/medical/tour.html` | Full-window version of the tour (the "Open In New Tab" target). Accepts `?mode=raw\|whitebox\|lab&view=entry\|aisle\|hoods\|writeup\|corner` |
-| `/` (`index.html`) | Home page in the reference site's section order: hero, testimonials, whitebox/reposition sliders, gallery carousel, healthcare callout, process, product features, AR, portfolio dashboard, lead form |
-| `404.html` | Not-found page |
-
-## Running locally
-
-The tour uses ES modules, so serve the folder over HTTP rather than opening files directly:
+## Run it
 
 ```bash
-npm start            # zero-dependency static server on http://localhost:8080
-# or: python3 -m http.server 8080
+npm start            # serves the repo at http://localhost:8080
 ```
 
-Then open <http://localhost:8080/verticals/medical/>.
+Any static server works; the app needs HTTP (not `file://`) because it uses ES modules. There is no
+build step, and Three.js is vendored, so it runs offline apart from the CBRE fonts.
 
-There is no build step. Three.js r160 is vendored in `assets/vendor/three/` (MIT licensed), so the
-site has no runtime CDN dependencies apart from Google Fonts.
+## Workflow
+
+1. **Start**: open a sample from the welcome screen, start a blank plan, or import a floor plan image
+   (PNG, JPG, WebP or SVG; export PDFs to PNG first).
+2. **Set the scale**: after importing an image, click two points of a known distance and type the
+   real length, for example `24' 6"` or `7.5m`.
+3. **Trace**: draw walls (exterior, interior, glass partition or half-height), place doors, windows
+   and openings on them, and outline rooms to set floor finishes and ceilings. Type a length while
+   drawing a wall and press Enter for exact dimensions.
+4. **Furnish**: pick items from the library (lab and life sciences, medical office, general office,
+   retail and industrial, general). Items snap flush to walls; `Q` and `E` rotate.
+5. **Walk**: switch to **Walk** or **Split**. Drag to look, `W A S D` to move, click the floor to
+   walk there, save viewpoints, and use **Overview** for a dollhouse view. Save images of any view.
+
+Plans save as `.cbreplan.json` files (the traced image is embedded) and autosave in the browser.
+Press `?` in the app for every keyboard shortcut.
+
+## Fonts
+
+The UI uses CBRE's Calibre and Financier Display when they are installed on the computer, as on CBRE
+laptops. They are licensed and intentionally not included in this repo; without them the app falls
+back to system fonts.
 
 ## Project layout
 
 ```
-assets/
-  css/styles.css        Design tokens and all component styles
-  js/main.js            Nav, dropdowns, sliders, carousel, scroll reveal, form handling
-  js/tour.js            Mounts the interactive tour into [data-tour] elements (lazy-loaded)
-  js/lab-scene.js       Procedural lab scene: modes, camera viewpoints, materials
-  img/renders/          JPEGs rendered from lab-scene.js
-  vendor/three/         Three.js + OrbitControls + RoomEnvironment
-scripts/
-  serve.mjs             Local static server
-  render.mjs            Re-renders assets/img/renders/ with headless Chromium
-  render.html           Harness page used by render.mjs
-  check-links.mjs       Verifies every local link, asset and #anchor resolves
+index.html, assets/css/app.css   App shell and styles
+src/app.js, src/ui/              Wiring, panels, dialogs, file handling
+src/model.js, src/geometry.js    Plan data model, undo/redo, geometry and units
+src/editor2d.js, plan-render.js  2D tracing and layout editor
+src/builder3d.js, kit3d.js       Plan to 3D scene, shared materials and primitives
+src/walkthrough.js               First-person and overview viewer
+src/catalog/                     Furniture and equipment library
+src/samples/                     Sample plans
+dev/                             Developer test pages and the smoke test
 ```
 
-## Regenerating the renders
+Module contracts and coordinate conventions are in [docs/architecture.md](docs/architecture.md).
 
-Change the scene in `assets/js/lab-scene.js` (or the shot list in `scripts/render.mjs`), then:
+## Developer checks
 
 ```bash
-npm install          # installs Playwright (dev only)
-npm run render       # all shots
-npm run render hero  # only shots whose name contains "hero"
+npm install                      # Playwright, for tests only
+npm start                        # in one terminal
+npm run smoke                    # opens every sample in Plan, Split and Walk; screenshots to smoke-out/
+node scripts/shot.mjs <url> <out.png> [--wait=expr]   # screenshot any page and report console errors
 ```
 
-If Playwright cannot find a browser, set `CHROMIUM_PATH` to a local Chromium or run
-`npx playwright install chromium`.
-
-## Checks
-
-```bash
-npm run check        # every local href/src/url() and #anchor resolves
-```
-
-## Placeholders to replace before going live
-
-- **Brand name and logo**: "Previsio" and `assets/img/logo-mark.svg`.
-- **Client logos**: the trust bands use generic category marks ("Healthcare REIT", and so on).
-  Swap in real client logos only with permission.
-- **Testimonials**: the three quotes on the home page are marked *Sample*. Replace them with real,
-  approved quotes.
-- **Lead form**: validates and shows a confirmation, but sends nothing yet. Add an `action`
-  (your CRM or a form service) to the `<form>` and `main.js` will let it submit normally.
-- **Stub links**: Office & Retail, Multi-family, New Construction, Solutions, Pricing, Careers,
-  Press and Terms point at sections of the existing pages until those pages exist.
-- **Contact email**: `press@example.com`.
-- `404.html` uses root-relative paths, so it assumes the site is served from a domain root.
+Test pages: `dev/catalog.html?category=lab` (every item in 3D and plan form), `dev/editor-test.html`,
+`dev/builder-test.html?view=overview`, `dev/walkthrough-test.html` and `dev/samples-test.html?sample=lab-suite`.

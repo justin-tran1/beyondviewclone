@@ -639,7 +639,7 @@ body.resizing .pane { pointer-events: none; }
 .views-label { flex: none; padding: 0 4px 0 8px; font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); }
 .views-strip.empty .views-label { display: none; }
 .views-list { position: relative; display: flex; gap: 2px; min-width: 88px; overflow-x: auto; scrollbar-width: none; }
-.views-strip.empty .views-list { min-width: 0; }
+.views-strip.empty .views-list { display: none; }
 .walk-pane[data-walk-mode='overview'] .views-strip { --strip-left: 16px; --strip-right: 16px; }
 .views-list::-webkit-scrollbar { display: none; }
 .views-list.overflow-end { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
@@ -917,8 +917,9 @@ body[data-mode='walk'] .toasts { bottom: calc(var(--status-h) + 76px); }
 @media (max-width: 759px) {
   .views-strip { --strip-left: 202px; }
   .views-label { display: none; }
-  .view-save .btn-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .view-save { padding: 0 8px; }
+  /* Icon only beside saved views; with none, the button keeps its label. */
+  .views-strip:not(.empty) .view-save .btn-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .views-strip:not(.empty) .view-save { padding: 0 8px; }
 }
 
 @media (max-width: 599px) {

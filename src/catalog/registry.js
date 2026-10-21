@@ -112,16 +112,23 @@ const categoryWords = (id) => {
   return [...new Set([id, ...words(CATEGORIES.find((c) => c.id === id)?.label || '')])].filter((w) => !others.has(w));
 };
 
+/** True when s ends compound word w after at least 3 letters: "shelf" ends "bookshelf", "rack" not "track". */
+const endsCompound = (w, s) => w.length - s.length >= 3 && w.endsWith(s);
+
 /**
- * How well query word q matches a list of item words: 3 a whole word, 2 the start of a word, 1 inside
- * a word (only for longer queries, so "bin" does not find "cabinet"), 0 no match.
+ * How well query word q matches a list of item words: 4 a whole word, 3 the start of a word, 2 the
+ * end of a compound word, 1 elsewhere inside a word, 0 no match. Matches inside a word need a query
+ * of 4 or more letters, so "bin" does not find "cabinet".
  */
 function wordMatch(q, list, raw) {
   let best = 0;
   for (const w of list) {
-    if (w === q || w === raw) return 3;
-    if (w.startsWith(q) || w.startsWith(raw)) best = 2;
-    else if (best < 1 && raw.length >= 4 && (w.includes(q) || w.includes(raw))) best = 1;
+    if (w === q || w === raw) return 4;
+    if (w.startsWith(q) || w.startsWith(raw)) best = 3;
+    else if (best < 2 && raw.length >= 4) {
+      if (endsCompound(w, q) || endsCompound(w, raw)) best = 2;
+      else if (w.includes(q) || w.includes(raw)) best = 1;
+    }
   }
   return best;
 }
@@ -129,7 +136,7 @@ function wordMatch(q, list, raw) {
 /**
  * Search by name, tags, type and category. Every word of the query must match; plurals match their
  * singular. Items are ranked by match quality, names before tags before categories. Words that
- * only match inside other words are used only when nothing matches better.
+ * only match inside other words (not at the end of a compound) are used only when nothing matches better.
  */
 export function searchItems(query, category) {
   const raws = String(query).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !STOP_WORDS.has(w));
@@ -137,7 +144,7 @@ export function searchItems(query, category) {
   if (!raws.length) return items;
   const scored = items.map((d, order) => {
     const fields = [words(d.name), words(`${(d.tags || []).join(' ')} ${d.type}`), categoryWords(d.category)];
-    let quality = 3, weight = 0;
+    let quality = 4, weight = 0;
     for (const raw of raws) {
       const q = singular(raw);
       const per = fields.map((f) => wordMatch(q, f, raw));
@@ -149,7 +156,7 @@ export function searchItems(query, category) {
   }).filter((r) => r.quality > 0);
   const top = Math.max(0, ...scored.map((r) => r.quality));
   // A short word that names something exactly ("pos", "iv") does not also list everything starting with it.
-  const floor = top >= 2 ? (top === 3 && raws.every((w) => w.length <= 3) ? 3 : 2) : 1;
+  const floor = top >= 2 ? (top === 4 && raws.every((w) => w.length <= 3) ? 4 : 2) : 1;
   return scored.filter((r) => r.quality >= floor)
     .sort((a, b) => b.quality - a.quality || b.weight - a.weight || a.order - b.order)
     .map((r) => r.d);

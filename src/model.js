@@ -331,6 +331,8 @@ export function removeEntity(draft, kind, id) {
 // ---- Wall graph ----------------------------------------------------------------
 
 const JOIN_TOL = 2e-3;
+/** Clearance (m) kept between an opening and the face of a wall joined at its wall's end. */
+export const OPENING_GAP = 0.05;
 /** True if p lies on wall w's span, away from both of its ends (a T-junction). */
 const onSpan = (p, w) => !samePoint(p, w.a) && !samePoint(p, w.b) && projectToSegment(p, w.a, w.b).dist < JOIN_TOL;
 
@@ -366,13 +368,35 @@ export const isWallJoined = (plan, wallId) => {
   return l.corners.length > 0 || l.tees.length > 0 || !!l.hosts.a || !!l.hosts.b;
 };
 
-/** Move one end of a wall. Moving end a shifts its openings so they keep their distance from end b. */
+/** Half the thickness of the thickest wall other than `wall` that meets p, at an end or mid-span. */
+function jointHalf(draft, wall, p) {
+  let h = 0;
+  for (const w of draft.walls) {
+    if (w !== wall && projectToSegment(p, w.a, w.b).dist < JOIN_TOL) h = Math.max(h, w.thickness / 2);
+  }
+  return h;
+}
+
+/**
+ * Move one end of a wall. Its openings keep their place on the plan, except that one the moving
+ * end runs into is carried along, OPENING_GAP clear of the walls joined there, so it never ends
+ * up inside a joined partition.
+ */
 function setEnd(draft, wall, end, p) {
-  const before = wallLength(wall);
+  const L0 = wallLength(wall), old = wall[end];
   wall[end] = { x: p.x, y: p.y };
-  if (end !== 'a') return;
-  const grow = wallLength(wall) - before;
-  for (const o of draft.openings) if (o.wallId === wall.id) o.offset += grow;
+  const ops = draft.openings.filter((o) => o.wallId === wall.id);
+  if (!ops.length) return;
+  const L = wallLength(wall), grow = L - L0;
+  const h = Math.max(jointHalf(draft, wall, old), jointHalf(draft, wall, p));
+  const keep = h > 0 ? h + OPENING_GAP : 0;
+  for (const o of ops) {
+    // Gap from this end to the opening's nearer edge; it never drops below `keep`, or below
+    // what it already was if that is less.
+    const gap = end === 'a' ? o.offset - o.width / 2 : L0 - o.offset - o.width / 2;
+    const next = Math.max(gap + grow, Math.min(gap, keep));
+    o.offset = end === 'a' ? next + o.width / 2 : L - next - o.width / 2;
+  }
 }
 
 /** Walls ending on `wall` (tees) slide along their own direction to stay on its centerline. */
@@ -391,7 +415,7 @@ const copyWalls = (walls) => walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.
 /**
  * Move one endpoint of a wall. With connected=true, walls that shared the old position move too
  * (corners stay joined), walls ending on this wall's span stay on it, and room outlines along the
- * moved walls follow. Openings keep their distance from the fixed end, clamped to the new length.
+ * moved walls follow. Openings keep their place unless the moving end reaches them (see setEnd).
  */
 export function moveWallEndpoint(draft, wallId, end, p, { connected = true } = {}) {
   const wall = draft.walls.find((w) => w.id === wallId);
@@ -439,7 +463,11 @@ export function moveWall(draft, wallId, dx, dy, { connected = true } = {}) {
   clampOpenings(draft);
 }
 
-/** The moved line of a room edge pq that lies along a moved wall's centerline or one of its faces. */
+/**
+ * The moved line of a room edge pq that lies along a moved wall's centerline or one of its faces,
+ * within that wall's own span. An edge that runs on along collinear walls, or only touches the
+ * wall's end, does not follow it.
+ */
 function movedEdgeLine(p, q, moved, after) {
   let best = null;
   for (const w of moved) {
@@ -450,8 +478,12 @@ function movedEdgeLine(p, q, moved, after) {
     if (Math.abs(dp - dq) > JOIN_TOL) continue;
     const off = [0, h, -h].find((o) => Math.abs(dp - o) <= JOIN_TOL);
     if (off === undefined) continue;
+    // Both ends must project onto the wall (a face corner may sit half a thickness past an end),
+    // and the edge must overlap the wall itself.
     const s0 = dot(sub(p, w.a), u), s1 = dot(sub(q, w.a), u);
-    const overlap = Math.min(Math.max(s0, s1), L + h) - Math.max(Math.min(s0, s1), -h);
+    const lo = Math.min(s0, s1), hi = Math.max(s0, s1);
+    if (lo < -h - JOIN_TOL || hi > L + h + JOIN_TOL) continue;
+    const overlap = Math.min(hi, L) - Math.max(lo, 0);
     if (overlap <= 0.01 || (best && overlap <= best.overlap)) continue;
     const nw = after.get(w.id);
     best = { p: add(nw.a, scale(wallNormal(nw), off)), d: wallDir(nw), overlap };

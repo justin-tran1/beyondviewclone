@@ -16,7 +16,7 @@ export function createWalkUI(pane, { store, prefs, onSaveView, onModeChange }) {
   let walk = null;
   let activeId = null;
   let arriving = false; // the walker is still on its way to the active view
-  let listKey = '';
+  let listKey = null; // never matches, so the first render always runs (and marks an empty strip)
 
   // After a pointer click on an overlay control, hand focus back to the 3D view so walk keys keep
   // working. Keyboard activation (click detail 0) leaves focus on the control.

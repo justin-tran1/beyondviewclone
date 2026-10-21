@@ -2,7 +2,7 @@
 // keyboard input on the canvas; every edit goes through store.update so it is undoable.
 // See docs/architecture.md for the contract.
 import {
-  OPENING_TYPES, WALL_KINDS, addWall, addOpening, addRoom, addItem, addCamera,
+  OPENING_TYPES, WALL_KINDS, OPENING_GAP, addWall, addOpening, addRoom, addItem, addCamera,
   moveWall, moveWallEndpoint, isWallJoined, findEntity, clonePlan, nextName,
 } from './model.js';
 import { getItem, itemDims } from './catalog/registry.js';
@@ -27,7 +27,6 @@ const MAX_SCALE = 900;
 const ANGLE_TOL = 8;
 const ITEM_WALL_SNAP = 0.4;
 const ITEM_CORNER_SNAP = 0.25;
-const OPENING_GAP = 0.05;
 const PREVIEW_WALL = '__preview-wall';
 const GHOST_OPENING = '__ghost-opening';
 const GHOST_ITEM = '__ghost-item';
@@ -1537,14 +1536,15 @@ export class PlanEditor extends EventTarget {
   /**
    * Run a wall edit on the walls, openings and rooms of `start` (the plan when the gesture began),
    * so every pointer move starts fresh: a door clipped by a briefly shorter wall gets its size and
-   * place back. Returns the new parts, or null when the edit would collapse or flip a wall.
+   * place back. Returns the new parts, or null when the edit would shrink a wall to a few
+   * centimeters or, unless `turn` is set (end drags rotate walls freely), reverse its direction.
    */
-  _rebuildWalls(start, fn) {
+  _rebuildWalls(start, fn, { turn = false } = {}) {
     const next = { walls: clonePlan(start.walls), openings: clonePlan(start.openings), rooms: clonePlan(start.rooms) };
     fn(next);
     const broken = next.walls.some((w, i) => {
       const w0 = start.walls[i];
-      return wallLength(w) < Math.min(0.05, wallLength(w0)) || dot(wallDir(w), wallDir(w0)) < 0;
+      return wallLength(w) < Math.min(0.05, wallLength(w0)) || (!turn && dot(wallDir(w), wallDir(w0)) < 0);
     });
     return broken ? null : next;
   }
@@ -1725,7 +1725,7 @@ export class PlanEditor extends EventTarget {
         this._snap = snap;
         const q = snap.point;
         if (others.some((o) => dist(o, q) < 0.05)) return;
-        const next = this._rebuildWalls(start, (d) => moveWallEndpoint(d, wall.id, end, q));
+        const next = this._rebuildWalls(start, (d) => moveWallEndpoint(d, wall.id, end, q), { turn: true });
         if (next) update((d) => Object.assign(d, next), 'Move wall end');
       },
       end: () => { this._snap = null; },

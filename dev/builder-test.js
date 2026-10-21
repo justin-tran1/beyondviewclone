@@ -560,12 +560,29 @@ async function runChecks() {
     shell(plan, pts);
     return plan;
   };
+  // What a walker stands on at plan (x, y): the first floor surface below, else the outdoor ground.
+  const floorAt = (b, x, y) => hits(b.root, [x, 5, y], [0, -1, 0])
+    .find((h) => !['ceilings', 'shading'].includes(h.object.parent.name))?.object.name || 'ground';
   check('The slab stops at the building outline', () => {
     const b = build(ell());
-    const down = (x, y) => hits(b.root, [x, 5, y], [0, -1, 0]).find((h) => h.object.parent.name !== 'ceilings')?.object.name || 'ground';
-    const notch = down(12, 9), inside = down(4, 4);
+    const notch = floorAt(b, 12, 9), inside = floorAt(b, 4, 4);
     b.dispose();
     return [notch === 'ground' && inside === 'slab', `outside the L: ${notch}, inside: ${inside}`];
+  });
+
+  check('Small gaps in the exterior walls keep the slab continuous', () => {
+    // An untraced 1.2 m doorway in the west wall and a 1.2 m gap at the north west corner.
+    const plan = createPlan();
+    const pts = [[0, 0, 12, 0], [12, 0, 12, 9], [12, 9, 0, 9], [0, 9, 0, 5.2], [0, 4, 0, 1.2]];
+    for (const [ax, ay, bx, by] of pts) addWall(plan, P(ax, ay), P(bx, by), { kind: 'exterior' });
+    addWall(plan, P(6, 0), P(6, 9), { kind: 'interior' });
+    addRoom(plan, [P(6, 0), P(12, 0), P(12, 9), P(6, 9)], { floor: 'carpet' });
+    const b = build(plan);
+    const doorway = [1, 3, 5].map((x) => floorAt(b, x, 4.6)), corner = [1, 3, 5].map((x) => floorAt(b, x, 0.6));
+    const outside = [floorAt(b, -0.5, 4.6), floorAt(b, -0.5, 0.6)];
+    b.dispose();
+    const pass = [...doorway, ...corner].every((n) => n === 'slab') && outside.every((n) => n === 'ground');
+    return [pass, `across the doorway: ${doorway.join(', ')}; along the corner gap: ${corner.join(', ')}; outside: ${outside.join(', ')}`];
   });
 
   const steps = stepsPlan();

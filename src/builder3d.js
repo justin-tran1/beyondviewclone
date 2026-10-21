@@ -6,7 +6,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { OPENING_TYPES } from './model.js';
 import {
   add, sub, dot, norm, clamp, cross, samePoint, wallLength, wallDir, openingSpan, pointOnWall, pointInPolygon,
-  polygonArea, polygonSignedArea, polygonCentroid, boundsOf, unionBounds, emptyBounds, itemCorners, normDeg,
+  polygonArea, polygonSignedArea, polygonCentroid, boundsOf, unionBounds, emptyBounds, itemCorners, normDeg, projectToSegment,
 } from './geometry.js';
 import { rng, disposeObject } from './kit3d.js';
 import { getItem, itemDims } from './catalog/registry.js';
@@ -26,6 +26,8 @@ const MAX_ITEM_VERTS = 3e6;
 // Bulkheads taller than this stop at a white fascia instead of reading as a dark wall.
 const DARK_STEP_MAX = 1.5;
 const SLAB_Y = -0.003;
+// Gaps in the walls up to this wide (m) still get slab: doorways not traced yet, slips in the tracing.
+const SLAB_GAP = 1.5;
 const GROUND_Y = -0.06;
 const SKY_RATIO = 0.2;
 const MULLION_STEP = 1.5;
@@ -807,6 +809,31 @@ function dilate(mask, src, steps, allow = () => true) {
           }
         }
         if (hit) out[k] = 1;
+      }
+    }
+    cur = out;
+  }
+  return cur;
+}
+
+/**
+ * Square morphology on a cell mask: every cell within `steps` cells (along both axes) of one holding
+ * `value` takes that value, so 1 grows the set and 0 shrinks it. Cells off the grid hold 0.
+ */
+function spreadCells(mask, cells, steps, value) {
+  const { nx, ny } = mask;
+  let cur = cells;
+  // A square is a row sweep then a column sweep; each line is swept both ways from the last `value`.
+  for (const [n, lines, along, across] of [[nx, ny, 1, nx], [ny, nx, nx, 1]]) {
+    const out = cur.slice();
+    for (let l = 0; l < lines; l++) {
+      for (const back of [false, true]) {
+        let d = value ? Infinity : 0;
+        for (let t = 0; t < n; t++) {
+          const k = l * across + (back ? n - 1 - t : t) * along;
+          d = cur[k] === value ? 0 : d + 1;
+          if (d <= steps) out[k] = value;
+        }
       }
     }
     cur = out;
@@ -1659,6 +1686,54 @@ function buildFloors(ctx) {
 }
 
 /**
+ * Cells under the slab: the building mask with gaps in its walls up to SLAB_GAP wide closed, so the
+ * outdoor ground never runs in through them. Wider notches, like the yard of an L, stay open.
+ */
+function slabCells(ctx) {
+  const { mask } = ctx;
+  const { c, nx } = mask;
+  const steps = Math.ceil(SLAB_GAP / 2 / c);
+  // Work on the mask padded past the closing's reach, so its edge never clips the closing.
+  const m = steps + 1, grid = { nx: nx + 2 * m, ny: mask.ny + 2 * m };
+  const at = (i, j) => (j + m) * grid.nx + i + m;
+  const src = new Uint8Array(grid.nx * grid.ny);
+  mask.inside.forEach((v, k) => { src[at(k % nx, Math.floor(k / nx))] = v; });
+  // Mark every cell that a band of width t along a-b touches.
+  const band = (a, b, t) => {
+    const L = Math.hypot(b.x - a.x, b.y - a.y), d = L ? { x: (b.x - a.x) / L, y: (b.y - a.y) / L } : { x: 1, y: 0 };
+    const ns = Math.ceil(L / (c / 2)), nu = Math.ceil(t / (c / 2));
+    for (let i = 0; i <= ns; i++) {
+      for (let j = 0; j <= nu; j++) {
+        const s = ns ? (L * i) / ns : 0, u = t * (j / nu - 0.5);
+        const x = a.x + d.x * s - d.y * u, y = a.y + d.y * s + d.x * u;
+        src[at(Math.floor((x - mask.minX) / c), Math.floor((y - mask.minY) / c))] = 1;
+      }
+    }
+  };
+  // The walls bound the closing too, so a gap at a corner closes like one mid-wall.
+  const walls = ctx.walls.filter((info) => info.w.kind !== 'partial');
+  for (const { w, L, F, ends, ext } of walls) {
+    const P = (s) => ({ x: F.o.x + F.d.x * s, y: F.o.y + F.d.y * s });
+    band(P(-ext.a), P(L + ext.b), w.thickness);
+    // A free end bridges to the nearest wall within SLAB_GAP, which closes a gap's throat at any angle.
+    for (const end of ['a', 'b']) {
+      const e = ends[end], p = w[end];
+      if (e.corner || e.tee || e.ext) continue;
+      let near = null;
+      for (const o of walls) {
+        const q = o.w === w ? null : projectToSegment(p, o.w.a, o.w.b);
+        if (q && (!near || q.dist < near.dist)) near = q;
+      }
+      if (near && near.dist > JOIN && near.dist <= SLAB_GAP) band(p, near.point, w.thickness);
+    }
+  }
+  const closed = spreadCells(grid, spreadCells(grid, src, steps, 1), steps, 0);
+  // The closed area's outer ring straddles the walls' outside faces; their footprints cover the part inside.
+  const core = spreadCells(grid, closed, 1, 0);
+  return mask.inside.map((v, k) => v | core[at(k % nx, Math.floor(k / nx))]);
+}
+
+/**
  * Polished concrete slab under the building: the rooms and the area the walls enclose, plus every
  * wall's footprint so door thresholds are covered. Set slightly low and depth-offset so rooms never
  * z-fight with it. A plan without walls or rooms gets a slab under its items.
@@ -1675,7 +1750,7 @@ function buildSlab(ctx, parent) {
     const corners = [{ x: r.minX, y: r.minY }, { x: r.maxX, y: r.minY }, { x: r.maxX, y: r.maxY }, { x: r.minX, y: r.maxY }];
     horizontalPolygon(b, corners, square, SLAB_Y, true, m);
   };
-  for (const r of maskRects(ctx.mask, ctx.mask.inside)) rect(r);
+  for (const r of maskRects(ctx.mask, slabCells(ctx))) rect(r);
   for (const { w, L, F, ext } of ctx.walls) {
     const ht = w.thickness / 2;
     const P = (s, u) => ({ x: F.o.x + F.d.x * s + F.n.x * u, y: F.o.y + F.d.y * s + F.n.y * u });

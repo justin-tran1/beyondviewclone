@@ -34,6 +34,7 @@ const saved = loadSavedPlan();
 const store = new PlanStore(saved ? saved.plan : createPlan());
 // The plan as last opened, created or saved to a file. Any other state has unsaved changes.
 let filed = saved?.edited ? null : store.plan;
+let sampled = null; // the plan as opened from a sample
 let lastUpdateNotice = 0;
 const canvas = $('#plan-canvas');
 const editor = new PlanEditor(canvas, store);
@@ -66,7 +67,8 @@ createProperties($('#right-panel'), { store, editor, actions });
 
 const saver = autosave(store, {
   restored: saved,
-  isEdited: () => store.plan !== filed,
+  isEdited: (plan) => plan !== filed,
+  isSample: (plan) => plan === sampled,
   onFull: (what) => toast(what === 'image'
     ? 'This floor plan image is too large to keep in the browser. Save the plan to a file to keep the image with it.'
     : 'The browser storage is full, so this plan is not kept in the browser. Save the plan to a file to keep it.', { type: 'info', duration: 9000 }),
@@ -281,7 +283,8 @@ function savedWhen(t) {
 }
 
 attachMenu($('#open-menu'), () => {
-  const recent = saver.recent().slice(0, 5).map((r) => ({
+  // The latest plans, and every plan with unsaved changes, as the save prompt promises.
+  const recent = saver.recent().filter((r, i) => i < 5 || r.edited !== false).map((r) => ({
     label: r.name, icon: 'plan', description: `${savedWhen(r.savedAt)}${r.imageDropped ? ', without its image' : ''}`,
     onSelect: () => openRecent(r.id),
   }));
@@ -315,11 +318,13 @@ const isBlankPlan = (p) => !planHasContent(p) && !p.underlay && p.cameras.length
 /**
  * Replace the document. Keeps an undo step back to the current plan unless it is still blank.
  * Returns toast options with that Undo. `edited`: the new plan has changes not saved to a file.
+ * `sample`: the new plan is a sample.
  */
-function replacePlan(plan, label, { edited = false } = {}) {
+function replacePlan(plan, label, { edited = false, sample = false } = {}) {
   const keepHistory = !isBlankPlan(store.plan);
   store.replace(plan, { label, keepHistory });
   filed = edited ? null : store.plan;
+  sampled = sample ? store.plan : null;
   return keepHistory ? { duration: 8000, action: { label: 'Undo', onClick: () => store.undo() } } : {};
 }
 
@@ -414,7 +419,7 @@ async function openSample(sample) {
   }
   if (!(await confirmReplace())) return;
   // Every opening is a new plan, so it never takes over the saved copy of an earlier one.
-  toast(`Opened the ${sample.name.toLowerCase()} sample`, replacePlan({ ...plan, id: uid('plan') }, `Open ${sample.name}`));
+  toast(`Opened the ${sample.name.toLowerCase()} sample`, replacePlan({ ...plan, id: uid('plan') }, `Open ${sample.name}`, { sample: true }));
 }
 
 async function newPlan() {

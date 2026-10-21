@@ -22,7 +22,9 @@ const REGISTRY = new Map();
  *   blocking  optional: false lets people walk through it (rugs, floor markings). Default true.
  *   planFill  optional: false skips the white footprint fill the plan draws under the symbol (round
  *             tables, stools, rugs). Non-blocking items are never filled. Default true.
- *   contactShadow optional: false skips the soft floor shadow under the item (open fixtures). Default true.
+ *   contactShadow optional: true (default) draws a soft floor shadow over the footprint, 'round' an
+ *             elliptical one (round tables, stools, plants), false none (open fixtures, table sets
+ *             whose footprint includes chairs).
  *   colorable optional: true when opts.color recolors the main fabric or finish (shows color swatches).
  *   build(kit, opts) -> THREE.Object3D
  *             opts = { w, d, h, color }. Model is centered on its footprint, base at y = 0,

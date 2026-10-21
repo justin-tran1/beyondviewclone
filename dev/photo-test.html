@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Path tracer feasibility</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../assets/vendor/three/three.module.min.js",
+        "three/addons/": "../assets/vendor/three/addons/",
+        "three/examples/jsm/": "../assets/vendor/three/addons/",
+        "three-mesh-bvh": "../assets/vendor/three-mesh-bvh/index.module.js",
+        "three-gpu-pathtracer": "../assets/vendor/three-gpu-pathtracer/index.module.js"
+      }
+    }
+  </script>
+  <style>body { margin: 0; background: #222; } canvas { display: block; }</style>
+</head>
+<body>
+  <canvas id="c" width="480" height="300"></canvas>
+  <script type="module">
+    import * as THREE from 'three';
+    import { WebGLPathTracer, GradientEquirectTexture } from 'three-gpu-pathtracer';
+    import { createKit } from '../src/kit3d.js';
+    import { buildPlanScene, setupEnvironment } from '../src/builder3d.js';
+    import '../src/catalog/index.js';
+    import { SAMPLES } from '../src/samples/index.js';
+
+    const params = new URLSearchParams(location.search);
+    const target = +(params.get('samples') || 16);
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true });
+    renderer.toneMapping = THREE.AgXToneMapping;
+    renderer.setSize(480, 300, false);
+    // three-gpu-pathtracer 0.0.23 reads these r162+ Scene properties, including on its own internal scene.
+    for (const key of ['backgroundRotation', 'environmentRotation']) {
+      if (!(key in THREE.Scene.prototype)) {
+        Object.defineProperty(THREE.Scene.prototype, key, {
+          configurable: true,
+          get() { return (this[`_${key}`] ??= new THREE.Euler()); },
+          set(v) { this[`_${key}`] = v; },
+        });
+      }
+    }
+    const scene = new THREE.Scene();
+    const plan = await SAMPLES.find((s) => s.id === (params.get('sample') || 'lab-suite')).build();
+    const built = buildPlanScene(plan, { kit: createKit(), quality: 'high' });
+    scene.add(built.root);
+    setupEnvironment(renderer, scene).fit(built.bounds);
+    const sky = new GradientEquirectTexture();
+    sky.topColor.set('#9fc6e6');
+    sky.bottomColor.set('#eef3f6');
+    sky.update();
+    scene.environment = sky;
+    scene.background = sky;
+    const cam = plan.cameras[+(params.get('view') || 0)];
+    const camera = new THREE.PerspectiveCamera(65, 480 / 300, 0.05, 2000);
+    const yaw = (cam.yaw * Math.PI) / 180;
+    camera.position.set(cam.x, 1.6, cam.y);
+    camera.lookAt(cam.x + Math.sin(yaw), 1.6, cam.y - Math.cos(yaw));
+    for (const c of built.ceilings) c.visible = true;
+    const t0 = performance.now();
+    const pt = new WebGLPathTracer(renderer);
+    pt.renderDelay = 0;
+    pt.fadeDuration = 0;
+    pt.minSamples = 0;
+    pt.tiles.set(1, 1);
+    pt.setScene(scene, camera);
+    const setupMs = performance.now() - t0;
+    const loop = () => {
+      pt.renderSample();
+      if (pt.samples < target) requestAnimationFrame(loop);
+      else {
+        const px = new Uint8Array(4 * 480 * 300);
+        const gl = renderer.getContext();
+        gl.readPixels(0, 0, 480, 300, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        let lit = 0;
+        for (let i = 0; i < px.length; i += 4) if (px[i] + px[i + 1] + px[i + 2] > 60) lit++;
+        window.ptResult = { samples: pt.samples, setupMs: Math.round(setupMs), totalMs: Math.round(performance.now() - t0), litFraction: +(lit / (480 * 300)).toFixed(3) };
+      }
+    };
+    loop();
+  </script>
+</body>
+</html>

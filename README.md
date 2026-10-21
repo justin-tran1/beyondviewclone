@@ -12,6 +12,13 @@ npm start            # serves the repo at http://localhost:8080
 Any static server works; the app needs HTTP (not `file://`) because it uses ES modules. There is no
 build step, and Three.js is vendored, so it runs offline apart from the CBRE fonts.
 
+## Deployment
+
+Every push to `main` publishes the app to GitHub Pages at
+<https://justin-tran1.github.io/beyondviewclone/> through `.github/workflows/pages.yml`. Only
+`index.html`, `assets/` and `src/` are published; the `dev/` test pages stay local. To re-deploy
+without a code change, run the workflow from the Actions tab.
+
 ## Workflow
 
 1. **Start**: open a sample from the welcome screen, start a blank plan, or import a floor plan image

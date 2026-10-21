@@ -16,7 +16,7 @@ for (const id of samples) {
   page.on('requestfailed', (r) => errors.push(`${id} requestfailed: ${r.url()}`));
   await page.addInitScript(() => localStorage.clear());
   await page.goto(base, { waitUntil: 'load' });
-  const { SAMPLES } = await page.evaluate(async () => ({ SAMPLES: (await import('/src/samples/index.js')).SAMPLES.map((s) => ({ id: s.id, name: s.name })) }));
+  const { SAMPLES } = await page.evaluate(async () => ({ SAMPLES: (await import(new URL('src/samples/index.js', document.baseURI).href)).SAMPLES.map((s) => ({ id: s.id, name: s.name })) }));
   const name = SAMPLES.find((s) => s.id === id).name;
   await page.getByRole('button', { name: new RegExp(`^${name}(?! image)`) }).first().click();
   await page.waitForFunction((n) => window.cbre.store.plan.walls.length > 0 && !document.querySelector('dialog[open]'), name, { timeout: 15000 });

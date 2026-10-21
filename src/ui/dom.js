@@ -2,8 +2,9 @@
 import { icon } from './icons.js';
 
 /**
- * Create an element. props: class, text, html (trusted markup only), attrs, dataset, style, on
- * ({event: handler}); any other key is assigned as a property. Children may be nodes or strings.
+ * Create an element. props: class, text, html (trusted markup only), for (a label's control id),
+ * attrs, dataset, style, on ({event: handler}); any other key is assigned as a property. Children
+ * may be nodes or strings.
  */
 export function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
@@ -12,6 +13,7 @@ export function h(tag, props = {}, ...children) {
     if (key === 'class') el.className = value;
     else if (key === 'text') el.textContent = value;
     else if (key === 'html') el.innerHTML = value;
+    else if (key === 'for') el.setAttribute('for', value);
     else if (key === 'attrs') for (const [k, v] of Object.entries(value)) { if (v !== false && v != null) el.setAttribute(k, v === true ? '' : v); }
     else if (key === 'dataset') Object.assign(el.dataset, value);
     else if (key === 'style') for (const [k, v] of Object.entries(value)) { if (k.startsWith('--')) el.style.setProperty(k, v); else el.style[k] = v; }

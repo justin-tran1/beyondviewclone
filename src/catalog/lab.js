@@ -9,6 +9,7 @@ const GAP = 0.004;      // half the reveal between door fronts
 const FRONT_T = 0.018;  // door and drawer front thickness
 const END_T = 0.019;    // cabinet end panel thickness
 const MODULE = 0.9;     // nominal base cabinet module width
+const MAX_REPEAT = 200; // most modules, posts or outlets a run repeats, so absurd sizes stay fast
 const OUT = 1.25;       // plan outline weight in px
 const FINE = 0.75;      // plan detail weight in px
 const DASH = [4, 3];    // overhead elements, in px
@@ -19,7 +20,8 @@ const BINDERS = ['#538184', '#80bbad', '#dbd99a', '#435254', '#cad1d3', '#003f2d
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const pick = (rnd, list) => list[Math.floor(rnd() * list.length)];
-const moduleCount = (len) => Math.max(1, Math.round(len / MODULE));
+const repeats = (n, min = 1) => clamp(n, min, MAX_REPEAT);
+const moduleCount = (len) => repeats(Math.round(len / MODULE));
 
 function seq(seed) {
   let s = seed >>> 0;
@@ -138,15 +140,21 @@ function drawerStack(kit, g, m, a, b, top) {
   }
 }
 
-function carcassSpans(x0, x1, top, cut) {
-  if (!cut) return [[x0, x1, top]];
+/** Carcass blocks [x0, x1, y1, z0, z1] over x0..x1 and z0..z1, with the cut pocket dropped to cut.y. */
+function carcassBlocks(x0, x1, z0, z1, top, cut) {
+  if (!cut) return [[x0, x1, top, z0, z1]];
   const a = clamp(cut.x0, x0, x1), b = clamp(cut.x1, x0, x1);
-  return [[x0, a, top], [a, b, cut.y], [b, x1, top]].filter(([p, q]) => q - p > 0.002);
+  const c = clamp(cut.z0 ?? z0, z0, z1), e = clamp(cut.z1 ?? z1, z0, z1);
+  return [
+    [x0, a, top, z0, z1], [b, x1, top, z0, z1],
+    [a, b, top, z0, c], [a, b, top, e, z1], [a, b, cut.y, c, e],
+  ].filter(([p, q, , r, s]) => q - p > 0.002 && s - r > 0.002);
 }
 
 /**
  * Base cabinet run of `len` x `depth`, carcass top at `height`, front face at z = 0.
- * cut lowers the carcass between cut.x0 and cut.x1 to cut.y so a sink bowl can drop in.
+ * cut lowers a pocket of the carcass (cut.x0..cut.x1, and cut.z0..cut.z1 in run coordinates or
+ * else the full depth) to cut.y so a sink bowl can drop in.
  */
 function cabinetRun(kit, m, len, depth, height, { stack = -1, doorsOnly = false, cut = null, ends = true } = {}) {
   const g = kit.group();
@@ -158,7 +166,7 @@ function cabinetRun(kit, m, len, depth, height, { stack = -1, doorsOnly = false,
     kit.block(g, m.case, -len / 2, x0, 0, height, -depth, 0);
     kit.block(g, m.case, x1, len / 2, 0, height, -depth, 0);
   }
-  for (const [a, b, y] of carcassSpans(x0, x1, height, cut)) kit.block(g, m.case, a, b, TOE, y, -depth, back);
+  for (const [a, b, y, za, zb] of carcassBlocks(x0, x1, -depth, back, height, cut)) kit.block(g, m.case, a, b, TOE, y, za, zb);
   kit.block(g, m.reveal, x0, x1, TOE, height, back, -FRONT_T, false);
   const n = moduleCount(x1 - x0);
   const mw = (x1 - x0) / n;
@@ -331,14 +339,14 @@ function serviceSpine(kit, g, m, L, top, h, rnd) {
   const sh = 0.24, ys = [top + (h - top) * 0.42, top + (h - top) * 0.76];
   kit.block(g, m.trim, sp0, sp1, top, top + sh, -sw, sw);
   kit.block(g, m.steel, sp0 - 0.004, sp1 + 0.004, top + sh, top + sh + 0.012, -sw - 0.004, sw + 0.004);
-  const n = Math.max(1, Math.floor((sp1 - sp0) / 1.1));
+  const n = repeats(Math.floor((sp1 - sp0) / 1.1));
   for (let i = 0; i < n; i++) {
     const x = sp0 + ((i + 0.5) * (sp1 - sp0)) / n;
     outlet(kit, g, m, x, top + 0.13, sw, 1);
     outlet(kit, g, m, x, top + 0.13, -sw, -1);
   }
   for (const x of [sp0 + 0.12, sp1 - 0.12]) kit.cyl(g, m.chrome, 0.014, 0.05, x, top + sh + 0.012, 0, { segments: 10 });
-  const posts = Math.max(2, Math.ceil((sp1 - sp0) / 1.2) + 1);
+  const posts = repeats(Math.ceil((sp1 - sp0) / 1.2) + 1, 2);
   for (let i = 0; i < posts; i++) {
     const x = sp0 + 0.03 + (i * (sp1 - sp0 - 0.06)) / (posts - 1);
     kit.block(g, m.steel, x - 0.016, x + 0.016, top + sh + 0.012, h - 0.01, -0.016, 0.016);
@@ -346,7 +354,7 @@ function serviceSpine(kit, g, m, L, top, h, rnd) {
   }
   for (const y of ys) lippedShelf(kit, g, m.steel, sp0, sp1, y, 0, shelfD);
   const len = sp1 - sp0;
-  const clusters = Math.max(1, Math.round(len / 1.6));
+  const clusters = repeats(Math.round(len / 1.6));
   for (const [k, y] of ys.entries()) {
     for (let c = 0; c < clusters; c++) {
       const x = sp0 + ((c + 0.3 + 0.4 * rnd()) * len) / clusters;
@@ -405,6 +413,7 @@ function drawIsland(ctx, o) {
 // ---- Wall lab bench -----------------------------------------------------------------
 
 const wallShelfDepth = (d) => Math.min(0.33, d * 0.45);
+const hasCentrifuge = (w, d) => w >= 1.4 && d >= 0.5;
 
 function benchCentrifuge(kit, g, m, x, y, z) {
   kit.block(g, m.white, x - 0.2, x + 0.2, y, y + 0.24, z - 0.22, z + 0.2);
@@ -428,10 +437,10 @@ function buildWallBench(kit, { w, d, h, color }) {
   kit.block(g, m.top, -w / 2, w / 2, top, top + 0.1, back, back + 0.019);
   const rw = Math.max(0.2, w - 0.1);
   kit.block(g, m.trim, -rw / 2, rw / 2, top + 0.17, top + 0.27, back, back + 0.045);
-  const outlets = Math.max(1, Math.floor(w / 0.9));
+  const outlets = repeats(Math.floor(w / 0.9));
   for (let i = 0; i < outlets; i++) outlet(kit, g, m, -rw / 2 + ((i + 0.5) * rw) / outlets, top + 0.22, back + 0.045, 1);
   const ys = [top + (h - top) * 0.45, top + (h - top) * 0.8];
-  const standards = Math.max(2, Math.ceil(w / 1.2) + 1);
+  const standards = repeats(Math.ceil(w / 1.2) + 1, 2);
   const sx = (i) => -w / 2 + 0.12 + (i * (w - 0.24)) / (standards - 1);
   for (let i = 0; i < standards; i++) {
     const x = sx(i);
@@ -441,13 +450,13 @@ function buildWallBench(kit, { w, d, h, color }) {
   for (const [k, y] of ys.entries()) {
     kit.block(g, m.steel, -w / 2 + 0.03, w / 2 - 0.03, y, y + 0.018, back + 0.012, back + sd);
     kit.cyl(g, m.steel, 0.005, w - 0.08, 0, y + 0.07, back + sd - 0.012, { axis: 'x', segments: 6 });
-    const clusters = Math.max(1, Math.round(w / 1.3));
+    const clusters = repeats(Math.round(w / 1.3));
     for (let c = 0; c < clusters; c++) {
       const x = -w / 2 + ((c + 0.25 + 0.5 * rnd()) * w) / clusters;
       bottles(kit, g, m, rnd, x, y + 0.018, back + sd / 2, 3 + Math.floor(rnd() * 2), (ys[1] - ys[0]) * (k ? 0.6 : 0.7));
     }
   }
-  if (w >= 1.4) benchCentrifuge(kit, g, m, w / 2 - 0.42, top, 0.02);
+  if (hasCentrifuge(w, d)) benchCentrifuge(kit, g, m, w / 2 - 0.42, top, 0.02);
   return g;
 }
 
@@ -457,7 +466,7 @@ function drawWallBench(ctx, o) {
   line(ctx, -o.w / 2, -o.d / 2 + sd, o.w / 2, -o.d / 2 + sd);
   pen(ctx, o);
   line(ctx, -o.w / 2, -o.d / 2 + 0.02, o.w / 2, -o.d / 2 + 0.02);
-  if (o.w >= 1.4) box(ctx, o.w / 2 - 0.62, -0.2, o.w / 2 - 0.22, 0.22);
+  if (hasCentrifuge(o.w, o.d)) box(ctx, o.w / 2 - 0.62, -0.2, o.w / 2 - 0.22, 0.22);
   outline(ctx, o);
 }
 
@@ -797,8 +806,11 @@ function buildLabSink(kit, { w, d, h, color }) {
   const m = palette(kit, color);
   const S = sinkLayout(w, d);
   const top = TOP, ct = top - TOP_T, depth = 0.25;
-  const run = cabinetRun(kit, m, w, d - 0.05, ct, { cut: { x0: S.hole.x0 - 0.02, x1: S.hole.x1 + 0.02, y: top - depth - 0.03 } });
-  run.position.z = d / 2 - 0.03;
+  // The pocket under the bowl stops short of the back panel, so the back stays closed.
+  const zr = d / 2 - 0.03, { hole } = S;
+  const cut = { x0: hole.x0 - 0.02, x1: hole.x1 + 0.02, z0: hole.z0 - 0.02 - zr, z1: hole.z1 + 0.02 - zr, y: top - depth - 0.03 };
+  const run = cabinetRun(kit, m, w, d - 0.05, ct, { cut });
+  run.position.z = zr;
   g.add(run);
   slab(kit, g, m.top, -w / 2, w / 2, ct, top, -d / 2, d / 2, S.hole);
   kit.block(g, m.top, -w / 2, w / 2, top, top + 0.1, -d / 2, -d / 2 + 0.019);
@@ -1108,7 +1120,7 @@ registerItems([
     build: buildSafetyShower, draw2d: drawSafetyShower,
   }),
   fixed({
-    type: 'lab-stool', name: 'Lab stool', category: 'lab', colorable: true, planFill: false,
+    type: 'lab-stool', name: 'Lab stool', category: 'lab', colorable: true, planFill: false, contactShadow: 'round',
     w: 0.46, d: 0.46, h: 0.76,
     tags: ['stool', 'seating', 'chair', 'bench height'],
     build: buildLabStool, draw2d: drawLabStool,

@@ -7,6 +7,7 @@ const OUT = 1.25;       // plan outline weight in px
 const FINE = 0.75;      // plan detail weight in px
 const DASH = [4, 3];    // hidden or overhead elements, in px
 const TAU = Math.PI * 2;
+const MAX_REPEAT = 200; // most bays, frames or braces a run repeats, so absurd sizes stay fast
 
 const PRODUCTS = [
   '#f2f0ea', '#dbd99a', '#80bbad', '#538184', '#032842', '#c8664a', '#e2b04a', '#5b84a8',
@@ -19,6 +20,7 @@ const GARMENTS = [
 const KRAFT = ['#b9895a', '#c49a6c', '#a87c50', '#caa477'];
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const repeats = (n, min = 1) => clamp(n, min, MAX_REPEAT);
 const isColor = (c) => typeof c === 'string' && c.length > 0;
 const pick = (rnd, list) => list[Math.floor(rnd() * list.length)];
 
@@ -176,15 +178,15 @@ const roomy = (o) => o.px < 1 / 40;
 
 // ---- Shelving -----------------------------------------------------------------------
 
-const SHELF = { t: 0.022, kick: 0.12, post: 0.04, bay: 1.22 };
+const SHELF = { t: 0.022, kick: 0.12, post: 0.04, bay: 1.22, levels: 12 };
 
-const bayCount = (w) => Math.max(1, Math.round(w / SHELF.bay));
+const bayCount = (w) => repeats(Math.round(w / SHELF.bay));
 
 /** Shelf top surfaces from the base deck up; the top shelf leaves `headroom` above it. */
 function shelfLevels(h, headroom) {
   const base = SHELF.kick + SHELF.t;
   const top = Math.max(base + 0.25, h - headroom);
-  const n = Math.max(1, Math.round((top - base) / 0.4));
+  const n = clamp(Math.round((top - base) / 0.4), 1, SHELF.levels);
   const levels = [base];
   for (let k = 1; k <= n; k++) levels.push(base + (k * (top - base)) / n);
   return levels;
@@ -202,9 +204,11 @@ function shelfMats(kit, color) {
 
 /** Product facings (one block per SKU run) filling a shelf from x0 to x1. */
 function stockShelf(kit, g, rnd, { x0, x1, y, clear, zb, s, dep }) {
+  // Facings widen on shelves longer than any real bay (only runs past the bay cap have those).
+  const k = Math.max(1, (x1 - x0) / (2 * SHELF.bay));
   let x = x0 + 0.015;
   while (x < x1 - 0.08) {
-    const pw = Math.min(x1 - 0.015 - x, 0.08 + rnd() * 0.2);
+    const pw = Math.min(x1 - 0.015 - x, (0.08 + rnd() * 0.2) * k);
     if (pw < 0.05) break;
     if (rnd() < 0.05) {
       x += pw + 0.012;
@@ -213,7 +217,7 @@ function stockShelf(kit, g, rnd, { x0, x1, y, clear, zb, s, dep }) {
     const ph = Math.min(0.34, clear * (0.42 + rnd() * 0.42));
     const back = 0.025 + rnd() * 0.04, front = 0.02 + rnd() * 0.015;
     blk(kit, g, packaging(kit, pick(rnd, PRODUCTS)), x, x + pw, y, y + ph, zb + s * back, zb + s * (dep - front));
-    x += pw + 0.008 + rnd() * 0.012;
+    x += pw + (0.008 + rnd() * 0.012) * k;
   }
 }
 
@@ -716,12 +720,12 @@ const RACKING = { post: 0.076, beamH: 0.11, beamD: 0.05, bay: 2.74, pallet: [1.2
 
 function rackLayout(w, d, h) {
   const R = RACKING;
-  const bays = Math.max(1, Math.round(w / R.bay));
+  const bays = repeats(Math.round(w / R.bay));
   const bw = w / bays;
   const levels = clamp(Math.round(h / 1.6), 1, 8);
   const pitch = h / (levels + 1);
   const clear = bw - R.post;
-  const per = Math.max(1, Math.floor((clear - 0.05) / (R.pallet[0] + 0.05)));
+  const per = clamp(Math.floor((clear - 0.05) / (R.pallet[0] + 0.05)), 1, 3);
   const pw = Math.min(R.pallet[0], (clear - 0.06 * (per + 1)) / per);
   const pd = Math.min(R.pallet[1], d - 0.02);
   const frames = [];
@@ -741,7 +745,7 @@ function rackFrame(kit, g, mat, guard, { x, w, d, h }) {
   blk(kit, g, guard, Math.max(-hw, x - p / 2 - 0.008), Math.min(hw, x + p / 2 + 0.008), 0, 0.4, d / 2 - p - 0.012, d / 2);
   const span = 2 * inner;
   const bottom = 0.15, top = h - 0.12;
-  const n = Math.max(2, Math.round((top - bottom) / 0.75));
+  const n = repeats(Math.round((top - bottom) / 0.75), 2);
   const step = (top - bottom) / n;
   for (const y of [bottom, top]) blk(kit, g, mat, x - 0.016, x + 0.016, y - 0.02, y + 0.02, -inner, inner);
   for (let k = 0; k < n; k++) {

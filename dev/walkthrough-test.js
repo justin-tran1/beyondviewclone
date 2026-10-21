@@ -18,7 +18,8 @@ const SPOTS = {
   deskY: 10.2 + 0.91 / 2 + 0.25,
   lobby: { x: 19.5, y: 13.4 },
   passages: [
-    { name: 'sliding door', from: { x: 12.6, y: 13, yaw: 90 }, past: (p) => p.x > 15.2 },
+    // The open half of the sliding door; the fixed and closed panels cover y 12.4 to 13.05.
+    { name: 'sliding door', from: { x: 12.6, y: 13.33, yaw: 90 }, past: (p) => p.x > 15.2 },
     { name: 'glass door', from: { x: 12.6, y: 5, yaw: 90 }, past: (p) => p.x > 15.2 },
     { name: 'double door', from: { x: 17, y: 8, yaw: 0 }, past: (p) => p.y < 6 },
     { name: 'entry doors', from: { x: 19.5, y: 14.8, yaw: 180 }, past: (p) => p.y > 16.6 },
@@ -121,10 +122,13 @@ async function mountPage() {
   container.focus({ preventScroll: true });
   Object.assign(window, { walk, store, testModel: model, testPlanFor: testPlan });
 
+  // Like the app's overlays: a pointer click on a control gives focus back to the view, so walk keys keep working.
+  const focusView = (e) => { if (e.detail > 0) container.focus({ preventScroll: true }); };
   const modes = document.getElementById('modes');
   modes.addEventListener('click', (e) => {
     const mode = e.target.closest('button')?.dataset.mode;
     if (mode) walk.setMode(mode);
+    focusView(e);
   });
   walk.addEventListener('mode', (e) => {
     for (const b of modes.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.mode === e.detail.mode));
@@ -141,7 +145,10 @@ async function mountPage() {
       name.textContent = cam.name;
       b.append(key, name);
       b.title = cam.name;
-      b.addEventListener('click', () => walk.goToCamera(cam.id));
+      b.addEventListener('click', (e) => {
+        walk.goToCamera(cam.id);
+        focusView(e);
+      });
       return b;
     }));
     views.hidden = !store.plan.cameras.length;
@@ -230,15 +237,17 @@ async function runChecks() {
     if (shift) await page.keyboard.down('Shift');
     await page.keyboard.down(key);
     const t0 = Date.now();
-    let last = await pose(), still = 0;
-    const seen = [last];
+    const sample = () => page.evaluate(() => ({ p: window.walk.pose, f: window.walk.renderer.info.render.frame }));
+    let last = await sample(), still = 0;
+    const seen = [last.p];
     while (Date.now() - t0 < maxMs) {
       await wait(250);
-      const p = await pose();
-      seen.push(p);
-      still = Math.hypot(p.x - last.x, p.y - last.y) < 0.0005 && Date.now() - t0 > 800 ? still + 1 : 0;
-      last = p;
-      if (still >= 3 || done(p)) break;
+      const s = await sample();
+      seen.push(s.p);
+      // Only a rendered frame that did not move counts as stopped; slow software frames are not.
+      if (s.f > last.f) still = Math.hypot(s.p.x - last.p.x, s.p.y - last.p.y) < 0.0005 && Date.now() - t0 > 800 ? still + 1 : 0;
+      last = s;
+      if (still >= 3 || done(s.p)) break;
     }
     await page.keyboard.up(key);
     if (shift) await page.keyboard.up('Shift');
@@ -258,6 +267,24 @@ async function runChecks() {
       results.push({ name, ok: false, detail: e.message });
     }
   }
+  /** Whether the walker (radius 0.25 m) at its pose overlaps no wall or blocking item, in page context. */
+  const freeNow = () => page.evaluate(() => {
+    const w = window.walk, p = w._pose, R = 0.25 - 1e-3;
+    const seg = (q, a, b) => {
+      const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy || 1e-12;
+      const t = Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.y - a.y) * dy) / l2));
+      return Math.hypot(q.x - (a.x + dx * t), q.y - (a.y + dy * t));
+    };
+    return w._world.query(p.x - 2, p.y - 2, p.x + 2, p.y + 2, []).every((e) => {
+      if (e.seg) return seg(p, e.a, e.b) >= e.r + R;
+      let inside = false;
+      for (let i = 0, j = e.pts.length - 1; i < e.pts.length; j = i++) {
+        const a = e.pts[i], b = e.pts[j];
+        if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+      }
+      return !inside && e.pts.every((a, i) => seg(p, a, e.pts[(i + 1) % e.pts.length]) >= R);
+    });
+  });
   const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
   const near = (a, b, tol) => Math.abs(a - b) <= tol;
   const fmt = (p) => `(${p.x.toFixed(3)}, ${p.y.toFixed(3)}) yaw ${p.yaw.toFixed(1)} pitch ${p.pitch.toFixed(1)}`;
@@ -370,6 +397,34 @@ async function runChecks() {
     return `${passed.join(', ')}; stopped at the window`;
   });
 
+  await check('outdoors the walker stays within 15 m of the plan', async () => {
+    const r = await page.evaluate(() => {
+      const w = window.walk, b = w._built.bounds, out = {};
+      const run = (from, seconds) => {
+        w.goTo(from, { animate: false });
+        w._keys.add('forward');
+        w._run = true;
+        for (let i = 0; i < seconds * 30; i++) w._stepWalk(1 / 30);
+        w._keys.clear();
+        w._run = false;
+        w._cancelMotion();
+        return { ...w._pose };
+      };
+      out.south = run({ x: 19.5, y: 17.2, yaw: 180, pitch: 0 }, 60);
+      out.corner = run({ x: 19.5, y: 17.2, yaw: 135, pitch: 0 }, 60);
+      w.goTo({ x: 500, y: -300, yaw: 0, pitch: 0 }, { animate: false });
+      out.far = { ...w._pose };
+      out.limit = { minX: b.minX - 15, minY: b.minY - 15, maxX: b.maxX + 15, maxY: b.maxY + 15 };
+      return out;
+    });
+    const L = r.limit, inside = (p) => p.x >= L.minX - 1e-6 && p.x <= L.maxX + 1e-6 && p.y >= L.minY - 1e-6 && p.y <= L.maxY + 1e-6;
+    assert(inside(r.south) && r.south.y > L.maxY - 0.01, `walking south ended at ${fmt(r.south)}, limit y ${L.maxY.toFixed(2)}`);
+    assert(inside(r.corner) && r.corner.x > L.maxX - 0.01 && r.corner.y > L.maxY - 0.01, `walking diagonally ended at ${fmt(r.corner)}`);
+    assert(inside(r.far), `goTo far away ended at ${fmt(r.far)}`);
+    await place(spots.aisle);
+    return `stopped at y ${r.south.y.toFixed(2)} (limit ${L.maxY.toFixed(2)}), slid into the corner, goTo clamped`;
+  });
+
   await check('click on the floor walks there', async () => {
     await place(spots.aisle);
     const vp = page.viewportSize();
@@ -435,6 +490,70 @@ async function runChecks() {
     return 'camera 2 by id, cameras 3, 4 and 1 by key';
   });
 
+  await check('saved view jumps report their camera, from keys too', async () => {
+    const cams = await page.evaluate(() => window.store.plan.cameras);
+    await page.evaluate(() => {
+      window.cameraEvents = [];
+      window.walk.addEventListener('camera', (e) => window.cameraEvents.push(e.detail));
+    });
+    await focus();
+    await page.keyboard.press('2');
+    await idle();
+    const events = await page.evaluate(() => window.cameraEvents.splice(0));
+    const want = `${cams[1].id}:true,${cams[1].id}:false`;
+    const got = events.map((e) => `${e.id}:${e.arriving}`).join();
+    assert(got === want, `camera events ${got}, expected ${want}`);
+    return 'key 2 reported the view on the way and on arrival';
+  });
+
+  await check('interrupting a camera move leaves the walker on a free spot', async () => {
+    const vp = page.viewportSize();
+    // Start a jump, then step it until the straight path is inside a wall and slow it so it stays there.
+    const startInWall = (from, to) => page.evaluate(([i, j]) => {
+      const w = window.walk, cams = window.store.plan.cameras;
+      w.goTo(cams[i], { animate: false });
+      w.goToCamera(cams[j].id);
+      const R = 0.25;
+      const blocked = () => w._world.query(w._pose.x - 1, w._pose.y - 1, w._pose.x + 1, w._pose.y + 1, []).some((e) => {
+        if (!e.seg) return false;
+        const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y, l2 = dx * dx + dy * dy || 1e-12;
+        const t = Math.max(0, Math.min(1, ((w._pose.x - e.a.x) * dx + (w._pose.y - e.a.y) * dy) / l2));
+        return Math.hypot(w._pose.x - (e.a.x + dx * t), w._pose.y - (e.a.y + dy * t)) < e.r + R * 0.5;
+      });
+      while (w._anim && !blocked()) w._stepAnim(1 / 600);
+      if (!w._anim) return false;
+      w._anim.dur = 1e4;
+      if (!window.cameraEvents) w.addEventListener('camera', (e) => window.cameraEvents.push(e.detail));
+      window.cameraEvents = [];
+      return true;
+    }, [from, to]);
+    assert(await startInWall(0, 2), 'the jump from view 1 to view 3 never crossed a wall');
+    assert(!(await freeNow()), 'set up failed: the walker is not inside a wall');
+    await page.mouse.move(vp.width / 2, vp.height / 2);
+    await page.mouse.down();
+    const byPointer = { free: await freeNow(), anim: await page.evaluate(() => !!window.walk._anim), events: await page.evaluate(() => window.cameraEvents.splice(0)) };
+    await page.mouse.move(vp.width / 2 + 60, vp.height / 2, { steps: 4 });
+    await page.mouse.up();
+    await page.mouse.move(vp.width - 5, 80);
+    await idle();
+    const afterLook = await freeNow();
+    assert(await startInWall(2, 0), 'the jump from view 3 to view 1 never crossed a wall');
+    const byKey = await page.evaluate(() => {
+      const c = window.walk.container;
+      c.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', key: 'w', bubbles: true }));
+      const anim = !!window.walk._anim;
+      c.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyW', key: 'w', bubbles: true }));
+      return { anim };
+    });
+    byKey.free = await freeNow();
+    await idle();
+    await shot('19-interrupted-jump');
+    assert(!byPointer.anim && byPointer.free && afterLook, `pointer interrupt left the walker in a wall (${JSON.stringify(byPointer)})`);
+    assert(byPointer.events.length === 1 && byPointer.events[0].id === null, `camera events on interrupt ${JSON.stringify(byPointer.events)}`);
+    assert(!byKey.anim && byKey.free, 'key interrupt left the walker in a wall');
+    return 'a pointer press and a key press both settle the walker clear of the wall';
+  });
+
   await check('overview and back', async () => {
     await place(spots.lobby);
     const before = await pose();
@@ -467,6 +586,62 @@ async function runChecks() {
     const ceilingsBack = await page.evaluate(() => window.walk._built.ceilings.every((c) => c.visible));
     assert(ceilingsBack, 'ceilings hidden after returning to walk');
     return 'mode events and pose restored';
+  });
+
+  await check('overview orbit keeps one frame pending at a time', async () => {
+    await page.evaluate(() => window.walk.setMode('overview'));
+    await idle();
+    await page.evaluate(() => {
+      const stats = window.frameStats = { maxPending: 0, maxPerFrame: 0, frames: 0, updates: 0 };
+      const raf = window.requestAnimationFrame.bind(window), caf = window.cancelAnimationFrame.bind(window);
+      const pending = new Set(), perTime = new Map();
+      window.requestAnimationFrame = (fn) => {
+        const id = raf((t) => {
+          pending.delete(id);
+          perTime.set(t, (perTime.get(t) || 0) + 1);
+          stats.maxPerFrame = Math.max(stats.maxPerFrame, perTime.get(t));
+          stats.frames++;
+          fn(t);
+        });
+        pending.add(id);
+        stats.maxPending = Math.max(stats.maxPending, pending.size);
+        return id;
+      };
+      window.cancelAnimationFrame = (id) => {
+        pending.delete(id);
+        caf(id);
+      };
+      const controls = window.walk._controls, update = controls.update;
+      controls.update = (...args) => {
+        stats.updates++;
+        return update.apply(controls, args);
+      };
+      window.restoreFrames = () => {
+        window.requestAnimationFrame = raf;
+        window.cancelAnimationFrame = caf;
+        controls.update = update;
+      };
+    });
+    const vp = page.viewportSize();
+    await page.mouse.move(vp.width / 2, vp.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(vp.width / 2 + 40, vp.height / 2, { steps: 4 });
+    await page.mouse.up();
+    await page.mouse.move(vp.width / 2, vp.height / 2, { steps: 2 });
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.move(vp.width / 2 - 30, vp.height / 2 + 20, { steps: 4 });
+    await page.mouse.up({ button: 'right' });
+    await wait(300);
+    await idle();
+    const stats = await page.evaluate(() => {
+      window.restoreFrames();
+      return window.frameStats;
+    });
+    await page.evaluate(() => window.walk.setMode('walk'));
+    await idle();
+    assert(stats.maxPending === 1 && stats.maxPerFrame === 1, `up to ${stats.maxPending} frames pending, ${stats.maxPerFrame} callbacks in one frame`);
+    assert(stats.frames >= 20, `damping ended after ${stats.frames} frames`);
+    return `damping eased out over ${stats.frames} frames (${stats.updates} orbit updates), never more than one frame pending`;
   });
 
   await check('rebuilds after store.update and keeps the pose', async () => {
@@ -684,6 +859,42 @@ async function runChecks() {
     assert(!empty.mini, 'minimap shown for an empty plan');
     assert(near(back.x, cam.x, 0.01) && near(back.y, cam.y, 0.01), `replaced plan started at ${fmt(back)}`);
     return `empty plan at ${fmt(empty.pose)}, replacement reset to the first camera`;
+  });
+
+  await check('a plan that cannot be built shows a message, then recovers', async () => {
+    const logged = errors.length;
+    const failed = await page.evaluate(async () => {
+      const w = window.walk, kit = w._kit.kit, floorMaterial = kit.floorMaterial;
+      kit.floorMaterial = () => { throw new Error('Test failure in the floors.'); };
+      try {
+        w.rebuild();
+      } finally {
+        kit.floorMaterial = floorMaterial;
+      }
+      const box = w._failure?.getBoundingClientRect();
+      return {
+        built: !!w._built, text: w._failure?.textContent || '', role: w._failure?.getAttribute('role'),
+        covers: !!box && box.width === w.container.clientWidth && box.height === w.container.clientHeight,
+        minimap: w._mini.shown, colliders: w._world.query(-100, -100, 100, 100, []).length,
+        screenshot: await w.screenshot().then(() => 'saved', (e) => e.message),
+      };
+    });
+    await wait(300);
+    await shot('20-build-failed');
+    const expected = errors.splice(logged).filter((e) => !/Could not build the 3D view/.test(e));
+    errors.push(...expected);
+    const recovered = await page.evaluate(() => {
+      const w = window.walk;
+      w.rebuild();
+      return { built: !!w._built, message: !!w._failure, minimap: w._mini.shown };
+    });
+    await idle();
+    assert(!failed.built && failed.colliders === 0, 'the previous scene stayed in place');
+    assert(failed.text.startsWith('This plan could not be shown in 3D') && failed.text.includes('Test failure in the floors.'), `message "${failed.text}"`);
+    assert(failed.covers && failed.role === 'alert' && !failed.minimap, `message covers the view ${failed.covers}, role ${failed.role}, minimap ${failed.minimap}`);
+    assert(/could not be shown in 3D/.test(failed.screenshot), `screenshot() gave "${failed.screenshot}"`);
+    assert(recovered.built && !recovered.message && recovered.minimap, `after a good rebuild ${JSON.stringify(recovered)}`);
+    return 'old scene cleared, message shown, recovered on the next build';
   });
 
   await check('reduced motion makes camera moves instant', async () => {

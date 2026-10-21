@@ -3,7 +3,7 @@
 // See docs/architecture.md for the contract.
 import {
   OPENING_TYPES, WALL_KINDS, addWall, addOpening, addRoom, addItem, addCamera,
-  moveWall, moveWallEndpoint, clampOpenings, findEntity,
+  moveWall, moveWallEndpoint, isWallJoined, findEntity, clonePlan, nextName,
 } from './model.js';
 import { getItem, itemDims } from './catalog/registry.js';
 import {
@@ -13,7 +13,7 @@ import {
   pointInItem, snapValue, snapToGrid, parseLength, formatLength, formatArea,
 } from './geometry.js';
 import {
-  THEME, HANDLE, renderPlan, toScreen, toPlan, fitView, planBounds, wallGeometry,
+  THEME, HANDLE, renderPlan, toScreen, toPlan, fitView, planBounds,
   drawDimension, drawSnapMarker, drawPill, itemHandlePoint, cameraHandlePoint,
 } from './plan-render.js';
 
@@ -184,6 +184,55 @@ function insetRing(poly, halves) {
       if (segmentIntersection(out[i], out[(i + 1) % n], out[j], out[(j + 1) % n])) return null;
     }
   }
+  return out;
+}
+
+const cornerCache = new WeakMap();
+
+/** True if p is inside a wall's body (the rectangle around its centerline). */
+function insideWall(p, w) {
+  const L = wallLength(w);
+  if (L < 1e-6) return false;
+  const rel = sub(p, w.a);
+  const along = dot(rel, wallDir(w));
+  return along > 0 && along < L && Math.abs(dot(rel, wallNormal(w))) < w.thickness / 2;
+}
+
+/**
+ * Corners where the faces of two walls meet at L, T and X junctions, each with the two unit
+ * directions (`free`) that point away from those walls into the space the corner bounds.
+ * Cached per walls array.
+ */
+function faceCorners(walls) {
+  let out = cornerCache.get(walls);
+  if (out) return out;
+  out = [];
+  const info = walls.filter((w) => wallLength(w) > 1e-3).map((w) => {
+    const h = w.thickness / 2;
+    return {
+      w, h, u: wallDir(w), n: wallNormal(w),
+      box: { x0: Math.min(w.a.x, w.b.x) - h, x1: Math.max(w.a.x, w.b.x) + h, y0: Math.min(w.a.y, w.b.y) - h, y1: Math.max(w.a.y, w.b.y) + h },
+    };
+  });
+  for (let i = 0; i < info.length; i++) {
+    for (let j = i + 1; j < info.length; j++) {
+      const A = info[i], B = info[j];
+      if (A.box.x0 > B.box.x1 || B.box.x0 > A.box.x1 || A.box.y0 > B.box.y1 || B.box.y0 > A.box.y1) continue;
+      const c = cross(A.u, B.u);
+      if (Math.abs(c) < 0.05) continue;
+      for (const sa of [1, -1]) {
+        for (const sb of [1, -1]) {
+          const pa = add(A.w.a, mul(A.n, sa * A.h)), pb = add(B.w.a, mul(B.n, sb * B.h));
+          const pt = add(pa, mul(A.u, cross(sub(pb, pa), B.u) / c));
+          if (projectToSegment(pt, A.w.a, A.w.b).dist > A.h + 1e-6 || projectToSegment(pt, B.w.a, B.w.b).dist > B.h + 1e-6) continue;
+          const free = [mul(A.n, sa), mul(B.n, sb)];
+          const probe = add(pt, mul(add(free[0], free[1]), 1e-3));
+          if (!walls.some((w) => insideWall(probe, w))) out.push({ point: pt, free });
+        }
+      }
+    }
+  }
+  cornerCache.set(walls, out);
   return out;
 }
 
@@ -743,6 +792,8 @@ export class PlanEditor extends EventTarget {
   /**
    * Snap a plan point. Order: extra points, wall endpoints and room vertices, wall midpoints,
    * angle (relative to `from` and any other `refs`), points along walls, then the grid.
+   * With `faces` (room outlines) it also snaps to the corners where wall faces meet, uses the wall
+   * face on the cursor side instead of the centerline, and ignores points across a wall.
    * Shift disables all of it.
    */
   _snapPoint(raw, opts = {}) {
@@ -751,29 +802,37 @@ export class PlanEditor extends EventTarget {
     if (shift) return { point: { x: raw.x, y: raw.y }, kind: null };
     const plan = this.store.plan;
     const r = this._px(SNAP_PX);
+    const seen = faces ? (q) => this._inSight(plan.walls, raw, q) : null;
+    const faceSide = (w) => {
+      if (!faces) return { x: 0, y: 0 };
+      const n = wallNormal(w);
+      return mul(n, (dot(sub(raw, w.a), n) >= 0 ? 1 : -1) * w.thickness / 2);
+    };
     let best = null, bestD = r;
-    const consider = (pt, kind) => {
+    const consider = (pt, kind, check) => {
       const dd = dist(raw, pt);
-      if (dd < bestD) { bestD = dd; best = { point: { x: pt.x, y: pt.y }, kind }; }
+      if (dd < bestD && (!check || check(pt))) { bestD = dd; best = { point: { x: pt.x, y: pt.y }, kind }; }
     };
     if (points) {
       for (const e of extra) consider(e.point, e.kind);
       if (best) return best;
       for (const w of plan.walls) {
-        for (const end of ['a', 'b']) if (!excludeEnds?.has(`${w.id}:${end}`)) consider(w[end], 'endpoint');
+        for (const end of ['a', 'b']) if (!excludeEnds?.has(`${w.id}:${end}`)) consider(w[end], 'endpoint', seen);
       }
       for (const room of plan.rooms) {
         room.points.forEach((q, i) => {
-          if (!excludeVertices?.has(`${room.id}:${i}`)) consider(q, 'vertex');
+          if (!excludeVertices?.has(`${room.id}:${i}`)) consider(q, 'vertex', seen);
         });
       }
       if (faces) {
-        for (const gi of wallGeometry(plan.walls).info.values()) {
-          for (const end of ['a', 'b']) for (const side of ['P', 'N']) consider(gi.ends[end][side], 'endpoint');
+        const tol = this._px(2);
+        for (const c of faceCorners(plan.walls)) {
+          const rel = sub(raw, c.point);
+          if (dot(rel, c.free[0]) >= -tol && dot(rel, c.free[1]) >= -tol) consider(c.point, 'endpoint', seen);
         }
       }
       if (best) return best;
-      for (const w of plan.walls) if (!excludeWalls?.has(w.id)) consider(lerp(w.a, w.b, 0.5), 'midpoint');
+      for (const w of plan.walls) if (!excludeWalls?.has(w.id)) consider(add(lerp(w.a, w.b, 0.5), faceSide(w)), 'midpoint', seen);
       if (best) return best;
     }
     let point = { x: raw.x, y: raw.y }, kind = null, guide = null, guides = [];
@@ -788,15 +847,17 @@ export class PlanEditor extends EventTarget {
       let wbest = null, wd = r;
       for (const w of plan.walls) {
         if (excludeWalls?.has(w.id)) continue;
+        const off = faceSide(w);
+        const a = add(w.a, off), b = add(w.b, off);
         if (guide) {
           const far = add(guide.from, mul(guide.dir, 1e4));
-          const hit = segmentIntersection(guide.from, far, w.a, w.b);
+          const hit = segmentIntersection(guide.from, far, a, b);
           if (hit && hit.t > 1e-9) {
             const dd = dist(hit.point, point);
             if (dd < wd) { wd = dd; wbest = hit.point; }
           }
         } else {
-          const pr = projectToSegment(raw, w.a, w.b);
+          const pr = projectToSegment(raw, a, b);
           if (pr.dist < wd) { wd = pr.dist; wbest = pr.point; }
         }
       }
@@ -814,6 +875,15 @@ export class PlanEditor extends EventTarget {
       }
     }
     return { point, kind, guides };
+  }
+
+  /** True if the straight line from p to q crosses no wall centerline (q is not across a wall). */
+  _inSight(walls, p, q) {
+    for (const w of walls) {
+      const hit = segmentIntersection(p, q, w.a, w.b);
+      if (hit && hit.t > 1e-6 && hit.t < 1 - 1e-6) return false;
+    }
+    return true;
   }
 
   /**
@@ -1270,7 +1340,7 @@ export class PlanEditor extends EventTarget {
         this._placeItem();
         break;
       case 'camera': this._cameraDown(e, sp, p); break;
-      case 'calibrate': this._calibrateDown(e, p); break;
+      case 'calibrate': this._calibrateDown(e, sp, p); break;
       default:
         if (OPENING_TOOLS.has(this._tool)) {
           this._updateOpeningGhost(p);
@@ -1464,11 +1534,19 @@ export class PlanEditor extends EventTarget {
     return out;
   }
 
-  _moveVertices(draft, list, p) {
-    for (const v of list) {
-      const r = findEntity(draft, 'room', v.id);
-      if (r?.points[v.index]) r.points[v.index] = { x: p.x, y: p.y };
-    }
+  /**
+   * Run a wall edit on the walls, openings and rooms of `start` (the plan when the gesture began),
+   * so every pointer move starts fresh: a door clipped by a briefly shorter wall gets its size and
+   * place back. Returns the new parts, or null when the edit would collapse or flip a wall.
+   */
+  _rebuildWalls(start, fn) {
+    const next = { walls: clonePlan(start.walls), openings: clonePlan(start.openings), rooms: clonePlan(start.rooms) };
+    fn(next);
+    const broken = next.walls.some((w, i) => {
+      const w0 = start.walls[i];
+      return wallLength(w) < Math.min(0.05, wallLength(w0)) || dot(wallDir(w), wallDir(w0)) < 0;
+    });
+    return broken ? null : next;
   }
 
   _dragGesture(hit, e, sp, p) {
@@ -1607,51 +1685,37 @@ export class PlanEditor extends EventTarget {
   }
 
   _wallDrag(base, wall, p, update) {
-    const plan = this.store.plan;
-    const origA = { ...wall.a }, origB = { ...wall.b };
-    const groupA = this._endsAt(plan, origA).filter((g) => g.id !== wall.id);
-    const groupB = this._endsAt(plan, origB).filter((g) => g.id !== wall.id);
-    const roomsA = this._verticesAt(plan, origA), roomsB = this._verticesAt(plan, origB);
-    const connected = groupA.length > 0 || groupB.length > 0;
+    const start = this.store.plan;
+    const joined = isWallJoined(start, wall.id);
     const n = wallNormal(wall);
     return {
       ...base,
       move: (sp2, p2, ev) => {
         let delta = sub(p2, p);
         const step = this._gridStep();
-        if (connected) {
+        if (joined) {
           let dn = dot(delta, n);
           if (!ev.shiftKey && this._gridActive()) dn = snapValue(dn, step);
           delta = mul(n, dn);
         } else if (!ev.shiftKey && this._gridActive()) {
           delta = snapToGrid(delta, step);
         }
-        const a = add(origA, delta), b = add(origB, delta);
-        update((d) => {
-          const w = findEntity(d, 'wall', wall.id);
-          if (!w) return;
-          moveWall(d, wall.id, a.x - w.a.x, a.y - w.a.y, { connected: false });
-          for (const g of groupA) moveWallEndpoint(d, g.id, g.end, a, { connected: false });
-          for (const g of groupB) moveWallEndpoint(d, g.id, g.end, b, { connected: false });
-          this._moveVertices(d, roomsA, a);
-          this._moveVertices(d, roomsB, b);
-          clampOpenings(d);
-        }, 'Move wall');
+        const next = this._rebuildWalls(start, (d) => moveWall(d, wall.id, delta.x, delta.y));
+        if (next) update((d) => Object.assign(d, next), 'Move wall');
       },
     };
   }
 
   _wallEndDrag(base, wall, end, update) {
-    const plan = this.store.plan;
+    const start = this.store.plan;
     const pos = { ...wall[end] };
-    const group = this._endsAt(plan, pos);
+    const group = this._endsAt(start, pos);
     const other = { ...wall[end === 'a' ? 'b' : 'a'] };
     const excludeEnds = new Set(group.map((g) => `${g.id}:${g.end}`));
     const excludeWalls = new Set(group.map((g) => g.id));
-    const vertices = this._verticesAt(plan, pos);
-    const excludeVertices = new Set(vertices.map((v) => `${v.id}:${v.index}`));
+    const excludeVertices = new Set(this._verticesAt(start, pos).map((v) => `${v.id}:${v.index}`));
     const others = group.map((g) => {
-      const w = findEntity(plan, 'wall', g.id);
+      const w = findEntity(start, 'wall', g.id);
       return w[g.end === 'a' ? 'b' : 'a'];
     });
     return {
@@ -1661,10 +1725,8 @@ export class PlanEditor extends EventTarget {
         this._snap = snap;
         const q = snap.point;
         if (others.some((o) => dist(o, q) < 0.05)) return;
-        update((d) => {
-          for (const g of group) moveWallEndpoint(d, g.id, g.end, q, { connected: false });
-          this._moveVertices(d, vertices, q);
-        }, 'Move wall end');
+        const next = this._rebuildWalls(start, (d) => moveWallEndpoint(d, wall.id, end, q));
+        if (next) update((d) => Object.assign(d, next), 'Move wall end');
       },
       end: () => { this._snap = null; },
     };
@@ -1747,9 +1809,14 @@ export class PlanEditor extends EventTarget {
         }
         if (!startKind || startKind === 'grid') {
           const plan = this.store.plan;
-          const inRoom = plan.rooms.some((r) => r.points.length >= 3 && pointInPolygon(p, r.points));
           const onWall = plan.walls.some((w) => projectToSegment(p, w.a, w.b).dist <= w.thickness / 2 + this._px(4));
-          const face = !inRoom && !onWall ? findEnclosure(plan.walls, p) : null;
+          const room = onWall ? null : this._roomAt(p);
+          if (room) {
+            this.store.select({ kind: 'room', id: room.id });
+            this._flash('This area already has a room. To trace another one inside it, start on a wall or drag a rectangle.');
+            return;
+          }
+          const face = !onWall ? findEnclosure(plan.walls, p) : null;
           if (face) {
             this._createRoom(face);
             this._flash(`Room created from the surrounding walls (${formatArea(polygonArea(face), plan.units)}).`);
@@ -1759,6 +1826,17 @@ export class PlanEditor extends EventTarget {
         this._draft = { type: 'room', points: [start] };
       },
     };
+  }
+
+  /** The smallest room containing p, or null. */
+  _roomAt(p) {
+    let best = null, bestA = Infinity;
+    for (const r of this.store.plan.rooms) {
+      if (r.points.length < 3 || !pointInPolygon(p, r.points)) continue;
+      const a = polygonArea(r.points);
+      if (a < bestA) { bestA = a; best = r; }
+    }
+    return best;
   }
 
   _createRoom(points) {
@@ -1780,8 +1858,7 @@ export class PlanEditor extends EventTarget {
   // ---- Camera and calibrate tools ----------------------------------------------------------
 
   _cameraDown(e, sp, p) {
-    const n = this.store.plan.cameras.length + 1;
-    this._draft = { type: 'camera', x: p.x, y: p.y, yaw: this._lastYaw, name: `View ${n}` };
+    this._draft = { type: 'camera', x: p.x, y: p.y, yaw: this._lastYaw, name: nextName(this.store.plan.cameras, 'View') };
     this._gesture = {
       pointerId: e.pointerId, start: sp, moved: false, threshold: 0, cursor: 'crosshair',
       move: (sp2, p2, ev) => {
@@ -1803,7 +1880,7 @@ export class PlanEditor extends EventTarget {
     };
   }
 
-  _calibrateDown(e, p) {
+  _calibrateDown(e, sp, p) {
     if (!this.store.plan.underlay) {
       this._flash('Add a floor plan image first, then calibrate its scale.');
       return;
@@ -1813,10 +1890,22 @@ export class PlanEditor extends EventTarget {
       this._draft = { type: 'calibrate', a: { x: p.x, y: p.y }, b: null };
       return;
     }
-    const b = e.shiftKey ? { ...p } : (this._angleSnap(d.a, p)?.point || { ...p });
-    if (dist(toScreen(this.view, b), toScreen(this.view, d.a)) < 4) return;
-    d.b = b;
-    this.dispatchEvent(new CustomEvent('calibrate', { detail: { a: { ...d.a }, b: { ...b }, meters: dist(d.a, b) } }));
+    // The end point is set on release, and the length is asked for once the click is over, so
+    // the dialog that opens keeps keyboard focus.
+    this._gesture = {
+      pointerId: e.pointerId, start: sp, moved: false, threshold: 0,
+      move: () => {},
+      end: (sp2, p2, ev) => {
+        if (ev.type === 'pointercancel' || this._draft !== d) return;
+        const b = ev.shiftKey ? { ...p2 } : (this._angleSnap(d.a, p2)?.point || { ...p2 });
+        if (dist(toScreen(this.view, b), toScreen(this.view, d.a)) < 4) return;
+        d.b = b;
+        const detail = { a: { ...d.a }, b: { ...b }, meters: dist(d.a, b) };
+        setTimeout(() => {
+          if (!this._destroyed && this._draft === d) this.dispatchEvent(new CustomEvent('calibrate', { detail }));
+        }, 0);
+      },
+    };
   }
 
   // ---- Drafts ---------------------------------------------------------------------------------
@@ -1952,7 +2041,10 @@ export class PlanEditor extends EventTarget {
       this._spaceDown = false;
       this._setCursor();
     }
-    if (e.key.startsWith('Arrow') || /^[qQeE]$/.test(e.key)) this.store.endCoalesce();
+    if (e.key.startsWith('Arrow') || /^[qQeE]$/.test(e.key)) {
+      this.store.endCoalesce();
+      this._nudgeRun = null;
+    }
     if (e.key === 'Shift') {
       this._shift = false;
       this._refreshHover();
@@ -1983,7 +2075,7 @@ export class PlanEditor extends EventTarget {
     if (key.length !== 1) return false;
     if (!this._typed) {
       if (!/[0-9.]/.test(key)) return false;
-    } else if (!/^[0-9.'" mcftine]$/i.test(key)) {
+    } else if (!/^[0-9.,'"/ mcftine-]$/i.test(key)) {
       return false;
     }
     if (this._typed.length >= 16) return true;
@@ -2036,6 +2128,26 @@ export class PlanEditor extends EventTarget {
     const step = metric ? (big ? 0.1 : 0.01) : (big ? FOOT : INCH);
     const v = { ArrowLeft: { x: -step, y: 0 }, ArrowRight: { x: step, y: 0 }, ArrowUp: { x: 0, y: -step }, ArrowDown: { x: 0, y: step } }[key];
     const opts = { label: `Nudge ${KIND_LABEL[sel.kind]}`, coalesce: `nudge-${sel.kind}-${sel.id}` };
+    if (sel.kind === 'wall') {
+      // A run of nudges (one key press or a held key) rebuilds from where it began, like a drag.
+      const run = this._nudgeRun?.key === opts.coalesce && this._nudgeRun.plan === this.store.plan
+        ? this._nudgeRun : { key: opts.coalesce, start: this.store.plan, total: { x: 0, y: 0 } };
+      // As when dragging, a wall joined to others only moves across its length.
+      const wall = findEntity(run.start, 'wall', sel.id);
+      if (!wall) return;
+      const n = wallNormal(wall);
+      const step = isWallJoined(run.start, sel.id) ? mul(n, dot(v, n)) : v;
+      if (len(step) < 1e-9) {
+        this._flash('Joined walls move only across their length. Drag an end to reshape the wall.');
+        return;
+      }
+      const total = add(run.total, step);
+      const next = this._rebuildWalls(run.start, (d) => moveWall(d, sel.id, total.x, total.y));
+      if (!next) return;
+      this.store.update((d) => Object.assign(d, next), opts);
+      this._nudgeRun = { ...run, total, plan: this.store.plan };
+      return;
+    }
     this.store.update((d) => {
       const ent = findEntity(d, sel.kind, sel.id);
       if (!ent) return;
@@ -2044,8 +2156,6 @@ export class PlanEditor extends EventTarget {
         ent.y += v.y;
       } else if (sel.kind === 'room') {
         ent.points = ent.points.map((q) => add(q, v));
-      } else if (sel.kind === 'wall') {
-        moveWall(d, sel.id, v.x, v.y);
       } else if (sel.kind === 'opening') {
         const w = findEntity(d, 'wall', ent.wallId);
         if (!w) return;

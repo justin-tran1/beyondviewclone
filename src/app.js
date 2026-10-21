@@ -1,6 +1,6 @@
 // CBRE Virtual Walkthrough app shell: wires the plan store, the 2D editor, the 3D walkthrough
 // and the panels, dialogs, files and shortcuts into one page.
-import { PlanStore, createPlan, addCamera } from './model.js';
+import { PlanStore, createPlan, addCamera, uid } from './model.js';
 import './catalog/index.js';
 import { PlanEditor } from './editor2d.js';
 import { formatLength, clamp } from './geometry.js';
@@ -32,6 +32,9 @@ setupTooltips();
 const prefs = loadPrefs();
 const saved = loadSavedPlan();
 const store = new PlanStore(saved ? saved.plan : createPlan());
+// The plan as last opened, created or saved to a file. Any other state has unsaved changes.
+let filed = saved?.edited ? null : store.plan;
+let lastUpdateNotice = 0;
 const canvas = $('#plan-canvas');
 const editor = new PlanEditor(canvas, store);
 const display = { ...DISPLAY_DEFAULTS, ...(prefs.display || {}) };
@@ -54,14 +57,30 @@ status.setWalkHint(WALK_STATUS.walk);
 
 const actions = {
   importImage: () => importImage(),
+  replaceImage: () => importImage(null, { replace: true }),
   calibrate: startCalibration,
   walkToCamera,
   removeImage,
 };
-const properties = createProperties($('#right-panel'), { store, editor, actions });
+createProperties($('#right-panel'), { store, editor, actions });
 
-autosave(store, {
-  onFull: () => toast('This floor plan image is too large to keep in the browser. Save the plan to a file to keep the image with it.', { type: 'info', duration: 9000 }),
+const saver = autosave(store, {
+  restored: saved,
+  isEdited: () => store.plan !== filed,
+  onFull: (what) => toast(what === 'image'
+    ? 'This floor plan image is too large to keep in the browser. Save the plan to a file to keep the image with it.'
+    : 'The browser storage is full, so this plan is not kept in the browser. Save the plan to a file to keep it.', { type: 'info', duration: 9000 }),
+  onConflict: ({ id, name, open }) => toast(open
+    ? `This plan was also changed in another tab. Your version here is kept as "${name}".`
+    : `A plan you left was also changed in another tab. Your version is kept as "${name}" in Recent plans.`, {
+    type: 'info', duration: 12000, action: open ? { label: 'Open the other version', onClick: () => openRecent(id) } : undefined,
+  }),
+  onUpdate: (rec) => {
+    filed = rec.edited ? null : store.plan;
+    // One notice while the other tab keeps saving, not one per save.
+    if (Date.now() - lastUpdateNotice > 15000) toast('This plan was updated with changes made in another tab.', { type: 'info' });
+    lastUpdateNotice = Date.now();
+  },
 });
 
 // ---- Modes and the 3D view ------------------------------------------------------------------------
@@ -211,6 +230,12 @@ new ResizeObserver(layoutStage).observe(stage);
 
 // ---- Top bar ----------------------------------------------------------------------------------------
 
+/** Give keyboard focus back to the plan or the 3D view, so shortcuts work after a field or dialog. */
+function focusView() {
+  const el = mode === 'walk' ? $('#walk-view') : canvas;
+  el.focus({ preventScroll: true });
+}
+
 const nameInput = $('#plan-name');
 const syncName = () => { if (document.activeElement !== nameInput) nameInput.value = store.plan.name; };
 nameInput.addEventListener('change', () => {
@@ -219,8 +244,8 @@ nameInput.addEventListener('change', () => {
   nameInput.value = store.plan.name;
 });
 nameInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
-  if (e.key === 'Escape') { nameInput.value = store.plan.name; nameInput.blur(); }
+  if (e.key === 'Enter') { e.preventDefault(); focusView(); }
+  if (e.key === 'Escape') { nameInput.value = store.plan.name; focusView(); }
 });
 store.addEventListener('change', syncName);
 syncName();
@@ -242,13 +267,33 @@ store.addEventListener('change', (e) => {
   }
 });
 
-attachMenu($('#open-menu'), () => [
-  { label: 'Open plan file', icon: 'folder', hint: `${MOD}+O`, onSelect: () => openPlanFile() },
-  { label: 'Import floor plan image', icon: 'image', description: 'PNG, JPG, WebP or SVG', onSelect: () => importImage() },
-  { label: 'Open a sample', icon: 'grid', onSelect: openSamples },
-  'separator',
-  { label: 'New blank plan', icon: 'file-new', onSelect: newPlan },
-], { align: 'end' });
+/** "Saved 5 minutes ago", "Saved yesterday at 4:05 PM", "Saved Oct 12". */
+function savedWhen(t) {
+  const min = Math.round((Date.now() - t) / 60000);
+  if (min < 1) return 'Saved just now';
+  if (min < 60) return `Saved ${min} ${min === 1 ? 'minute' : 'minutes'} ago`;
+  const d = new Date(t), today = new Date();
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return `Saved today at ${time}`;
+  if (d.toDateString() === yesterday.toDateString()) return `Saved yesterday at ${time}`;
+  return `Saved ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(d.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}) })}`;
+}
+
+attachMenu($('#open-menu'), () => {
+  const recent = saver.recent().slice(0, 5).map((r) => ({
+    label: r.name, icon: 'plan', description: `${savedWhen(r.savedAt)}${r.imageDropped ? ', without its image' : ''}`,
+    onSelect: () => openRecent(r.id),
+  }));
+  return [
+    { label: 'Open plan file', icon: 'folder', hint: `${MOD}+O`, onSelect: () => openPlanFile() },
+    { label: 'Import floor plan image', icon: 'image', description: 'PNG, JPG, WebP or SVG', onSelect: () => importImage() },
+    { label: 'Open a sample', icon: 'grid', onSelect: openSamples },
+    'separator',
+    { label: 'New blank plan', icon: 'file-new', onSelect: newPlan },
+    ...(recent.length ? ['separator', { group: 'Recent plans in this browser', items: recent }] : []),
+  ];
+}, { align: 'end' });
 $('#save').addEventListener('click', savePlan);
 $('#save-image').addEventListener('click', saveImage);
 $('#settings').addEventListener('click', () => openSettings({
@@ -264,21 +309,61 @@ $('#help').addEventListener('click', openHelp);
 
 // ---- Plan files -------------------------------------------------------------------------------------
 
-/** Replace the document. Keeps an undo step back to the current plan unless it is still blank. */
-function replacePlan(plan, label) {
-  const keepHistory = planHasContent(store.plan) || !!store.plan.underlay || store.plan.cameras.length > 0;
+const planHasContent = (p) => p.walls.length > 0 || p.rooms.length > 0 || p.items.length > 0;
+const isBlankPlan = (p) => !planHasContent(p) && !p.underlay && p.cameras.length === 0;
+
+/**
+ * Replace the document. Keeps an undo step back to the current plan unless it is still blank.
+ * Returns toast options with that Undo. `edited`: the new plan has changes not saved to a file.
+ */
+function replacePlan(plan, label, { edited = false } = {}) {
+  const keepHistory = !isBlankPlan(store.plan);
   store.replace(plan, { label, keepHistory });
-  return keepHistory ? { action: { label: 'Undo', onClick: () => store.undo() } } : {};
+  filed = edited ? null : store.plan;
+  return keepHistory ? { duration: 8000, action: { label: 'Undo', onClick: () => store.undo() } } : {};
 }
 
+/** Before a plan with changes that are not in a file is replaced, offer to save it. Resolves true to go on. */
+function confirmReplace() {
+  if (store.plan === filed || isBlankPlan(store.plan)) return Promise.resolve(true);
+  const kept = saver.isKept();
+  return new Promise((resolve) => {
+    let go = false;
+    const done = (save) => () => {
+      if (save && !savePlan()) return;
+      go = true;
+      dlg.close('continue');
+    };
+    const saveBtn = h('button', { type: 'button', class: 'btn btn-primary', text: 'Save plan file', on: { click: done(true) } });
+    const dlg = openDialog({
+      title: 'Save your changes first?',
+      subtitle: `"${store.plan.name}" has changes that are not saved to a plan file. ${kept
+        ? 'If you continue without saving, you can still open it from Recent plans in the Open menu.'
+        : 'If you continue without saving, these changes may be lost.'}`,
+      actions: [
+        h('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', on: { click: () => dlg.close('cancel') } }),
+        h('button', { type: 'button', class: 'btn btn-secondary', text: 'Continue without saving', on: { click: done(false) } }),
+        saveBtn,
+      ],
+      initialFocus: saveBtn,
+      onClose: () => resolve(go),
+    });
+  });
+}
+
+/** Download the plan file. Returns true when it was saved. */
 function savePlan() {
   if (isTextField(document.activeElement)) document.activeElement.blur();
   try {
     const name = savePlanFile(store.plan);
+    filed = store.plan;
+    saver.saveSoon();
     toast(`Plan saved as ${name}`);
+    return true;
   } catch (err) {
     console.error(err);
     toast('The plan could not be saved.', { type: 'error' });
+    return false;
   }
 }
 
@@ -287,37 +372,53 @@ async function openPlanFile(file) {
     [file] = await pickFiles(PLAN_ACCEPT);
     if (!file) return;
   }
+  let plan;
   try {
-    const plan = await readPlanFile(file);
-    toast(`Opened ${plan.name}`, replacePlan(plan, 'Open plan'));
+    plan = await readPlanFile(file);
   } catch (err) {
     toast(err instanceof FileError ? err.message : 'This file could not be opened.', { type: 'error' });
+    return;
   }
+  if (!(await confirmReplace())) return;
+  toast(`Opened ${plan.name}`, replacePlan(saver.openable(plan), 'Open plan'));
+}
+
+async function openRecent(id) {
+  if (!(await confirmReplace())) return;
+  const rec = saver.load(id);
+  if (!rec) {
+    toast('This plan is no longer kept in the browser.', { type: 'error' });
+    return;
+  }
+  toast(`Opened ${rec.plan.name}`, replacePlan(rec.plan, 'Open plan', { edited: rec.edited }));
+  if (rec.imageDropped) toast('This plan was kept without its floor plan image, which was too large for the browser.', { type: 'info', duration: 9000 });
 }
 
 function openSamples({ welcome = false } = {}) {
   openStartDialog({
     welcome,
     onSample: openSample,
-    onTrace: () => {
-      replacePlan(createPlan(), 'New plan');
-      importImage();
-    },
+    onTrace: () => importImage(),
     onBlank: newPlan,
   });
 }
 
 async function openSample(sample) {
+  let plan;
   try {
-    const plan = await loadSample(sample);
-    toast(`Opened the ${sample.name.toLowerCase()} sample`, replacePlan(plan, `Open ${sample.name}`));
+    plan = await loadSample(sample);
   } catch (err) {
     console.error(err);
     toast(`The ${sample.name.toLowerCase()} sample could not be loaded.`, { type: 'error' });
+    return;
   }
+  if (!(await confirmReplace())) return;
+  // Every opening is a new plan, so it never takes over the saved copy of an earlier one.
+  toast(`Opened the ${sample.name.toLowerCase()} sample`, replacePlan({ ...plan, id: uid('plan') }, `Open ${sample.name}`));
 }
 
-function newPlan() {
+async function newPlan() {
+  if (!(await confirmReplace())) return;
   const undo = replacePlan(createPlan(), 'New plan');
   if (mode === 'walk') setMode('plan');
   editor.setTool('select');
@@ -339,34 +440,55 @@ async function saveImage() {
     toast(`Image saved as ${name}`);
   } catch (err) {
     console.error(err);
-    toast(err?.message || 'The image could not be saved.', { type: 'error' });
+    toast(err instanceof FileError ? err.message : 'The image could not be saved.', { type: 'error' });
   }
 }
 
 // ---- Floor plan images and calibration -----------------------------------------------------------
 
 let dismissImportHint = null;
-const planHasContent = (p) => p.walls.length > 0 || p.rooms.length > 0 || p.items.length > 0;
 
-/** Ask whether a new image starts a new plan or goes under the current one. */
+/** Ask whether a new image goes under the current plan (the default) or starts a new one. */
 function chooseImageTarget() {
   return new Promise((resolve) => {
     let choice = null;
     const pick = (v) => () => { choice = v; dlg.close(v); };
+    const here = h('button', {
+      type: 'button', class: 'btn btn-primary', text: store.plan.underlay ? 'Replace the image in this plan' : 'Add to this plan',
+      on: { click: pick('current') },
+    });
     const dlg = openDialog({
-      title: 'Trace this image in a new plan?',
-      subtitle: 'Your current plan already has walls or furniture. You can start fresh, or place the image under the current plan.',
+      title: 'Where should this image go?',
+      subtitle: store.plan.underlay
+        ? 'Your plan already has walls or furniture. You can swap its floor plan image for this one, or start a new plan with it.'
+        : 'Your plan already has walls or furniture. You can place the image under this plan, or start a new plan with it.',
       cls: 'dialog-narrow',
       actions: [
-        h('button', { type: 'button', class: 'btn btn-secondary', text: 'Add to this plan', on: { click: pick('current') } }),
-        h('button', { type: 'button', class: 'btn btn-primary', text: 'Start a new plan', on: { click: pick('new') } }),
+        h('button', { type: 'button', class: 'btn btn-secondary', text: 'Start a new plan', on: { click: pick('new') } }),
+        here,
       ],
+      initialFocus: here,
       onClose: () => resolve(choice),
     });
   });
 }
 
-async function importImage(file) {
+/** The image as the plan's underlay. A replaced image keeps its place and spans the same width. */
+function underlayIn(plan, image) {
+  const next = underlayFor(image);
+  const old = plan.underlay;
+  if (!old) return next;
+  return {
+    ...next, x: old.x, y: old.y, rotation: old.rotation, opacity: old.opacity, locked: old.locked,
+    scale: old.width > 0 ? old.scale * (old.width / next.width) : next.scale,
+  };
+}
+
+/**
+ * Import a floor plan image. With `replace`, swap the image of the current plan and keep everything
+ * else. Otherwise a plan that already has content asks whether to add it there or start a new plan.
+ */
+async function importImage(file, { replace = false } = {}) {
   if (!file) {
     [file] = await pickFiles(IMAGE_ACCEPT);
     if (!file) return;
@@ -378,21 +500,40 @@ async function importImage(file) {
     toast(err instanceof FileError ? err.message : 'This image could not be imported.', { type: 'error' });
     return;
   }
-  if (planHasContent(store.plan)) {
+  const title = file.name.replace(/\.[^.]+$/, '') || 'Untitled plan';
+  const old = store.plan.underlay;
+  let undo = {};
+  if (!replace && planHasContent(store.plan)) {
     const target = await chooseImageTarget();
     if (!target) return;
-    if (target === 'new') replacePlan(createPlan({ name: file.name.replace(/\.[^.]+$/, '') || 'Untitled plan' }), 'New plan');
-  } else if (store.plan.name === 'Untitled plan') {
-    store.update((d) => { d.name = file.name.replace(/\.[^.]+$/, '') || d.name; }, { label: 'Name plan' });
+    if (target === 'new') {
+      if (!(await confirmReplace())) return;
+      undo = replacePlan(createPlan({ name: title, underlay: underlayFor(image) }), 'New plan from image');
+    }
   }
-  store.update((d) => { d.underlay = underlayFor(image); }, { label: 'Import floor plan image' });
+  if (!store.plan.underlay || store.plan.underlay === old) {
+    const label = old ? 'Replace floor plan image' : 'Import floor plan image';
+    const rename = !old && !planHasContent(store.plan) && store.plan.name === 'Untitled plan';
+    store.update((d) => {
+      d.underlay = underlayIn(d, image);
+      if (rename) d.name = title;
+    }, { label });
+  }
   store.select(null);
   if (mode === 'walk') await setMode('plan', { focus: false });
-  editor.zoomToFit();
-  editor.setTool('calibrate');
-  canvas.focus({ preventScroll: true });
   dismissImportHint?.();
-  dismissImportHint = toast('Image imported. Click two points of a known distance to set the scale.', { type: 'info', duration: 9000 });
+  const same = old && old.width === image.width && old.height === image.height && store.plan.underlay !== old;
+  if (same && !undo.action) {
+    dismissImportHint = toast('Image replaced. Its scale and position are unchanged.', { action: { label: 'Undo', onClick: () => store.undo() } });
+  } else {
+    editor.zoomToFit();
+    editor.setTool('calibrate');
+    const text = old && !undo.action
+      ? 'Image replaced. Click two points of a known distance to check its scale.'
+      : 'Image imported. Click two points of a known distance to set the scale.';
+    dismissImportHint = toast(text, { ...undo, type: 'info', duration: 9000 });
+  }
+  canvas.focus({ preventScroll: true });
   if (image.resized) toast(`The image was reduced to ${image.width} x ${image.height} px to keep the plan fast.`, { type: 'info' });
 }
 
@@ -421,6 +562,11 @@ editor.addEventListener('calibrate', async (e) => {
   const { a, b, meters } = e.detail;
   const real = await askCalibration({ meters, units: store.plan.units });
   if (real === null) {
+    // Cancelled: drop the measured line so the tool asks for a new first point.
+    if (editor.tool === 'calibrate') {
+      editor.setTool('select');
+      editor.setTool('calibrate');
+    }
     canvas.focus({ preventScroll: true });
     return;
   }
@@ -556,8 +702,29 @@ function openFile(file) {
 
 // ---- Keyboard shortcuts ----------------------------------------------------------------------------------
 
+/** Keys besides printable ones that the plan editor or the 3D view handle. */
+const VIEW_KEYS = new Set(['Delete', 'Backspace', 'Escape', 'Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
+let forwarding = false;
+
+/** Hand a key press to the plan editor (the 3D view in Walk) and give it focus for the keys that follow. */
+function forwardKey(e) {
+  const target = mode === 'walk' ? $('#walk-view') : canvas;
+  target.focus({ preventScroll: true });
+  if (document.activeElement !== target) return;
+  const copy = new KeyboardEvent('keydown', {
+    key: e.key, code: e.code, repeat: e.repeat, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
+    bubbles: true, cancelable: true,
+  });
+  forwarding = true;
+  try {
+    if (!target.dispatchEvent(copy)) e.preventDefault();
+  } finally {
+    forwarding = false;
+  }
+}
+
 document.addEventListener('keydown', (e) => {
-  if (e.defaultPrevented || e.isComposing) return;
+  if (e.defaultPrevented || e.isComposing || forwarding) return;
   const mod = e.ctrlKey || e.metaKey;
   if (document.querySelector('dialog[open]')) {
     if (mod && /^[so]$/i.test(e.key)) e.preventDefault();
@@ -573,15 +740,17 @@ document.addEventListener('keydown', (e) => {
     if (key === 'y' && e.ctrlKey) { e.preventDefault(); store.redo(); return; }
     const m = { 1: 'plan', 2: 'split', 3: 'walk' }[e.key];
     if (m) { e.preventDefault(); setMode(m); return; }
-    if (key === 'd' && store.selection?.kind === 'item') { e.preventDefault(); properties.duplicateItem(store.selection.id); }
+    // The editor duplicates the selected item or viewpoint.
+    if (key === 'd' && mode !== 'walk') { e.preventDefault(); forwardKey(e); }
     return;
   }
   if (typing || e.altKey) return;
   if (e.key === '?') { e.preventDefault(); openHelp(); return; }
-  if (e.target === document.body) {
-    if ((e.key === 'Delete' || e.key === 'Backspace') && store.selection) { e.preventDefault(); store.deleteSelection(); }
-    else if (e.key === 'Escape' && store.selection) store.select(null);
-  }
+  // Shortcuts still reach the view when nothing has focus (after a dialog closed or a panel was
+  // clicked), and letter and number keys pass through from buttons, which do not use them.
+  const fromBody = e.target === document.body && (e.key.length === 1 || VIEW_KEYS.has(e.key));
+  const fromButton = e.target.tagName === 'BUTTON' && !e.target.closest('[role="menu"]') && /^[\w+=-]$/.test(e.key);
+  if (fromBody || fromButton) forwardKey(e);
 });
 
 // ---- Start ---------------------------------------------------------------------------------------------

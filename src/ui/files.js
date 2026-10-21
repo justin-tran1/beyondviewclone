@@ -1,5 +1,5 @@
 // Reading plan files and floor plan images, and writing plans and images out.
-import { normalizePlan, serializePlan } from '../model.js';
+import { normalizePlan, serializePlan, PLAN_FORMAT } from '../model.js';
 import { renderPlan, fitView, planBounds, loadUnderlayImage } from '../plan-render.js';
 import { downloadBlob, safeFileName } from './dom.js';
 
@@ -22,6 +22,25 @@ export function fileKind(file) {
 
 // ---- Plans -------------------------------------------------------------------------------------
 
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+const isPoint = (p) => !!p && isNum(p.x) && isNum(p.y);
+const ENTITY_TESTS = {
+  walls: (w) => isPoint(w?.a) && isPoint(w?.b),
+  rooms: (r) => Array.isArray(r?.points) && r.points.length >= 3 && r.points.every(isPoint),
+  items: (i) => typeof i?.type === 'string' && isPoint(i),
+};
+
+/**
+ * True for a plan saved by this tool: it carries the format marker, or (files saved before the
+ * marker existed) has walls, rooms or items shaped like plan entities, or a traced image.
+ */
+function isPlanData(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  if (data.format === PLAN_FORMAT) return true;
+  const entities = Object.entries(ENTITY_TESTS).some(([key, test]) => Array.isArray(data[key]) && data[key].some(test));
+  return entities || (typeof data.underlay?.src === 'string' && data.underlay.src.startsWith('data:image/'));
+}
+
 export async function readPlanFile(file) {
   let data;
   try {
@@ -29,9 +48,7 @@ export async function readPlanFile(file) {
   } catch {
     throw new FileError(`"${file.name}" is not a plan file. Choose a .cbreplan.json file saved from this tool.`);
   }
-  const looksLikePlan = data && typeof data === 'object' && !Array.isArray(data)
-    && ['walls', 'rooms', 'items', 'underlay', 'version'].some((k) => k in data);
-  if (!looksLikePlan) throw new FileError(`"${file.name}" does not contain a floor plan.`);
+  if (!isPlanData(data)) throw new FileError(`"${file.name}" does not contain a floor plan. Choose a .cbreplan.json file saved from this tool.`);
   try {
     return normalizePlan(data);
   } catch {
@@ -107,6 +124,13 @@ function base64Utf8(text) {
 
 const canvasBlob = (canvas, type, quality) => new Promise((resolve) => canvas.toBlob(resolve, type, quality));
 
+/** Some drag and drop sources report no type, which yields data:application/octet-stream; plans keep only image data URLs. */
+function withImageType(src, name) {
+  if (src.startsWith('data:image/')) return src;
+  const ext = (/\.(png|jpe?g|webp)$/i.exec(name)?.[1] || 'png').toLowerCase();
+  return src.replace(/^data:[^;,]*/, `data:image/${ext === 'jpg' ? 'jpeg' : ext}`);
+}
+
 /**
  * Read an image file for use as an underlay. Raster images larger than 4096 px on their long
  * side are downscaled. Returns { src, width, height, resized }.
@@ -124,7 +148,7 @@ export async function readImageFile(file) {
     if (!size) throw new FileError('This SVG has no size. Add width and height or a viewBox, or export it as PNG.');
     return { src, ...size, resized: false };
   }
-  const original = await readAsDataURL(file);
+  const original = withImageType(await readAsDataURL(file), file.name);
   const img = await loadImage(original);
   const { naturalWidth: w, naturalHeight: hgt } = img;
   if (!(w > 0 && hgt > 0)) throw new FileError('This image is empty.');
@@ -188,8 +212,8 @@ export async function renderPlanImage(plan, { showDimensions = false, showLabels
   ctx.setTransform(2, 0, 0, 2, 0, 0);
   const view = fitView(b, cssW, cssH, 48);
   renderPlan(ctx, { ...plan, cameras: [] }, view, { showGrid: false, showUnderlay: true, showDimensions, showLabels, background: '#FFFFFF' });
-  const blob = await canvasBlob(canvas, 'image/png');
-  if (!blob) throw new FileError('Could not create the plan image.');
+  const blob = await canvasBlob(canvas, 'image/png').catch(() => null);
+  if (!blob) throw new FileError('The plan image could not be created. Try hiding the floor plan image, then save again.');
   return blob;
 }
 

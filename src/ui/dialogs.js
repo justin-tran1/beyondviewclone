@@ -97,7 +97,7 @@ export function askCalibration({ meters, units }) {
     const error = h('p', { class: 'field-error', id: 'calibrate-error', attrs: { role: 'alert' }, hidden: true });
     const help = h('p', { class: 'field-help', id: 'calibrate-help', text: units === 'metric'
       ? 'Examples: 3.8m, 380cm or 12\' 6". A plain number is in meters.'
-      : 'Examples: 12\' 6", 12.5 or 3.8m. A plain number is in feet.' });
+      : 'Examples: 12\' 6", 12\'-6", 12.5 or 3.8m. A plain number is in feet.' });
     let result = null;
     const submit = (e) => {
       e?.preventDefault();
@@ -195,7 +195,7 @@ export function openSettings({ store, getDisplay, setDisplay }) {
   };
 
   const row = (label, control, forId, hint) => h('div', { class: 'setting-row' },
-    h('label', { class: 'field-label', for: forId, text: label }),
+    h(forId ? 'label' : 'span', { class: 'field-label', for: forId, text: label }),
     h('div', { class: 'setting-control' }, control, hint ? h('p', { class: 'field-help', text: hint }) : null));
 
   const dlg = openDialog({
@@ -209,7 +209,7 @@ export function openSettings({ store, getDisplay, setDisplay }) {
       row('Surroundings', exterior, 'set-exterior', 'What you see through the windows in the walkthrough.'),
       h('h3', { class: 'dialog-section-title', text: 'Plan view' }),
       h('div', { class: 'check-list' },
-        check('showGrid', 'Grid', 'Lines every 6 in, or every 10 cm in metric.'),
+        check('showGrid', 'Grid', 'Lines every 6 in, or every 10 cm in metric, when zoomed in.'),
         check('showLabels', 'Room names and areas'),
         check('showDimensions', 'Overall dimensions')),
     ],
@@ -220,7 +220,7 @@ export function openSettings({ store, getDisplay, setDisplay }) {
 
 // ---- Help -------------------------------------------------------------------------------------------
 
-const keys = (...k) => h('span', { class: 'keys' }, k.map((x) => (x === 'to' ? h('span', { class: 'keys-to', text: 'to' }) : h('kbd', { text: x }))));
+const keys = (...k) => h('span', { class: 'keys' }, k.map((x) => (x === 'to' || x === 'or' ? h('span', { class: 'keys-to', text: x }) : h('kbd', { text: x }))));
 
 function helpList(rows) {
   return h('dl', { class: 'help-list' }, rows.flatMap(([what, ...k]) => [
@@ -240,9 +240,12 @@ export function openHelp() {
     body: h('div', { class: 'help-grid' },
       col('Tracing', 'Import a floor plan image from Open, or drop it on the window. Calibrate it, then trace over it.', [
         ['Calibrate: click both ends of a known length, then type the real length', ''],
-        ['Wall tool. Click each corner, double-click or Esc to finish', 'W'],
+        ['Wall tool. Click each corner', 'W'],
         ['Type a length while drawing, then Enter, for an exact wall', '12\' 6"', 'Enter'],
-        ['Room tool. Click inside closed walls to fill a room', 'R'],
+        ['Room tool. Click inside closed walls to fill a room, or click its corners', 'R'],
+        ['Remove the last corner while tracing a room', 'Backspace'],
+        ['Finish a wall or room. Double-click or right-click also work', 'Enter'],
+        ['Stop drawing walls, or cancel a room outline', 'Esc'],
         ['Door tool. Click a wall to place it', 'D'],
         ['Window tool', 'N'],
         ['Flip the door swing, or the hinge', 'F', 'Shift F'],
@@ -250,29 +253,34 @@ export function openHelp() {
       ]),
       col('Layout', 'Pick an item in the library and click the plan, or drag the item onto the plan.', [
         ['Select tool', 'V'],
-        ['Pan tool, or hold Space and drag', 'H', 'Space'],
-        ['Rotate the selected or new item 15°, with Shift 90°', 'Q', 'E'],
-        ['Duplicate the selected item', MOD, 'D'],
+        ['Pan tool, or hold Space and drag, or drag with the middle button', 'H', 'Space'],
+        ['Rotate the selected or new item 15°, with Shift 90°. Also turns a selected viewpoint', 'Q', 'E'],
+        ['Duplicate the selected item or viewpoint', MOD, 'D'],
         ['Nudge the selection, with Shift in larger steps', '←', '→', '↑', '↓'],
-        ['Delete the selection', 'Delete'],
+        ['Delete the selection', 'Delete', 'or', 'Backspace'],
+        ['Clear the selection, or leave the current tool', 'Esc'],
         ['Viewpoint tool. Press, drag to aim, release', 'C'],
         ['Zoom to fit, zoom in, zoom out', '0', '+', '-'],
+        ['Zoom at the pointer', 'Scroll'],
       ]),
       col('Walkthrough', 'Split shows the plan and the 3D view together. Double-click the plan to walk there.', [
         ['Look around', 'Drag'],
-        ['Move', 'W', 'A', 'S', 'D'],
+        ['Move forward, left, back and right', 'W', 'A', 'S', 'D'],
+        ['Move with the arrow keys', '↑', '←', '↓', '→'],
+        ['Turn left or right', 'Q', 'E'],
         ['Walk faster', 'Shift'],
-        ['Walk to a spot on the floor', 'Click'],
+        ['Walk to a spot on the floor, also from the minimap', 'Click'],
         ['Zoom the view', 'Scroll'],
         ['Jump to a saved view', '1', 'to', '9'],
-        ['Overview: drag to orbit, double-click to walk there', ''],
+        ['Overview: drag to orbit, right drag to pan, scroll to zoom. Click the floor to move there, double-click to walk there', ''],
       ]),
       col('Everywhere', null, [
         ['Undo', MOD, 'Z'],
-        ['Redo', MOD, 'Shift', 'Z'],
+        ['Redo', MOD, 'Shift', 'Z', 'or', MOD, 'Y'],
         ['Save the plan file', MOD, 'S'],
         ['Open a plan file', MOD, 'O'],
         ['Plan, Split or Walk', MOD, '1', '2', '3'],
+        ['Resize Split while the divider has focus', '←', '→'],
         ['This help', '?'],
         ['Close a dialog or cancel', 'Esc'],
       ])),

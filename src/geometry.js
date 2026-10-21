@@ -171,10 +171,14 @@ export function snapAngle(from, to, stepDeg = 45) {
 /** Format a length in meters for display. units: 'imperial' (feet and inches) or 'metric'. */
 export function formatLength(m, units = 'imperial') {
   if (!Number.isFinite(m)) return '';
-  if (units === 'metric') return m < 1 ? `${Math.round(m * 100)} cm` : `${m.toFixed(2)} m`;
+  if (units === 'metric') {
+    const cm = Math.round(Math.abs(m) * 100);
+    const sign = m < 0 && cm > 0 ? '-' : '';
+    return cm < 100 ? `${sign}${cm} cm` : `${sign}${(cm / 100).toFixed(2)} m`;
+  }
   const totalIn = Math.round(Math.abs(m) / INCH);
   const ft = Math.floor(totalIn / 12), inch = totalIn % 12;
-  const sign = m < 0 ? '-' : '';
+  const sign = m < 0 && totalIn > 0 ? '-' : '';
   if (ft === 0) return `${sign}${inch}"`;
   return inch === 0 ? `${sign}${ft}'` : `${sign}${ft}' ${inch}"`;
 }
@@ -185,21 +189,40 @@ export function formatArea(m2, units = 'imperial') {
   return `${Math.round(m2 / (FOOT * FOOT)).toLocaleString('en-US')} sq ft`;
 }
 
+// A decimal (6, 6.5, .5) or a fraction with an optional whole part (1/2, 6 1/2, 6-1/2).
+const AMOUNT = String.raw`(\d+(?:\.\d*)?|\.\d+|(?:\d+[ -])?\d+\/\d+)`;
+const FEET_MARK = String.raw`(?:ft|feet|foot|')`;
+const INCH_MARK = String.raw`(?:in|inch|inches|")`;
+const METRIC_RE = new RegExp(`^${AMOUNT} ?(mm|cm|m)$`);
+const INCHES_RE = new RegExp(`^${AMOUNT} ?${INCH_MARK}$`);
+const FEET_RE = new RegExp(`^${AMOUNT} ?${FEET_MARK}(?: ?-? ?${AMOUNT} ?${INCH_MARK}?)?$`);
+const METRIC_SCALE = { mm: 0.001, cm: 0.01, m: 1 };
+
+function amount(s) {
+  const m = s.match(/^(?:(\d+)[ -])?(\d+)\/(\d+)$/);
+  return m ? +(m[1] || 0) + +m[2] / +m[3] : +s;
+}
+
 /**
- * Parse a typed length into meters. Accepts 12' 6", 12'6, 12ft 6in, 12.5', 150", 3.8m, 380cm,
- * 3800mm. A bare number is feet in imperial mode and meters in metric mode. Returns NaN if invalid.
+ * Parse a typed length into meters. Accepts 12' 6", 12'6, 12'-6", 12' 6 1/2", 6 1/2", 12ft 6in,
+ * 12.5', 150", 3.8m, 3,8 m, .5m, 380cm and 3800mm. A bare number is feet in imperial mode and
+ * meters in metric mode. A leading minus applies to the whole value. Returns NaN if invalid.
  */
 export function parseLength(input, units = 'imperial') {
-  const s = String(input).trim().toLowerCase().replace(/\s+/g, ' ');
-  if (!s) return NaN;
-  let m;
-  if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*mm$/))) return +m[1] / 1000;
-  if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*cm$/))) return +m[1] / 100;
-  if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*m$/))) return +m[1];
-  if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:in|"|'')$/))) return +m[1] * INCH;
-  if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:ft|feet|')\s*(?:(\d+(?:\.\d+)?)\s*(?:in|"|'')?)?$/))) {
-    return +m[1] * FOOT + (m[2] ? +m[2] * INCH : 0);
+  let s = String(input).trim().toLowerCase()
+    .replace(/[\u2032\u2019]/g, "'").replace(/[\u2033\u201d]/g, '"').replace(/''/g, '"')
+    .replace(/(\d),(\d)/g, '$1.$2')
+    .replace(/\s+/g, ' ');
+  let sign = 1;
+  if (s.startsWith('-')) {
+    sign = -1;
+    s = s.slice(1).trim();
   }
-  if ((m = s.match(/^-?\d+(?:\.\d+)?$/))) return units === 'metric' ? +s : +s * FOOT;
-  return NaN;
+  if (!s) return NaN;
+  let m, v = NaN;
+  if ((m = s.match(METRIC_RE))) v = amount(m[1]) * METRIC_SCALE[m[2]];
+  else if ((m = s.match(INCHES_RE))) v = amount(m[1]) * INCH;
+  else if ((m = s.match(FEET_RE))) v = amount(m[1]) * FOOT + (m[2] ? amount(m[2]) * INCH : 0);
+  else if (/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(s)) v = +s * (units === 'metric' ? 1 : FOOT);
+  return Number.isFinite(v) ? sign * v : NaN;
 }

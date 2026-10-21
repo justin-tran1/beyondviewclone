@@ -9,11 +9,13 @@ const DASH = [4, 3];    // hidden or overhead elements, in px
 const TOP_T = 0.025;    // worksurface thickness
 const GAP = 0.003;      // half the reveal between fronts
 const TAU = Math.PI * 2;
+const MAX_REPEAT = 200; // most modules, seats or bushes a run repeats, so absurd sizes stay fast
 
 const BOOKS = ['#003f2d', '#538184', '#80bbad', '#dbd99a', '#435254', '#cad1d3', '#032842', '#7f8480', '#f1f0ea', '#8c5a44'];
 const LEAVES = ['#4f7a4a', '#5f8b52', '#3d6741', '#6d9a5c'];
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const repeats = (n, min = 1) => clamp(n, min, MAX_REPEAT);
 const pick = (rnd, list) => list[Math.floor(rnd() * list.length)];
 const isColor = (c) => typeof c === 'string' && c.length > 0;
 
@@ -983,9 +985,12 @@ function drawPhoneBooth(ctx, o) {
   rect(ctx, -w / 2 + t + 0.02, -d / 2 + t + 0.02, w / 2 - t - 0.02, -d / 2 + t + 0.32);
   circle(ctx, 0, BOOTH.stoolZ, 0.17);
   if (roomy(o)) {
+    // The door hangs on the left jamb and swings out, so the plan shows the clearance it needs.
+    const hx = -w / 2 + t, hy = fz + 0.03, leaf = w - 2 * t;
+    line(ctx, hx, hy, hx, hy + leaf);
     pen(ctx, o, FINE, o.theme.muted, DASH);
     ctx.beginPath();
-    ctx.arc(-w / 2 + t, fz + 0.03, w - 2 * t - 0.04, 0, -Math.PI / 2, true);
+    ctx.arc(hx, hy, leaf, 0, Math.PI / 2);
     ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -999,19 +1004,23 @@ function pantryLayout(w, d, h) {
   const fridgeW = w >= 1.6 ? PANTRY.fridgeW : 0;
   const cx0 = -w / 2, cx1 = w / 2 - fridgeW;
   const len = cx1 - cx0;
-  const n = Math.max(1, Math.round(len / PANTRY.module));
+  const n = repeats(Math.round(len / PANTRY.module));
   const mw = len / n;
-  const sink = n >= 2 ? Math.min(n - 1, Math.floor(n / 2)) : 0;
+  // A middle module holds the sink; a two-module run puts it first so the far end stays free for coffee.
+  const sink = n >= 3 ? Math.floor(n / 2) : 0;
   const dish = n >= 3 ? sink + 1 : -1;
+  const sinkW = Math.min(0.52, mw - 0.12);
+  const sx = cx0 + (sink + 0.5) * mw;
+  const coffeeX = cx1 - 0.28;
   return {
-    fridgeW, cx0, cx1, n, mw, sink, dish,
+    fridgeW, cx0, cx1, n, mw, sink, dish, sinkW, sx, coffeeX,
     zf: d / 2 - 0.05,
     upperD: Math.min(0.34, d * 0.55),
     upperY: Math.min(PANTRY.top + PANTRY.upperGap, h - 0.4),
-    sinkW: Math.min(0.52, mw - 0.12),
     sinkZ0: -d / 2 + 0.13,
     sinkZ1: Math.min(d / 2 - 0.04, -d / 2 + 0.13 + clamp(d - 0.29, 0.12, 0.37)),
-    coffee: len > 1.2 && d >= 0.55,
+    // The machine only goes where it clears the sink and the faucet lever beside it.
+    coffee: len > 1.2 && d >= 0.55 && coffeeX - 0.14 > sx + sinkW / 2 + 0.05,
   };
 }
 
@@ -1021,11 +1030,17 @@ function buildPantry(kit, { w, d, h, color }) {
   const P = pantryLayout(w, d, h);
   const doors = finish(kit, color, m.sagePaint, 0.5);
   const { top, toe } = PANTRY;
-  const ct = 0.03, base = top - ct, zf = P.zf;
+  const ct = 0.03, base = top - ct, zf = P.zf, bowl = 0.2;
   kit.block(g, m.reveal, P.cx0, P.cx1, 0, toe, -d / 2, zf - 0.06);
-  kit.block(g, m.casework, P.cx0, P.cx1, toe, base, -d / 2, zf);
-  const sx = P.cx0 + (P.sink + 0.5) * P.mw;
+  const { sx } = P;
   const hole = { x0: sx - P.sinkW / 2, x1: sx + P.sinkW / 2, z0: P.sinkZ0, z1: P.sinkZ1 };
+  // The carcass leaves a pocket for the bowl, so the sink reads deep and the back stays closed.
+  const p = { x0: hole.x0 - 0.01, x1: hole.x1 + 0.01, z0: hole.z0 - 0.01, z1: Math.min(zf - 0.01, hole.z1 + 0.01) };
+  const parts = [
+    [P.cx0, p.x0, base, -d / 2, zf], [p.x1, P.cx1, base, -d / 2, zf],
+    [p.x0, p.x1, base, -d / 2, p.z0], [p.x0, p.x1, base, p.z1, zf], [p.x0, p.x1, top - bowl - 0.03, p.z0, p.z1],
+  ];
+  for (const [a, b, y, za, zb] of parts) if (b - a > 0.002 && zb - za > 0.002) kit.block(g, m.casework, a, b, toe, y, za, zb);
   for (let i = 0; i < P.n; i++) {
     const a = P.cx0 + i * P.mw, b = a + P.mw;
     if (i === P.dish) dishwasher(kit, g, m, a, b, toe, base, zf);
@@ -1033,12 +1048,12 @@ function buildPantry(kit, { w, d, h, color }) {
     else doorModule(kit, g, m, doors, a, b, toe, base, zf, i === P.sink);
   }
   slab(kit, g, m.quartz, P.cx0, P.cx1, base, top, -d / 2, d / 2, hole);
-  basin(kit, g, m, hole, top, 0.2);
+  basin(kit, g, m, hole, top, bowl);
   faucet(kit, g, m, sx, top, -d / 2 + 0.07, Math.min(0.2, (hole.z0 + hole.z1) / 2 + d / 2 - 0.07));
   const uy = P.upperY;
   kit.block(g, m.quartz, P.cx0, P.cx1, top, uy, -d / 2, -d / 2 + 0.012);
   upperRun(kit, g, m, P.cx0, P.cx1, uy, h, -d / 2, -d / 2 + P.upperD, P.n);
-  if (P.coffee) coffeeMachine(kit, g, m, P.cx1 - 0.28, top, -d / 2 + 0.24);
+  if (P.coffee) coffeeMachine(kit, g, m, P.coffeeX, top, -d / 2 + 0.24);
   if (P.fridgeW) fridgeColumn(kit, g, m, P.cx1, w / 2, h, d, zf);
   return g;
 }
@@ -1150,13 +1165,13 @@ function drawPantry(ctx, o) {
   pen(ctx, o, OUT);
   rect(ctx, P.cx0, -d / 2, P.cx1, d / 2, o.theme.fill);
   pen(ctx, o);
-  const sx = P.cx0 + (P.sink + 0.5) * P.mw;
+  const { sx } = P;
   rrect(ctx, sx - P.sinkW / 2, P.sinkZ0, sx + P.sinkW / 2, P.sinkZ1, 0.04);
   if (roomy(o)) {
     rrect(ctx, sx - P.sinkW / 2 + 0.025, P.sinkZ0 + 0.025, sx + P.sinkW / 2 - 0.025, P.sinkZ1 - 0.025, 0.03);
     circle(ctx, sx, -d / 2 + 0.07, 0.025);
     line(ctx, sx, -d / 2 + 0.07, sx, -d / 2 + 0.27);
-    if (P.coffee) rect(ctx, P.cx1 - 0.42, -d / 2 + 0.07, P.cx1 - 0.14, -d / 2 + 0.39);
+    if (P.coffee) rect(ctx, P.coffeeX - 0.14, -d / 2 + 0.07, P.coffeeX + 0.14, -d / 2 + 0.39);
   }
   pen(ctx, o, FINE, o.theme.muted, DASH);
   line(ctx, P.cx0, -d / 2 + P.upperD, P.cx1, -d / 2 + P.upperD);
@@ -1276,7 +1291,7 @@ function drawPlant(ctx, o) {
 }
 
 function planterLayout(w, d) {
-  const n = Math.max(2, Math.round((w - 0.1) / 0.22));
+  const n = repeats(Math.round((w - 0.1) / 0.22), 2);
   return { n, pitch: (w - 0.1) / n, rim: 0.03, r: clamp(d * 0.3, 0.09, 0.18) };
 }
 
@@ -1486,7 +1501,7 @@ function drawToilet(ctx, o) {
 // ---- Restroom vanity ----------------------------------------------------------------
 
 function vanityLayout(w, d) {
-  const n = Math.max(1, Math.round(w / 0.61));
+  const n = repeats(Math.round(w / 0.61));
   return { n, pitch: w / n, bowlZ: clamp(d * 0.08, 0, 0.06), r: Math.min(0.19, w / n / 2 - 0.06, d * 0.35) };
 }
 
@@ -1512,7 +1527,7 @@ function buildVanity(kit, { w, d, h, color }) {
     kit.block(g, m.chrome, x - 0.012, x + 0.012, h + 0.25, h + 0.27, fz, V.bowlZ - V.r * 0.35);
     if (V.pitch > 0.5) kit.cyl(g, m.chrome, 0.018, 0.12, x + V.r + 0.07, h, fz + 0.01, { segments: 12, rTop: 0.014 });
   }
-  const legs = Math.max(2, Math.ceil(w / 1.5) + 1);
+  const legs = repeats(Math.ceil(w / 1.5) + 1, 2);
   for (let i = 0; i < legs; i++) {
     const x = -w / 2 + 0.07 + (i * (w - 0.14)) / (legs - 1);
     kit.cyl(g, m.steel, 0.019, h - 0.22, x, 0, d / 2 - 0.07, { segments: 14 });
@@ -1557,13 +1572,13 @@ registerItems([
     build: buildDesk, draw2d: drawDesk,
   },
   fixed({
-    type: 'task-chair', name: 'Task chair', category: 'office', colorable: true, planFill: false,
+    type: 'task-chair', name: 'Task chair', category: 'office', colorable: true, planFill: false, contactShadow: 'round',
     w: 0.66, d: 0.66, h: 1.05,
     tags: ['chair', 'seating', 'office chair', 'swivel'],
     build: buildTaskChair, draw2d: drawTaskChair,
   }),
   fixed({
-    type: 'benching-4', name: 'Benching (4 seats)', category: 'office', colorable: true,
+    type: 'benching-4', name: 'Benching (4 seats)', category: 'office', colorable: true, contactShadow: false,
     w: 3.05, d: 2.9, h: 1.2,
     tags: ['bench', 'desk', 'open office', 'workstation', 'hot desk'],
     build: buildBenching, draw2d: drawBenching,
@@ -1575,19 +1590,19 @@ registerItems([
     build: buildExecutiveDesk, draw2d: drawExecutiveDesk,
   }),
   fixed({
-    type: 'conference-table-6', name: 'Conference table (6)', category: 'office',
+    type: 'conference-table-6', name: 'Conference table (6)', category: 'office', contactShadow: false,
     w: 3.05, d: 2.44, h: 0.75,
     tags: ['meeting', 'conference', 'table', 'boardroom', 'huddle'],
     build: buildConference(6), draw2d: drawConference(6),
   }),
   fixed({
-    type: 'conference-table-10', name: 'Conference table (10)', category: 'office',
+    type: 'conference-table-10', name: 'Conference table (10)', category: 'office', contactShadow: false,
     w: 4.88, d: 2.74, h: 0.75,
     tags: ['meeting', 'conference', 'table', 'boardroom'],
     build: buildConference(10), draw2d: drawConference(10),
   }),
   fixed({
-    type: 'round-table-4', name: 'Round table (4)', category: 'office', planFill: false,
+    type: 'round-table-4', name: 'Round table (4)', category: 'office', planFill: false, contactShadow: 'round',
     w: 1.83, d: 1.83, h: 0.75,
     tags: ['table', 'round', 'meeting', 'cafe', 'breakout'],
     build: buildRoundTable, draw2d: drawRoundTable,
@@ -1647,7 +1662,7 @@ registerItems([
     build: buildColumn, draw2d: drawColumn,
   },
   fixed({
-    type: 'plant', name: 'Floor plant', category: 'general', planFill: false,
+    type: 'plant', name: 'Floor plant', category: 'general', planFill: false, contactShadow: 'round',
     w: 0.61, d: 0.61, h: 1.52,
     tags: ['plant', 'greenery', 'biophilic', 'tree'],
     build: buildPlant, draw2d: drawPlant,

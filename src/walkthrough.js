@@ -18,8 +18,10 @@ const RADIUS = 0.25;
 const SPEED = { walk: 1.4, run: 3, glide: 2.2, turn: 90 };
 const ACCEL = 8;
 const FOV = { walk: 70, min: 35, max: 80, overview: 45 };
-const PITCH_LIMIT = 70;
+const PITCH_LIMIT = 70; // matches the camera pitch limit in normalizePlan
 const MAX_STEP = 0.05;
+const PUSH_ITERATIONS = 8;
+const OUTDOOR_MARGIN = 15; // how far outside the plan bounds the walker may go
 const REACH = RADIUS + 0.8;
 const SLOP = { mouse: 4, pen: 4, touch: 10 };
 const REBUILD_DELAY = 300;
@@ -32,6 +34,7 @@ const TRANSITION = 1.1;
 const OVERVIEW_ELEVATION = 52;
 const GREEN = '#003F2D';
 const ACCENT = '#17E88F';
+const TEXT = '#435254';
 const FONT = 'Calibre, "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif';
 const EMPTY_PLAN = { units: 'imperial', underlay: null, walls: [], openings: [], rooms: [], items: [], cameras: [] };
 const MOVE_KEYS = {
@@ -96,8 +99,11 @@ class Grid {
   }
 }
 
-function collisionWorld(colliders, obstacles) {
+/** Walls and obstacles in a grid, plus the outdoor limits (plan bounds grown by OUTDOOR_MARGIN) when bounds are given. */
+function collisionWorld(colliders, obstacles, bounds = null) {
   const grid = new Grid(2);
+  const m = OUTDOOR_MARGIN;
+  grid.limits = bounds ? { minX: bounds.minX - m, minY: bounds.minY - m, maxX: bounds.maxX + m, maxY: bounds.maxY + m } : null;
   for (const c of colliders || []) {
     if (!c?.a || !c?.b) continue;
     const r = Math.max(0, finite(c.r, 0));
@@ -198,17 +204,32 @@ function pushFromPolygon(e, p) {
   return true;
 }
 
-/** Push p (mutated) out of walls and obstacles; resolving along contact normals keeps the slide. */
+const outside = (lim, x, y) => !!lim && !(x >= lim.minX && x <= lim.maxX && y >= lim.minY && y <= lim.maxY);
+
+/**
+ * Push p (mutated) inside the outdoor limits and out of walls and obstacles; resolving along contact
+ * normals keeps the slide. Returns false when p still overlaps something (a gap narrower than the walker).
+ */
 function pushOut(world, p, prev) {
+  const lim = world.limits;
+  if (lim) {
+    p.x = clamp(p.x, lim.minX, lim.maxX);
+    p.y = clamp(p.y, lim.minY, lim.maxY);
+  }
   const near = world.query(p.x - REACH, p.y - REACH, p.x + REACH, p.y + REACH, _near);
-  for (let iter = 0; iter < 4; iter++) {
+  for (let iter = 0; iter < PUSH_ITERATIONS; iter++) {
     let hit = false;
     for (const e of near) if (e.seg ? pushFromSegment(e, p, prev) : pushFromPolygon(e, p)) hit = true;
-    if (!hit) return;
+    if (!hit) return true;
   }
+  return isFree(world, p.x, p.y);
 }
 
-/** Move p by (dx, dy) in short substeps so fast moves never skip through thin walls. Returns the distance covered. */
+/**
+ * Move p by (dx, dy) in short substeps so fast moves never skip through thin walls. A substep that
+ * cannot be resolved is undone, so the walker never squeezes through a gap narrower than itself,
+ * whatever the frame rate. Returns the distance covered.
+ */
 function moveWithCollisions(world, p, dx, dy) {
   const L = Math.hypot(dx, dy);
   if (L < 1e-9) return 0;
@@ -220,12 +241,16 @@ function moveWithCollisions(world, p, dx, dy) {
     prev.y = p.y;
     p.x += dx / n;
     p.y += dy / n;
-    pushOut(world, p, prev);
+    if (!pushOut(world, p, prev) && isFree(world, prev.x, prev.y)) {
+      p.x = prev.x;
+      p.y = prev.y;
+    }
   }
   return Math.hypot(p.x - x0, p.y - y0);
 }
 
 function isFree(world, x, y, clearance = 0) {
+  if (outside(world.limits, x, y)) return false;
   const R = RADIUS + clearance - 1e-4;
   const near = world.query(x - REACH - clearance, y - REACH - clearance, x + REACH + clearance, y + REACH + clearance, _near);
   const p = { x, y };
@@ -421,6 +446,8 @@ export class Walkthrough extends EventTarget {
     this._running = false;
     this._visible = true;
     this._raf = 0;
+    this._inFrame = false;
+    this._again = false;
     this._last = 0;
     this._dirty = true;
     this._size = { w: 0, h: 0 };
@@ -444,6 +471,7 @@ export class Walkthrough extends EventTarget {
     this._hoverPos = null;
     this._hoverMoved = false;
     this._built = null;
+    this._failure = null;
     this._buildTextures = new Set();
     this._buildMs = 0;
     this._key = '';
@@ -502,9 +530,8 @@ export class Walkthrough extends EventTarget {
     try {
       built = buildPlanScene(plan, { kit: this._kit.kit, quality: 'high' });
     } catch (err) {
-      console.error('Could not build the 3D view', err);
-      this._kit.takeTextures();
-      this._stale = false;
+      this._buildMs = performance.now() - t0;
+      this._buildFailed(plan, err);
       return;
     }
     this._buildMs = performance.now() - t0;
@@ -514,9 +541,10 @@ export class Walkthrough extends EventTarget {
     this._buildTextures = textures;
     this._key = sceneKey(plan);
     this._stale = false;
+    this._showFailure(null);
     this._scene.add(built.root);
     this._env.fit(built.bounds);
-    this._world = collisionWorld(built.colliders, built.obstacles);
+    this._world = collisionWorld(built.colliders, built.obstacles, built.bounds);
     this._occluders = itemOccluders(plan);
     this._ceilTop = Math.max(plan.settings.wallHeight, ...plan.rooms.map((r) => r.height || 0)) + 1.2;
     const far = Math.max(600, (built.root.userData.horizon || 1000) * 1.3);
@@ -583,6 +611,7 @@ export class Walkthrough extends EventTarget {
     this._invalidate();
   }
 
+  /** Go to a saved view. Emits 'camera' {id, arriving} so the views strip can follow, whatever started the jump. */
   goToCamera(id) {
     const cam = this.store.plan.cameras.find((c) => c.id === id);
     if (!cam) return false;
@@ -593,12 +622,18 @@ export class Walkthrough extends EventTarget {
     } else {
       this.goTo(pose);
     }
+    if (this._anim) this._anim.camera = id;
+    this._emitCamera(id, !!this._anim);
     return true;
   }
 
   /** PNG of the current view, rendered fresh at full resolution. */
   screenshot() {
     return new Promise((resolve, reject) => {
+      if (!this._built) {
+        reject(new Error('This plan could not be shown in 3D, so there is no 3D view to save.'));
+        return;
+      }
       if (!this._applySize()) {
         reject(new Error('The 3D view is not visible, so there is nothing to capture.'));
         return;
@@ -648,7 +683,7 @@ export class Walkthrough extends EventTarget {
     this._env.dispose();
     this._renderer.dispose();
     this._renderer.forceContextLoss();
-    for (const el of [this._canvas, this._mini?.el, this._badge]) el?.remove();
+    for (const el of [this._canvas, this._mini?.el, this._badge, this._failure]) el?.remove();
     const r = this._restore;
     if (r.tabindex) this.container.removeAttribute('tabindex');
     if (r.ariaLabel) this.container.removeAttribute('aria-label');
@@ -838,12 +873,52 @@ export class Walkthrough extends EventTarget {
     this._buildTextures = new Set();
   }
 
+  /** The plan has no 3D scene: drop the previous one so it is not taken for this plan, and say why. */
+  _buildFailed(plan, err) {
+    console.error('Could not build the 3D view', err);
+    for (const t of this._kit.takeTextures()) t.dispose();
+    if (this._built) this._disposeBuilt();
+    this._built = null;
+    this._key = sceneKey(plan);
+    this._stale = false;
+    this._world = collisionWorld([], []);
+    this._occluders = new Grid();
+    this._cancelMotion();
+    this._ring.visible = false;
+    this._renderer.shadowMap.needsUpdate = true;
+    this._layoutMinimap();
+    this._showFailure(err);
+    this._invalidate();
+  }
+
+  /** In-view message shown while the plan cannot be built; null hides it. */
+  _showFailure(err) {
+    if (!err) {
+      this._failure?.remove();
+      this._failure = null;
+      return;
+    }
+    if (!this._failure) {
+      this._failure = styled('div', {
+        position: 'absolute', inset: '0', zIndex: '3', display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', gap: '6px', padding: '24px', background: '#E8EFF2', color: TEXT, textAlign: 'center',
+      });
+      this._failure.setAttribute('role', 'alert');
+      this.container.append(this._failure);
+    }
+    const title = styled('strong', { font: `600 16px/22px ${FONT}` });
+    title.textContent = 'This plan could not be shown in 3D';
+    const reason = styled('span', { maxWidth: '440px', font: `400 13px/18px ${FONT}`, overflowWrap: 'anywhere' });
+    reason.textContent = err?.message || '';
+    this._failure.replaceChildren(title, reason);
+  }
+
   /** First saved camera, else the largest room or the plan center, moved to a free spot and facing the long axis. */
   _startPose(plan, built) {
     const cam = plan.cameras[0];
     if (cam) {
       const p = this._freeSpot(cam);
-      return { x: p.x, y: p.y, yaw: normDeg(cam.yaw), pitch: clamp(cam.pitch, -PITCH_LIMIT, PITCH_LIMIT) };
+      return { x: p.x, y: p.y, yaw: normDeg(finite(cam.yaw, 0)), pitch: clamp(finite(cam.pitch, 0), -PITCH_LIMIT, PITCH_LIMIT) };
     }
     const b = built.bounds;
     let room = null;
@@ -881,8 +956,10 @@ export class Walkthrough extends EventTarget {
     return this._running && this._visible && !document.hidden && !this._disposed && this._size.w > 0 && this._size.h > 0;
   }
 
+  /** Ask for a frame. At most one is ever pending; a request made during a frame queues the next one. */
   _kick() {
-    if (!this._raf && this._canRender()) this._raf = requestAnimationFrame((t) => this._frame(t));
+    if (this._inFrame) this._again = true;
+    else if (!this._raf && this._canRender()) this._raf = requestAnimationFrame((t) => this._frame(t));
   }
 
   _invalidate() {
@@ -899,20 +976,27 @@ export class Walkthrough extends EventTarget {
     const frameMs = this._last ? now - this._last : 0;
     const dt = Math.min(MAX_DT, frameMs / 1000);
     this._last = now;
-    const active = this._update(dt);
-    const ratio = active || this._look?.moved || this._pinch ? this._motionRatio : this._baseRatio;
-    if (this._renderer.getPixelRatio() !== ratio) {
-      this._renderer.setPixelRatio(ratio);
-      this._applySize();
+    this._inFrame = true;
+    this._again = false;
+    let active = false;
+    try {
+      active = this._update(dt);
+      const ratio = active || this._look?.moved || this._pinch ? this._motionRatio : this._baseRatio;
+      if (this._renderer.getPixelRatio() !== ratio) {
+        this._renderer.setPixelRatio(ratio);
+        this._applySize();
+      }
+      if (active || this._dirty) this._render();
+    } finally {
+      this._inFrame = false;
     }
-    if (active || this._dirty) this._render();
     if (active) {
       this._governor(frameMs);
-      this._raf = requestAnimationFrame((t) => this._frame(t));
     } else {
       this._last = 0;
       this._perf.n = 0;
     }
+    if (active || this._again) this._kick();
   }
 
   /** Lowers the pixel ratio used while moving when frames are slow. Idle frames stay at full resolution. */
@@ -1066,9 +1150,24 @@ export class Walkthrough extends EventTarget {
     if (a.t >= 1) {
       Object.assign(p, a.to);
       this._anim = null;
+      if (a.camera) this._emitCamera(a.camera, false);
     }
     this._touchPose();
     return true;
+  }
+
+  /** End a goTo transition early. Its straight path ignores walls, so settle on a spot the walker can stand on. */
+  _stopAnim() {
+    const a = this._anim;
+    if (!a) return;
+    this._anim = null;
+    this._settlePose();
+    this._touchPose();
+    if (a.camera) this._emitCamera(null, false);
+  }
+
+  _emitCamera(id, arriving) {
+    this.dispatchEvent(new CustomEvent('camera', { detail: { id, arriving } }));
   }
 
   _stepInertia(dt) {
@@ -1142,8 +1241,8 @@ export class Walkthrough extends EventTarget {
   }
 
   _cancelMotion() {
+    this._stopAnim();
     this._glide = null;
-    this._anim = null;
     this._inertia = null;
     this._vel.x = this._vel.y = 0;
   }
@@ -1283,7 +1382,7 @@ export class Walkthrough extends EventTarget {
     }
     this._canvas.setPointerCapture?.(e.pointerId);
     this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    this._anim = null;
+    this._stopAnim();
     this._inertia = null;
     if (this._pointers.size === 2) {
       const [p, q] = [...this._pointers.values()];
@@ -1433,7 +1532,7 @@ export class Walkthrough extends EventTarget {
     if (!this._keys.has(move)) {
       this._keys.add(move);
       this._glide = null;
-      this._anim = null;
+      this._stopAnim();
     }
     this._invalidate();
   }
@@ -1462,7 +1561,7 @@ export class Walkthrough extends EventTarget {
     const plan = this.store.plan;
     const { w: W, h: H } = this._size;
     const b = planBounds(plan, { underlay: false });
-    m.enabled = (plan.walls.length > 0 || plan.rooms.length > 0) && Number.isFinite(b.minX) && W >= 420 && H >= 320;
+    m.enabled = !!this._built && (plan.walls.length > 0 || plan.rooms.length > 0) && Number.isFinite(b.minX) && W >= 420 && H >= 320;
     if (!m.enabled) {
       this._showMinimap(false);
       return;

@@ -27,8 +27,11 @@ export function drawItemThumb(canvas, def, cssW = THUMB.w, cssH = THUMB.h) {
   ctx.translate(cssW / 2, cssH / 2);
   ctx.scale(s, s);
   try {
-    ctx.fillStyle = THEME.item.fill;
-    ctx.fillRect(-def.w / 2, -def.d / 2, def.w, def.d);
+    // The same footprint fill as the plan: none for round, open or walk-through items.
+    if (def.planFill !== false && def.blocking !== false) {
+      ctx.fillStyle = THEME.item.fill;
+      ctx.fillRect(-def.w / 2, -def.d / 2, def.w, def.d);
+    }
     def.draw2d(ctx, { w: def.w, d: def.d, h: def.h, px: 1 / s, theme: THEME.item });
   } catch {
     ctx.strokeStyle = THEME.item.muted;

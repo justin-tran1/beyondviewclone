@@ -90,8 +90,67 @@ export function itemDims(item) {
   return { w: item.w ?? def.w, d: item.d ?? def.d, h: item.h ?? def.h };
 }
 
-/** Case-insensitive search over name, type and tags. */
+const STOP_WORDS = new Set(['a', 'an', 'and', 'for', 'in', 'of', 'on', 'or', 'the', 'to', 'with']);
+
+/** A word without its plural ending: desks, benches, shelves and libraries become desk, bench, shelf, library. */
+function singular(w) {
+  if (w.length <= 3 || /(ss|us|is)$/.test(w)) return w;
+  if (w.endsWith('ies')) return `${w.slice(0, -3)}y`;
+  if (w.endsWith('ves')) return `${w.slice(0, -3)}f`;
+  if (/(ch|sh|x|z)es$/.test(w)) return w.slice(0, -2);
+  return w.endsWith('s') ? w.slice(0, -1) : w;
+}
+
+const words = (text) => String(text).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !STOP_WORDS.has(w)).map(singular);
+
+/**
+ * Words each category is found by: its id and label, without the ids of other categories, so
+ * "office" finds general office items and not every medical office item.
+ */
+const categoryWords = (id) => {
+  const others = new Set(CATEGORIES.filter((c) => c.id !== id).map((c) => c.id));
+  return [...new Set([id, ...words(CATEGORIES.find((c) => c.id === id)?.label || '')])].filter((w) => !others.has(w));
+};
+
+/**
+ * How well query word q matches a list of item words: 3 a whole word, 2 the start of a word, 1 inside
+ * a word (only for longer queries, so "bin" does not find "cabinet"), 0 no match.
+ */
+function wordMatch(q, list, raw) {
+  let best = 0;
+  for (const w of list) {
+    if (w === q || w === raw) return 3;
+    if (w.startsWith(q) || w.startsWith(raw)) best = 2;
+    else if (best < 1 && raw.length >= 4 && (w.includes(q) || w.includes(raw))) best = 1;
+  }
+  return best;
+}
+
+/**
+ * Search by name, tags, type and category. Every word of the query must match; plurals match their
+ * singular. Items are ranked by match quality, names before tags before categories. Words that
+ * only match inside other words are used only when nothing matches better.
+ */
 export function searchItems(query, category) {
-  const q = query.trim().toLowerCase();
-  return listItems(category).filter((d) => !q || [d.name, d.type, ...(d.tags || [])].some((s) => s.toLowerCase().includes(q)));
+  const raws = String(query).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !STOP_WORDS.has(w));
+  const items = listItems(category);
+  if (!raws.length) return items;
+  const scored = items.map((d, order) => {
+    const fields = [words(d.name), words(`${(d.tags || []).join(' ')} ${d.type}`), categoryWords(d.category)];
+    let quality = 3, weight = 0;
+    for (const raw of raws) {
+      const q = singular(raw);
+      const per = fields.map((f) => wordMatch(q, f, raw));
+      const best = Math.max(...per);
+      quality = Math.min(quality, best);
+      weight += best * 10 + (per[0] === best ? 2 : per[1] === best ? 1 : 0);
+    }
+    return { d, quality, weight, order };
+  }).filter((r) => r.quality > 0);
+  const top = Math.max(0, ...scored.map((r) => r.quality));
+  // A short word that names something exactly ("pos", "iv") does not also list everything starting with it.
+  const floor = top >= 2 ? (top === 3 && raws.every((w) => w.length <= 3) ? 3 : 2) : 1;
+  return scored.filter((r) => r.quality >= floor)
+    .sort((a, b) => b.quality - a.quality || b.weight - a.weight || a.order - b.order)
+    .map((r) => r.d);
 }

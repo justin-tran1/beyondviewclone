@@ -1,5 +1,6 @@
 // Developer test bed for the 2D plan editor. Mounts a full-window PlanEditor on a plan built in
-// code (every wall kind, every opening type, rooms, items, a view). Query options:
+// code (every wall kind, every opening type, T-junctions, rooms, items, a labeled item, a view).
+// Query options:
 //   ?empty=1      start from an empty plan      ?units=metric   metric display units
 //   ?bare=1       hide the toolbar and status   ?walker=1       show a walkthrough marker
 import { PlanStore, createPlan, addWall, addOpening, addRoom, addItem, addCamera } from '../src/model.js';
@@ -110,12 +111,12 @@ function samplePlan(cat) {
   room('Open office', [[0, 18], [60, 18], [60, 24], [36, 24], [36, 40], [0, 40]], 'carpet');
   room('Break room', [[36, 24], [60, 24], [60, 40], [36, 40]], 'vinyl');
 
-  const item = (type, x, y, rotation = 0) => addItem(plan, type, x * FOOT, y * FOOT, { rotation });
+  const item = (type, x, y, rotation = 0, props = {}) => addItem(plan, type, x * FOOT, y * FOOT, { rotation, ...props });
   item(cat.table, 10, 9);
   item(cat.desk, 26, 2.5);
   item(cat.chair, 26, 5.5, 180);
   item(cat.desk, 38, 2.5);
-  item(cat.bench, 52, 1.8);
+  item(cat.bench, 52, 1.8, 0, { label: 'Bench 1' });
   for (const x of [6, 14, 22, 30]) item(cat.desk, x, 37.2, 180);
   item(cat.sofa, 48, 37.5, 180);
   addCamera(plan, 4 * FOOT, 21 * FOOT, 90, { name: 'Entry' });

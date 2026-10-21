@@ -62,7 +62,11 @@ no framework, no bundler. Serve the repo root over HTTP (`npm start`).
 ```
 
 `FloorKey` is a key of `FLOORS` in `model.js`. Walls are independent segments; corners are walls
-whose endpoints coincide. `normalizePlan` accepts untrusted input and always returns a valid plan.
+whose endpoints coincide; a wall ending on another wall's span is a tee, and `moveWall` keeps tees
+attached and rooms following. `normalizePlan` accepts untrusted input and always returns a valid
+plan: it drops non-finite values and entities beyond 10,000 m, clamps item sizes to 60 m and camera
+pitch to ±70°, caps each collection at 20,000 entries, and keeps an underlay only when its `src` is a
+`data:image/` URL. `serializePlan` writes `format: 'cbre-walkthrough-plan'` so files can be recognized.
 
 ## Module contracts
 
@@ -141,8 +145,14 @@ export function buildPlanScene(plan, { kit, quality = 'high' }) -> {
   bounds,        // plan-space bounds
   dispose(),
 }
-export function setupEnvironment(renderer, scene) -> { sun, fit(bounds), dispose() }
+export function setupEnvironment(renderer, scene) -> { sun, hemi, fit(bounds), dispose() }
 ```
+
+`buildPlanScene` throws an `Error` with a readable message when a plan cannot be built (for example
+a plan too large to show); the walkthrough displays that message in place of the 3D view.
+`root.userData.horizon` is the sky dome radius, used to size the camera's far plane. Colliders also
+include door leaves, jambs and sliding door glass; passable doorways keep their full clear width.
+`ItemDef.contactShadow` may be `true`, `'round'` or `false`.
 
 ### `walkthrough.js`
 
@@ -158,13 +168,16 @@ export class Walkthrough extends EventTarget {
   get pose()                     // {x, y, yaw, pitch}
   screenshot() -> Promise<Blob>  // PNG of the current view
   resize(), dispose()
-  // Events: 'pose' {x, y, yaw, pitch}, 'mode' {mode}
+  // Events: 'pose' {x, y, yaw, pitch}, 'mode' {mode},
+  //         'camera' {id, arriving}: heading to a saved view (arriving true), arrived (false),
+  //                                  or the trip was cut short (id null)
 }
 ```
 
 Walk controls: drag to look, `WASD`/arrows to move, `Shift` to walk faster, click the floor to walk
-there, scroll to zoom (field of view), `1`–`9` jump to saved views. Collisions keep a 0.25 m radius
-from walls and blocking items; doors and cased openings are passable, windows and glass are not.
+there, `Q`/`E` to turn, scroll to zoom (field of view), `1` to `9` jump to saved views. Collisions keep
+a 0.25 m radius from walls and blocking items; doors and cased openings are passable, windows and
+glass are not, and the walker stays within the plan bounds plus 15 m outdoors.
 
 ## Brand
 

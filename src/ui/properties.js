@@ -5,7 +5,8 @@ import {
 } from '../model.js';
 import { getItem, itemDims, hasItem } from '../catalog/registry.js';
 import {
-  formatLength, parseLength, formatArea, polygonArea, wallLength, wallDir, normDeg, clamp,
+  formatLength, parseLength, formatArea, polygonArea, wallLength, wallDir, wallNormal, normDeg, clamp,
+  add, sub, scale, dot, rotate, projectToSegment, openingSpan,
 } from '../geometry.js';
 import { h, iconEl, MOD } from './dom.js';
 import { categoryLabel } from './library.js';
@@ -21,8 +22,69 @@ const DOORS = new Set(['door', 'double-door', 'sliding-door']);
 const HINGED = new Set(['door', 'sliding-door']);
 const KIND_TITLE = { wall: 'Wall', opening: 'Opening', room: 'Room', item: 'Item', camera: 'Viewpoint' };
 const LENGTH_HINT = 'Enter a length such as 12\' 6", 12.5 or 3.8 m.';
+const OPENING_GAP = 0.05;
 
 let fieldSerial = 0;
+
+/**
+ * The stretch of its wall (meters from wall.a) an opening can use: clear of the walls joined at the
+ * ends or along it and of its neighbors, with the same gaps the editor keeps. Always includes the
+ * opening's current span.
+ */
+function openingRoom(plan, wall, o) {
+  const L = wallLength(wall);
+  const u = wallDir(wall);
+  const span = openingSpan(wall, o);
+  let lo = 0, hi = L;
+  for (const w of plan.walls) {
+    if (w.id === wall.id) continue;
+    const t = w.thickness / 2 + OPENING_GAP;
+    if (projectToSegment(wall.a, w.a, w.b).dist < 2e-3) lo = Math.max(lo, t);
+    if (projectToSegment(wall.b, w.a, w.b).dist < 2e-3) hi = Math.min(hi, L - t);
+    for (const p of [w.a, w.b]) {
+      const pr = projectToSegment(p, wall.a, wall.b);
+      if (pr.dist > 2e-3 || pr.t <= 1e-6 || pr.t >= 1 - 1e-6) continue;
+      const along = dot(sub(p, wall.a), u);
+      if (along <= span.center) lo = Math.max(lo, along + t);
+      else hi = Math.min(hi, along - t);
+    }
+  }
+  for (const other of plan.openings) {
+    if (other.wallId !== wall.id || other.id === o.id) continue;
+    const s = openingSpan(wall, other);
+    if (s.center <= span.center) lo = Math.max(lo, s.end + OPENING_GAP);
+    else hi = Math.min(hi, s.start - OPENING_GAP);
+  }
+  return { lo: Math.min(lo, span.start), hi: Math.max(hi, span.end) };
+}
+
+/** Give a draft opening a width that fits beside its neighbors, moving it along the wall only as needed. */
+function fitOpening(draft, o, width) {
+  const wall = findEntity(draft, 'wall', o.wallId);
+  if (!wall) return;
+  const room = openingRoom(draft, wall, o);
+  const center = openingSpan(wall, o).center;
+  o.width = Math.max(0.2, Math.min(width, room.hi - room.lo));
+  o.offset = clamp(center, room.lo + o.width / 2, Math.max(room.lo + o.width / 2, room.hi - o.width / 2));
+  clampOpenings(draft);
+}
+
+/** The front direction of an item on the plan (its local +y). */
+const itemFront = (it) => rotate({ x: 0, y: 1 }, it.rotation || 0);
+
+/** True when an item's back edge sits on a wall face, as it does when placed against a wall. */
+function backOnWall(plan, it, dims) {
+  const front = itemFront(it);
+  const back = sub(it, scale(front, dims.d / 2));
+  return plan.walls.some((w) => {
+    const n = wallNormal(w);
+    const facing = dot(front, n);
+    if (Math.abs(facing) < 0.99) return false;
+    const rel = sub(back, w.a);
+    const along = dot(rel, wallDir(w)), off = dot(rel, n);
+    return along > -0.05 && along < wallLength(w) + 0.05 && facing * off > 0 && Math.abs(Math.abs(off) - w.thickness / 2) < 0.03;
+  });
+}
 
 export function createProperties(root, { store, editor, actions }) {
   const header = h('div', { class: 'props-header' });
@@ -51,24 +113,30 @@ export function createProperties(root, { store, editor, actions }) {
 
     const sync = (fn) => { syncers.push(fn); fn(); };
     const focused = (el) => document.activeElement === el;
+    // Enter and Esc hand the keyboard back to the plan, so its shortcuts work right away.
+    const toPlan = () => editor.canvas.focus({ preventScroll: true });
     const commitKeys = (input, revert) => input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); revert(); input.blur(); }
+      if (e.key === 'Enter') { e.preventDefault(); toPlan(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); revert(); toPlan(); }
     });
 
-    function showError(input, msg) {
+    /** A message under a field: an error (the value was not used) or a note (it was adjusted). */
+    function showError(input, msg, { note = false } = {}) {
       const wrap = input.closest('.prop-row');
-      input.setAttribute('aria-invalid', 'true');
-      let note = wrap.querySelector('.prop-error');
-      if (!note) {
-        note = h('div', { class: 'prop-error', id: `${input.id}-err`, attrs: { role: 'alert' } });
-        wrap.append(note);
-        input.setAttribute('aria-describedby', note.id);
+      if (note) input.removeAttribute('aria-invalid');
+      else input.setAttribute('aria-invalid', 'true');
+      let el = wrap.querySelector('.prop-error');
+      if (!el) {
+        el = h('div', { class: 'prop-error', id: `${input.id}-err`, attrs: { role: 'alert' } });
+        wrap.append(el);
+        input.setAttribute('aria-describedby', el.id);
       }
-      note.textContent = msg;
+      el.classList.toggle('prop-error-note', note);
+      el.textContent = msg;
     }
     function clearError(input) {
       input.removeAttribute('aria-invalid');
+      input.removeAttribute('aria-describedby');
       input.closest('.prop-row')?.querySelector('.prop-error')?.remove();
     }
 
@@ -89,13 +157,14 @@ export function createProperties(root, { store, editor, actions }) {
         return row(label, input, id);
       },
 
-      length({ label, get, set, min = 0.01, max = 500, name }) {
+      /** `limit()` optionally caps the value further: larger entries are reduced to it, with a note. */
+      length({ label, get, set, min = 0.01, max = 500, limit, name }) {
         const id = `f${++fieldSerial}`;
         const input = h('input', { type: 'text', class: 'input input-length', id, attrs: { autocomplete: 'off', spellcheck: 'false' }, dataset: { field: name || label } });
         const revert = () => { input.value = fmt(get()); };
         input.addEventListener('input', () => clearError(input));
         input.addEventListener('change', () => {
-          const m = parseLength(input.value, units());
+          let m = parseLength(input.value, units());
           if (!Number.isFinite(m)) {
             showError(input, LENGTH_HINT);
             revert();
@@ -107,6 +176,11 @@ export function createProperties(root, { store, editor, actions }) {
             return;
           }
           clearError(input);
+          const cap = limit?.();
+          if (cap !== undefined && m > cap + 1e-6) {
+            m = cap;
+            showError(input, `Limited to ${fmt(cap)}, the free space on this wall.`, { note: true });
+          }
           if (Math.abs(m - get()) > 1e-6) set(m);
           revert();
         });
@@ -232,10 +306,12 @@ export function createProperties(root, { store, editor, actions }) {
   function openingPanel(b, o) {
     const id = o.id;
     const get = (fn) => () => { const e = findEntity(store.plan, 'opening', id); return e ? fn(e) : 0; };
-    const wallMax = () => {
+    const freeWidth = () => {
       const e = findEntity(store.plan, 'opening', id);
       const w = e && findEntity(store.plan, 'wall', e.wallId);
-      return w ? Math.max(0.2, Math.min(20, wallLength(w))) : 20;
+      if (!w) return undefined;
+      const room = openingRoom(store.plan, w, e);
+      return room.hi - room.lo;
     };
     const rows = [
       b.select({
@@ -244,17 +320,15 @@ export function createProperties(root, { store, editor, actions }) {
           const e = findEntity(d, 'opening', id);
           if (!e) return;
           const t = OPENING_TYPES[type];
-          Object.assign(e, { type, width: t.width, height: t.height, sill: t.sill });
-          clampOpenings(d);
+          Object.assign(e, { type, height: t.height, sill: t.sill });
+          fitOpening(d, e, t.width);
         }, { label: 'Change opening type' }),
       }),
       b.length({
-        label: 'Width', name: 'width', min: 0.2, max: wallMax(), get: get((e) => e.width),
+        label: 'Width', name: 'width', min: 0.2, max: 20, limit: freeWidth, get: get((e) => e.width),
         set: (v) => store.update((d) => {
           const e = findEntity(d, 'opening', id);
-          if (!e) return;
-          e.width = v;
-          clampOpenings(d);
+          if (e) fitOpening(d, e, v);
         }, { label: 'Change opening width' }),
       }),
       b.length({
@@ -327,7 +401,12 @@ export function createProperties(root, { store, editor, actions }) {
     if (def.resizable) {
       const dim = (key, label, max) => b.length({
         label, name: key, min: 0.05, max, get: get((e) => itemDims(e)[key]),
-        set: (v) => edit('item', id, `Resize ${def.name.toLowerCase()}`, (e) => { e[key] = v; }),
+        set: (v) => edit('item', id, `Resize ${def.name.toLowerCase()}`, (e, d) => {
+          // Against a wall the back stays on the wall face and the item grows into the room.
+          const dims = itemDims(e);
+          if (key === 'd' && backOnWall(d, e, dims)) Object.assign(e, add(e, scale(itemFront(e), (v - dims.d) / 2)));
+          e[key] = v;
+        }),
       });
       sizeSection = section('Size', dim('w', 'Width', 50), dim('d', 'Depth', 50),
         def.resizableHeight ? dim('h', 'Height', 20) : b.readout({ label: 'Height', get: get((e) => fmt(itemDims(e).h)) }));
@@ -467,7 +546,7 @@ export function createProperties(root, { store, editor, actions }) {
       b.readout({ label: 'Image spans', get: span }),
       actionsRow(
         h('button', { type: 'button', class: 'btn btn-primary btn-sm', dataset: { tip: 'Click both ends of a known length on the image' }, on: { click: actions.calibrate } }, iconEl('calibrate'), h('span', { class: 'btn-label', text: 'Calibrate scale' })),
-        h('button', { type: 'button', class: 'btn btn-secondary btn-sm icon-only', dataset: { tip: 'Replace the image' }, attrs: { 'aria-label': 'Replace the image' }, on: { click: actions.importImage } }, iconEl('upload')),
+        h('button', { type: 'button', class: 'btn btn-secondary btn-sm icon-only', dataset: { tip: 'Replace the image' }, attrs: { 'aria-label': 'Replace the image' }, on: { click: actions.replaceImage } }, iconEl('upload')),
         h('button', { type: 'button', class: 'btn btn-secondary btn-sm btn-danger icon-only', dataset: { tip: 'Remove the image' }, attrs: { 'aria-label': 'Remove the image' }, on: { click: actions.removeImage } }, iconEl('trash'))));
   }
 

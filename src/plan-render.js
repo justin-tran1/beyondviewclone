@@ -5,7 +5,7 @@
 import { FLOORS } from './model.js';
 import { getItem, itemDims } from './catalog/registry.js';
 import {
-  FOOT, add, sub, scale as mul, dot, cross, dist, len, clamp, deg2rad, rotate,
+  FOOT, INCH, add, sub, scale as mul, dot, cross, dist, len, clamp, deg2rad, rotate,
   wallLength, wallDir, wallNormal, pointOnWall, openingSpan,
   polygonArea, polygonCentroid, pointInPolygon, projectToSegment, boundsOf, emptyBounds,
   itemCorners, formatLength, formatArea,
@@ -292,9 +292,10 @@ export function cameraHandlePoint(view, cam) {
 
 // ---- Grid --------------------------------------------------------------------
 
+// Finest first: 6 in and 10 cm lines (the editor's snap step) appear once zoomed in far enough.
 const GRID_LEVELS = {
-  imperial: [[FOOT, 5 * FOOT], [5 * FOOT, 25 * FOOT], [25 * FOOT, 100 * FOOT], [100 * FOOT, 500 * FOOT]],
-  metric: [[0.5, 1], [1, 5], [5, 25], [25, 100], [100, 500]],
+  imperial: [[6 * INCH, 5 * FOOT], [FOOT, 5 * FOOT], [5 * FOOT, 25 * FOOT], [25 * FOOT, 100 * FOOT], [100 * FOOT, 500 * FOOT]],
+  metric: [[0.1, 1], [0.5, 1], [1, 5], [5, 25], [25, 100], [100, 500]],
 };
 
 /** Minor and major grid spacing (meters) for a units system at a zoom level. */
@@ -723,19 +724,20 @@ function drawOpeningSymbol(ctx, view, gi, o, { ghost = false } = {}) {
       break;
     }
     case 'sliding-door': {
+      // As in 3D: the fixed panel is at the hinge end on the -side face, and the other panel
+      // slides toward it on the +side face.
+      const f = o.hinge === 'end' ? -1 : 1;
       const pt = clamp(0.035 * S, 1.5, Math.max(1.5, T / 3));
       const ov = Math.min(W * 0.06, 0.05 * S + 2);
       ctx.fillStyle = '#FFFFFF';
       ctx.beginPath();
-      ctx.rect(-W / 2, -pt * s, W / 2 + ov, pt * s);
-      ctx.rect(-ov, 0, W / 2 + ov, pt * s);
+      ctx.rect((-W / 2) * f, -pt * s, (W / 2 + ov) * f, pt * s);
+      ctx.rect(-ov * f, 0, (W / 2 + ov) * f, pt * s);
       ctx.fill();
       ctx.stroke();
       if (W > 24) {
         ctx.beginPath();
-        const ay = T / 2 + 5;
-        arrow(ctx, -W * 0.38, -W * 0.12, -ay * s);
-        arrow(ctx, W * 0.38, W * 0.12, ay * s);
+        arrow(ctx, W * 0.38 * f, W * 0.12 * f, (T / 2 + 5) * s);
         ctx.strokeStyle = soft;
         ctx.stroke();
       }
@@ -782,7 +784,8 @@ function drawItems(ctx, view, items, { ghosts, mini }) {
     const def = getItem(item.type);
     const dims = itemDims(item);
     const c = toScreen(view, item);
-    if (!onScreen(view, c, (Math.hypot(dims.w, dims.d) / 2) * view.scale + 4)) continue;
+    // Margin of 1 m: some symbols (door swings) reach past the footprint.
+    if (!onScreen(view, c, (Math.hypot(dims.w, dims.d) / 2 + 1) * view.scale + 4)) continue;
     ctx.save();
     ctx.translate(c.x, c.y);
     ctx.rotate(deg2rad(item.rotation || 0));
@@ -907,6 +910,36 @@ function drawRoomLabels(ctx, view, plan, { mini, sizes }) {
 }
 
 const overlaps = (r, boxes) => boxes.some((b) => r.x0 < b.x1 && r.x1 > b.x0 && r.y0 < b.y1 && r.y1 > b.y0);
+
+/** Item labels, centered under each labeled item (or above it when that spot is taken). */
+function drawItemLabels(ctx, view, items, ghosts, placed) {
+  const size = 11;
+  ctx.save();
+  ctx.font = fontSpec(size, 600);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = THEME.halo;
+  ctx.fillStyle = THEME.text;
+  for (const item of items) {
+    const text = typeof item.label === 'string' ? item.label.trim() : '';
+    if (!text || ghosts.has(item.id)) continue;
+    const corners = itemCorners(item, itemDims(item)).map((q) => toScreen(view, q));
+    const b = boundsOf(corners);
+    const c = toScreen(view, item);
+    const w = ctx.measureText(text).width + 4, h = size + 3;
+    if (!onScreen(view, c, (b.maxX - b.minX) / 2 + w)) continue;
+    for (const y of [b.maxY + 3 + h / 2, b.minY - 3 - h / 2]) {
+      const box = { x0: c.x - w / 2, x1: c.x + w / 2, y0: y - h / 2, y1: y + h / 2 };
+      if (overlaps(box, placed)) continue;
+      placed.push(box);
+      haloText(ctx, text, c.x, y);
+      break;
+    }
+  }
+  ctx.restore();
+}
 
 function drawCamera(ctx, view, cam, { ghost, mini, labels, placed = [] }) {
   const c = toScreen(view, cam);
@@ -1173,6 +1206,7 @@ export function renderPlan(ctx, plan, view, opts = {}) {
   drawWalls(ctx, view, plan, geo, { ghosts, mini });
   if (!mini) drawOpenings(ctx, view, plan, geo, ghosts);
   const placed = showLabels ? drawRoomLabels(ctx, view, plan, { mini, sizes: !!opts.showDimensions && !mini }) : [];
+  if (showLabels && !mini) drawItemLabels(ctx, view, plan.items, ghosts, placed);
   for (const cam of plan.cameras) drawCamera(ctx, view, cam, { ghost: ghosts.has(cam.id), mini, labels: showLabels, placed });
 
   if (!mini) {

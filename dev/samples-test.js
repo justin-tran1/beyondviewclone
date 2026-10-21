@@ -27,7 +27,7 @@ const CANONICAL = {
   'exam-table': [1.83, 0.71, 1.0], 'exam-casework': [2.13, 0.61, 2.13, true], 'physician-stool': [0.51, 0.51, 0.6],
   'side-chair': [0.56, 0.56, 0.84], 'reception-desk': [3.05, 0.91, 1.07, true], 'waiting-chairs': [2.44, 0.71, 0.84, true],
   'nurse-station': [2.44, 0.91, 1.07, true], 'hospital-bed': [1.02, 2.24, 1.0], 'patient-recliner': [0.86, 1.02, 1.07],
-  'ct-scanner': [2.13, 4.27, 1.93], 'privacy-curtain': [2.44, 0.1, 2.29, false, false], 'supply-cart': [0.61, 0.51, 1.0],
+  'ct-scanner': [2.13, 4.27, 1.93], 'privacy-curtain': [2.44, 0.1, 3.05, false, false], 'supply-cart': [0.61, 0.51, 1.0],
   workstation: [1.52, 1.37, 1.2], desk: [1.52, 0.76, 0.74, true], 'task-chair': [0.66, 0.66, 1.05],
   'benching-4': [3.05, 2.9, 1.2], 'executive-desk': [1.83, 1.83, 0.74], 'conference-table-6': [3.05, 2.44, 0.75],
   'conference-table-10': [4.88, 2.74, 0.75], 'round-table-4': [1.83, 1.83, 0.75], sofa: [2.13, 0.91, 0.84],

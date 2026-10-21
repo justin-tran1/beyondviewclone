@@ -42,7 +42,9 @@ export function createStatusBar(root, { store, editor }) {
     if (zoomRaf) return;
     zoomRaf = requestAnimationFrame(() => {
       zoomRaf = 0;
-      zoomText.textContent = `${Math.round((editor.view.scale / PX_PER_M_AT_100) * 100)}%`;
+      const pct = `${Math.round((editor.view.scale / PX_PER_M_AT_100) * 100)}%`;
+      zoomText.textContent = pct;
+      zoomText.setAttribute('aria-label', `Zoom ${pct}, zoom to fit`);
     });
   }
 

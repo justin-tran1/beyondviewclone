@@ -1,8 +1,21 @@
 // Floor plan document model, defaults, entity helpers and the undoable PlanStore.
 // See docs/architecture.md for the schema and coordinate conventions.
-import { FOOT, INCH, dist, samePoint, wallLength, clamp } from './geometry.js';
+import {
+  FOOT, INCH, add, sub, scale, dot, cross, norm, dist, samePoint, clamp, normDeg,
+  projectToSegment, wallLength, wallDir, wallNormal,
+} from './geometry.js';
 
 export const PLAN_VERSION = 1;
+/** Top-level marker written by serializePlan so files can be recognized as plans. */
+export const PLAN_FORMAT = 'cbre-walkthrough-plan';
+
+/** Limits normalizePlan applies to untrusted input. */
+export const LIMITS = {
+  coord: 10000,      // meters from the origin; anything farther is treated as corrupt
+  entities: 20000,   // per collection (and per room outline)
+  itemSize: 60,      // meters, for item w, d, h and elevation
+  pitch: 70,         // degrees up or down, the walkthrough's look limit
+};
 
 export const DEFAULTS = {
   wallHeight: 2.9, // ~9' 6" finished ceiling
@@ -85,12 +98,31 @@ export function clonePlan(value) {
 }
 
 const num = (v, fallback) => (Number.isFinite(+v) && v !== null && v !== '' ? +v : fallback);
-const toPoint = (p) => (Array.isArray(p) ? { x: num(p[0], 0), y: num(p[1], 0) } : { x: num(p?.x, 0), y: num(p?.y, 0) });
+const coord = (v) => {
+  const n = num(v, NaN);
+  return Math.abs(n) <= LIMITS.coord ? n : NaN;
+};
+/** A plan point, or null when a coordinate is missing, not finite or out of range. */
+const toPoint = (p) => {
+  const x = coord(Array.isArray(p) ? p[0] : p?.x), y = coord(Array.isArray(p) ? p[1] : p?.y);
+  return Number.isNaN(x) || Number.isNaN(y) ? null : { x, y };
+};
+/** The objects of an untrusted array, capped in length. */
+const list = (v) => (Array.isArray(v) ? v.slice(0, LIMITS.entities).filter((e) => e && typeof e === 'object') : []);
 const oneOf = (v, table, fallback) => (Object.prototype.hasOwnProperty.call(table, v) ? v : fallback);
+
+/** A default name such as "Room 3" that no entity in the list uses yet. */
+export function nextName(entities, prefix) {
+  const taken = new Set(entities.map((e) => e.name));
+  let n = entities.length + 1;
+  while (taken.has(`${prefix} ${n}`)) n++;
+  return `${prefix} ${n}`;
+}
 
 /**
  * Turn untrusted JSON (a saved file, a sample, older versions) into a valid Plan.
- * Fills defaults, coerces numbers, drops entities that cannot be repaired and de-duplicates ids.
+ * Fills defaults, coerces numbers, clamps sizes, drops entities that cannot be repaired (missing,
+ * non-finite or far-off coordinates) and de-duplicates ids. Underlays must be data:image URLs.
  */
 export function normalizePlan(input) {
   if (!input || typeof input !== 'object') throw new Error('Not a floor plan file.');
@@ -102,76 +134,96 @@ export function normalizePlan(input) {
     seen.add(s);
     return s;
   };
-  const settings = { ...base.settings, ...(input.settings || {}) };
+  const settings = { ...base.settings, ...(input.settings && typeof input.settings === 'object' ? input.settings : {}) };
   settings.wallHeight = clamp(num(settings.wallHeight, DEFAULTS.wallHeight), 2, 12);
   settings.ceiling = oneOf(settings.ceiling, CEILINGS, 'tile');
   settings.exterior = ['city', 'campus', 'none'].includes(settings.exterior) ? settings.exterior : 'city';
 
-  const walls = (input.walls || []).map((w) => {
+  const walls = list(input.walls).map((w) => {
+    const a = toPoint(w.a), b = toPoint(w.b);
+    if (!a || !b || dist(a, b) <= 0.01) return null;
     const kind = oneOf(w.kind, WALL_KINDS, 'interior');
     const k = WALL_KINDS[kind];
     return {
       id: id(w.id, 'w'),
-      a: toPoint(w.a),
-      b: toPoint(w.b),
+      a,
+      b,
       kind,
       thickness: clamp(num(w.thickness, k.thickness), 0.02, 1.5),
       height: clamp(num(w.height, k.height ?? settings.wallHeight), 0.3, 12),
     };
-  }).filter((w) => dist(w.a, w.b) > 0.01);
-  const wallIds = new Set(walls.map((w) => w.id));
+  }).filter(Boolean);
+  const wallById = new Map(walls.map((w) => [w.id, w]));
 
-  const openings = (input.openings || []).map((o) => {
+  const openings = list(input.openings).map((o) => {
+    const wall = wallById.get(o.wallId);
+    if (!wall) return null;
     const type = oneOf(o.type, OPENING_TYPES, 'door');
     const t = OPENING_TYPES[type];
+    const L = wallLength(wall);
+    const width = Math.min(clamp(num(o.width, t.width), 0.2, 20), Math.max(0.2, L));
     return {
       id: id(o.id, 'o'),
       wallId: o.wallId,
       type,
-      offset: num(o.offset, 0),
-      width: clamp(num(o.width, t.width), 0.2, 20),
+      offset: clamp(num(o.offset, L / 2), width / 2, Math.max(width / 2, L - width / 2)),
+      width,
       height: clamp(num(o.height, t.height), 0.2, 12),
       sill: clamp(num(o.sill, t.sill), 0, 6),
       hinge: o.hinge === 'end' ? 'end' : 'start',
       side: num(o.side, 1) < 0 ? -1 : 1,
     };
-  }).filter((o) => wallIds.has(o.wallId));
+  }).filter(Boolean);
 
-  const rooms = (input.rooms || []).map((r) => ({
-    id: id(r.id, 'r'),
-    name: typeof r.name === 'string' ? r.name : 'Room',
-    points: (r.points || []).map(toPoint),
-    floor: oneOf(r.floor, FLOORS, 'carpet'),
-    ceiling: oneOf(r.ceiling, CEILINGS, settings.ceiling),
-    ...(Number.isFinite(+r.height) && +r.height > 0 ? { height: clamp(+r.height, 2, 20) } : {}),
-  })).filter((r) => r.points.length >= 3);
+  const rooms = list(input.rooms).map((r) => {
+    const points = Array.isArray(r.points) ? r.points.slice(0, LIMITS.entities).map(toPoint) : [];
+    if (points.length < 3 || points.some((q) => !q)) return null;
+    return {
+      id: id(r.id, 'r'),
+      name: typeof r.name === 'string' ? r.name : 'Room',
+      points,
+      floor: oneOf(r.floor, FLOORS, 'carpet'),
+      ceiling: oneOf(r.ceiling, CEILINGS, settings.ceiling),
+      ...(Number.isFinite(+r.height) && +r.height > 0 ? { height: clamp(+r.height, 2, 20) } : {}),
+    };
+  }).filter(Boolean);
 
-  const items = (input.items || []).filter((i) => i && typeof i.type === 'string').map((i) => {
-    const out = { id: id(i.id, 'i'), type: i.type, x: num(i.x, 0), y: num(i.y, 0), rotation: num(i.rotation, 0) };
-    for (const k of ['w', 'd', 'h', 'elevation']) if (Number.isFinite(+i[k]) && +i[k] > 0) out[k] = +i[k];
-    if (typeof i.color === 'string') out.color = i.color;
+  const items = list(input.items).map((i) => {
+    const at = toPoint(i);
+    if (!at || typeof i.type !== 'string') return null;
+    const out = { id: id(i.id, 'i'), type: i.type, x: at.x, y: at.y, rotation: normDeg(num(i.rotation, 0)) };
+    for (const k of ['w', 'd', 'h', 'elevation']) {
+      const v = num(i[k], 0);
+      if (v > 0) out[k] = Math.min(v, LIMITS.itemSize);
+    }
+    if (typeof i.color === 'string' && /^#(?:[0-9a-f]{3}){1,2}$/i.test(i.color)) out.color = i.color;
     if (typeof i.label === 'string') out.label = i.label;
     return out;
-  });
+  }).filter(Boolean);
 
-  const cameras = (input.cameras || []).map((c, n) => ({
-    id: id(c.id, 'c'),
-    name: typeof c.name === 'string' && c.name ? c.name : `View ${n + 1}`,
-    x: num(c.x, 0),
-    y: num(c.y, 0),
-    yaw: num(c.yaw, 0),
-    pitch: clamp(num(c.pitch, 0), -60, 60),
-  }));
+  const cameras = list(input.cameras).map((c, n) => {
+    const at = toPoint(c);
+    if (!at) return null;
+    return {
+      id: id(c.id, 'c'),
+      name: typeof c.name === 'string' && c.name ? c.name : `View ${n + 1}`,
+      x: at.x,
+      y: at.y,
+      yaw: normDeg(num(c.yaw, 0)),
+      pitch: clamp(num(c.pitch, 0), -LIMITS.pitch, LIMITS.pitch),
+    };
+  }).filter(Boolean);
 
   let underlay = null;
-  if (input.underlay && typeof input.underlay.src === 'string' && input.underlay.src) {
-    const u = input.underlay;
+  const u = input.underlay;
+  const at = u && typeof u.src === 'string' && u.src.startsWith('data:image/') ? toPoint({ x: num(u.x, 0), y: num(u.y, 0) }) : null;
+  if (at) {
     underlay = {
       src: u.src,
-      width: num(u.width, 0),
-      height: num(u.height, 0),
-      x: num(u.x, 0),
-      y: num(u.y, 0),
+      width: clamp(num(u.width, 0), 0, 1e5),
+      height: clamp(num(u.height, 0), 0, 1e5),
+      x: at.x,
+      y: at.y,
       scale: num(u.scale, 0.02) > 0 ? num(u.scale, 0.02) : 0.02,
       rotation: num(u.rotation, 0),
       opacity: clamp(num(u.opacity, 0.5), 0, 1),
@@ -195,7 +247,7 @@ export function normalizePlan(input) {
   };
 }
 
-export const serializePlan = (plan) => JSON.stringify({ ...plan, version: PLAN_VERSION }, null, 2);
+export const serializePlan = (plan) => JSON.stringify({ format: PLAN_FORMAT, ...plan, version: PLAN_VERSION }, null, 2);
 
 // ---- Entity helpers (operate on a draft inside store.update) --------------
 
@@ -239,7 +291,7 @@ export function addOpening(draft, wallId, type, offset, props = {}) {
 export function addRoom(draft, points, props = {}) {
   const room = {
     id: uid('r'),
-    name: props.name ?? `Room ${draft.rooms.length + 1}`,
+    name: props.name ?? nextName(draft.rooms, 'Room'),
     points: points.map((p) => ({ x: p.x, y: p.y })),
     floor: oneOf(props.floor, FLOORS, 'carpet'),
     ceiling: oneOf(props.ceiling, CEILINGS, draft.settings.ceiling),
@@ -259,7 +311,7 @@ export function addItem(draft, type, x, y, props = {}) {
 export function addCamera(draft, x, y, yaw = 0, props = {}) {
   const camera = {
     id: uid('c'),
-    name: props.name ?? `View ${draft.cameras.length + 1}`,
+    name: props.name ?? nextName(draft.cameras, 'View'),
     x, y, yaw, pitch: props.pitch ?? 0,
   };
   draft.cameras.push(camera);
@@ -276,42 +328,170 @@ export function removeEntity(draft, kind, id) {
   return draft[key].length !== before;
 }
 
+// ---- Wall graph ----------------------------------------------------------------
+
+const JOIN_TOL = 2e-3;
+/** True if p lies on wall w's span, away from both of its ends (a T-junction). */
+const onSpan = (p, w) => !samePoint(p, w.a) && !samePoint(p, w.b) && projectToSegment(p, w.a, w.b).dist < JOIN_TOL;
+
+/** Intersection of the lines p + s*d and q + t*e (unit directions), or null when nearly parallel. */
+function meet(p, d, q, e) {
+  const c = cross(d, e);
+  if (Math.abs(c) < 0.05) return null;
+  return add(p, scale(d, cross(sub(q, p), e) / c));
+}
+
 /**
- * Move one endpoint of a wall. With connected=true, endpoints of other walls that shared the old
- * position move too, so corners stay joined. Openings keep their offset, clamped to the new length.
+ * How other walls join a wall: corners share one of its ends ({id, end, at}), tees end on its
+ * span ({id, end}), and hosts are the walls its own ends rest on mid-span ({a, b}: id or null).
+ */
+export function wallLinks(plan, wallId) {
+  const wall = plan.walls.find((w) => w.id === wallId);
+  const links = { corners: [], tees: [], hosts: { a: null, b: null } };
+  if (!wall) return links;
+  for (const w of plan.walls) {
+    if (w === wall) continue;
+    for (const end of ['a', 'b']) {
+      const at = samePoint(w[end], wall.a) ? 'a' : samePoint(w[end], wall.b) ? 'b' : null;
+      if (at) links.corners.push({ id: w.id, end, at });
+      else if (onSpan(w[end], wall)) links.tees.push({ id: w.id, end });
+      if (!links.hosts[end] && onSpan(wall[end], w)) links.hosts[end] = w.id;
+    }
+  }
+  return links;
+}
+
+export const isWallJoined = (plan, wallId) => {
+  const l = wallLinks(plan, wallId);
+  return l.corners.length > 0 || l.tees.length > 0 || !!l.hosts.a || !!l.hosts.b;
+};
+
+/** Move one end of a wall. Moving end a shifts its openings so they keep their distance from end b. */
+function setEnd(draft, wall, end, p) {
+  const before = wallLength(wall);
+  wall[end] = { x: p.x, y: p.y };
+  if (end !== 'a') return;
+  const grow = wallLength(wall) - before;
+  for (const o of draft.openings) if (o.wallId === wall.id) o.offset += grow;
+}
+
+/** Walls ending on `wall` (tees) slide along their own direction to stay on its centerline. */
+function followTees(draft, wall, tees) {
+  const u = wallDir(wall);
+  for (const t of tees) {
+    const w = draft.walls.find((x) => x.id === t.id);
+    if (!w) continue;
+    const hit = meet(w[t.end === 'a' ? 'b' : 'a'], wallDir(w), wall.a, u);
+    if (hit) setEnd(draft, w, t.end, hit);
+  }
+}
+
+const copyWalls = (walls) => walls.map((w) => ({ ...w, a: { ...w.a }, b: { ...w.b } }));
+
+/**
+ * Move one endpoint of a wall. With connected=true, walls that shared the old position move too
+ * (corners stay joined), walls ending on this wall's span stay on it, and room outlines along the
+ * moved walls follow. Openings keep their distance from the fixed end, clamped to the new length.
  */
 export function moveWallEndpoint(draft, wallId, end, p, { connected = true } = {}) {
   const wall = draft.walls.find((w) => w.id === wallId);
   if (!wall) return;
-  const old = { ...wall[end] };
-  wall[end] = { x: p.x, y: p.y };
+  const links = connected ? wallLinks(draft, wallId) : null;
+  const before = connected ? copyWalls(draft.walls) : null;
+  setEnd(draft, wall, end, p);
   if (connected) {
-    for (const w of draft.walls) {
-      if (w === wall) continue;
-      if (samePoint(w.a, old)) w.a = { x: p.x, y: p.y };
-      if (samePoint(w.b, old)) w.b = { x: p.x, y: p.y };
+    for (const c of links.corners) {
+      const w = draft.walls.find((x) => x.id === c.id);
+      if (w && c.at === end) setEnd(draft, w, c.end, p);
     }
+    followTees(draft, wall, links.tees);
+    followRooms(draft, before);
   }
   clampOpenings(draft);
 }
 
-/** Translate a wall by (dx, dy). Connected endpoints of other walls follow when connected=true. */
+/**
+ * Translate a wall by (dx, dy). With connected=true, joined walls follow: corners move with its
+ * ends, its ends slide along walls they rest on, walls ending on it stay on it, and room outlines
+ * along the moved walls follow.
+ */
 export function moveWall(draft, wallId, dx, dy, { connected = true } = {}) {
   const wall = draft.walls.find((w) => w.id === wallId);
   if (!wall) return;
-  const oldA = { ...wall.a }, oldB = { ...wall.b };
-  wall.a = { x: oldA.x + dx, y: oldA.y + dy };
-  wall.b = { x: oldB.x + dx, y: oldB.y + dy };
+  const links = connected ? wallLinks(draft, wallId) : null;
+  const before = connected ? copyWalls(draft.walls) : null;
+  wall.a = { x: wall.a.x + dx, y: wall.a.y + dy };
+  wall.b = { x: wall.b.x + dx, y: wall.b.y + dy };
   if (connected) {
-    for (const w of draft.walls) {
-      if (w === wall) continue;
-      for (const end of ['a', 'b']) {
-        if (samePoint(w[end], oldA)) w[end] = { ...wall.a };
-        else if (samePoint(w[end], oldB)) w[end] = { ...wall.b };
-      }
+    const u = wallDir(wall);
+    for (const end of ['a', 'b']) {
+      const host = draft.walls.find((w) => w.id === links.hosts[end]);
+      const hit = host && meet(wall.a, u, host.a, wallDir(host));
+      if (hit) wall[end] = hit;
     }
+    for (const c of links.corners) {
+      const w = draft.walls.find((x) => x.id === c.id);
+      if (w) setEnd(draft, w, c.end, wall[c.at]);
+    }
+    followTees(draft, wall, links.tees);
+    followRooms(draft, before);
   }
   clampOpenings(draft);
+}
+
+/** The moved line of a room edge pq that lies along a moved wall's centerline or one of its faces. */
+function movedEdgeLine(p, q, moved, after) {
+  let best = null;
+  for (const w of moved) {
+    const L = wallLength(w);
+    if (L < 1e-6) continue;
+    const u = wallDir(w), n = wallNormal(w), h = w.thickness / 2;
+    const dp = dot(sub(p, w.a), n), dq = dot(sub(q, w.a), n);
+    if (Math.abs(dp - dq) > JOIN_TOL) continue;
+    const off = [0, h, -h].find((o) => Math.abs(dp - o) <= JOIN_TOL);
+    if (off === undefined) continue;
+    const s0 = dot(sub(p, w.a), u), s1 = dot(sub(q, w.a), u);
+    const overlap = Math.min(Math.max(s0, s1), L + h) - Math.max(Math.min(s0, s1), -h);
+    if (overlap <= 0.01 || (best && overlap <= best.overlap)) continue;
+    const nw = after.get(w.id);
+    best = { p: add(nw.a, scale(wallNormal(nw), off)), d: wallDir(nw), overlap };
+  }
+  return best;
+}
+
+/**
+ * After walls move (beforeWalls holds their old positions), move room corners to match: a corner
+ * on a moved wall end follows the end, and an edge along a moved wall's centerline or face follows
+ * that line, with its corners re-intersected with the neighboring edges.
+ */
+export function followRooms(draft, beforeWalls) {
+  const after = new Map(draft.walls.map((w) => [w.id, w]));
+  const moved = beforeWalls.filter((w) => {
+    const now = after.get(w.id);
+    return now && (!samePoint(now.a, w.a, 1e-9) || !samePoint(now.b, w.b, 1e-9));
+  });
+  if (!moved.length) return;
+  const endAt = (p) => {
+    for (const w of moved) for (const end of ['a', 'b']) if (samePoint(p, w[end])) return { ...after.get(w.id)[end] };
+    return null;
+  };
+  for (const room of draft.rooms) {
+    const pts = room.points, n = pts.length;
+    const ends = pts.map(endAt);
+    const lines = pts.map((p, i) => movedEdgeLine(p, pts[(i + 1) % n], moved, after));
+    if (!ends.some(Boolean) && !lines.some(Boolean)) continue;
+    room.points = pts.map((p, i) => {
+      if (ends[i]) return ends[i];
+      const prev = lines[(i - 1 + n) % n], next = lines[i];
+      if (!prev && !next) return { ...p };
+      const lp = prev || { p, d: norm(sub(p, pts[(i - 1 + n) % n])) };
+      const ln = next || { p, d: norm(sub(pts[(i + 1) % n], p)) };
+      const hit = meet(lp.p, lp.d, ln.p, ln.d);
+      if (hit) return hit;
+      const L = prev || next;
+      return add(L.p, scale(L.d, dot(sub(p, L.p), L.d)));
+    });
+  }
 }
 
 /** Keep every opening inside its wall after geometry changes. */
@@ -375,8 +555,12 @@ export class PlanStore extends EventTarget {
   /** Replace the whole document (open file, load sample). Clears history unless keepHistory. */
   replace(plan, { label = 'Open plan', keepHistory = false } = {}) {
     const next = normalizePlan(plan);
-    if (keepHistory) this._undo.push({ plan: this._plan, label });
-    else this._undo = [];
+    if (keepHistory) {
+      this._undo.push({ plan: this._plan, label });
+      while (this._undo.length > this._limit) this._undo.shift();
+    } else {
+      this._undo = [];
+    }
     this._redo = [];
     this._lastCoalesce = null;
     this._plan = next;

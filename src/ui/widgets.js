@@ -145,16 +145,22 @@ export function openDialog({ title, subtitle, body, actions, cls = '', dismissib
   document.body.append(dialog);
   dialog.showModal();
   const focusEl = initialFocus || dialog.querySelector('[autofocus]') || dialog.querySelector('.dialog-body input, .dialog-body button, .dialog-actions .btn-primary');
-  focusEl?.focus({ preventScroll: true });
-  if (focusEl?.select && focusEl.tagName === 'INPUT') focusEl.select();
+  const focus = () => {
+    focusEl?.focus({ preventScroll: true });
+    if (focusEl?.select && focusEl.tagName === 'INPUT') focusEl.select();
+  };
+  focus();
+  // A dialog opened during a pointer gesture can lose focus when the gesture ends: put it back.
+  requestAnimationFrame(() => { if (!closed && !dialog.contains(document.activeElement)) focus(); });
   return { el: dialog, close };
 }
 
 // ---- Menus ----------------------------------------------------------------------------------------
 
 /**
- * Dropdown menu for a trigger button. items: [{ label, icon, hint, onSelect, disabled } | 'separator'].
- * Pass a function to build items fresh each time the menu opens.
+ * Dropdown menu for a trigger button. items: [{ label, icon, hint, description, onSelect, disabled }
+ * | 'separator' | { group: 'Heading', items: [...] }]. Pass a function to build items fresh each
+ * time the menu opens.
  */
 export function attachMenu(trigger, items, { align = 'end' } = {}) {
   const menuId = `menu-${Math.random().toString(36).slice(2, 8)}`;
@@ -181,19 +187,23 @@ export function attachMenu(trigger, items, { align = 'end' } = {}) {
   const open = (focusLast = false) => {
     const list = typeof items === 'function' ? items() : items;
     menu = h('div', { class: 'menu', id: menuId, attrs: { role: 'menu', 'aria-label': trigger.getAttribute('aria-label') || trigger.textContent.trim() } });
+    const entry = (item) => h('button', {
+      type: 'button', class: 'menu-item', disabled: !!item.disabled, attrs: { role: 'menuitem', tabindex: '-1' },
+      on: { click: () => { close(); item.onSelect(); } },
+    }, item.icon ? iconEl(item.icon) : null, h('span', { class: 'menu-text' },
+      h('span', { class: 'menu-label', text: item.label }),
+      item.description ? h('span', { class: 'menu-desc', text: item.description }) : null),
+    item.hint ? h('kbd', { class: 'menu-hint', text: item.hint }) : null);
     for (const item of list) {
       if (item === 'separator') {
         menu.append(h('div', { class: 'menu-sep', attrs: { role: 'separator' } }));
-        continue;
+      } else if (item.group) {
+        const headingId = `${menuId}-${menu.childElementCount}`;
+        menu.append(h('div', { class: 'menu-group', attrs: { role: 'group', 'aria-labelledby': headingId } },
+          h('div', { class: 'menu-heading', id: headingId, text: item.group }), item.items.map(entry)));
+      } else {
+        menu.append(entry(item));
       }
-      const el = h('button', {
-        type: 'button', class: 'menu-item', disabled: !!item.disabled, attrs: { role: 'menuitem', tabindex: '-1' },
-        on: { click: () => { close(); item.onSelect(); } },
-      }, item.icon ? iconEl(item.icon) : null, h('span', { class: 'menu-text' },
-        h('span', { class: 'menu-label', text: item.label }),
-        item.description ? h('span', { class: 'menu-desc', text: item.description }) : null),
-      item.hint ? h('kbd', { class: 'menu-hint', text: item.hint }) : null);
-      menu.append(el);
     }
     menu.addEventListener('keydown', onKey);
     document.body.append(menu);

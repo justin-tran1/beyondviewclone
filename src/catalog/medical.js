@@ -10,11 +10,13 @@ const FRONT_T = 0.018;  // door and drawer front thickness
 const OUT = 1.25;       // plan outline weight in px
 const FINE = 0.75;      // plan detail weight in px
 const DASH = [4, 3];    // hidden or overhead elements, in px
+const MAX_REPEAT = 200; // most modules or seats a run repeats, so absurd sizes stay fast
 
 const VINYL = '#538184';            // clinical upholstery (sage)
 const GLOVES = ['#80bbad', '#538184', '#032842'];
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const repeats = (n, min = 1) => clamp(n, min, MAX_REPEAT);
 const custom = (color) => (typeof color === 'string' && color ? color : null);
 const span = (a, b) => (a < b ? [a, b] : [b, a]);
 
@@ -372,12 +374,15 @@ function drawExamTable(ctx, o) {
 // ---- Exam room casework -------------------------------------------------------------
 
 function caseworkLayout(w, d, h) {
-  const n = Math.max(1, Math.round(w / 0.6));
+  const n = repeats(Math.round(w / 0.6));
   const mw = w / n;
   const sink = n === 1 ? 0 : Math.floor(n / 2);
   const fz = d / 2 - 0.025;
   const sx = -w / 2 + (sink + 0.5) * mw;
-  const bowlW = clamp(mw - 0.16, 0.28, 0.5), bowlD = clamp(d - 0.25, 0.22, 0.38);
+  // The bowl stays 3 cm inside its module, so an end module keeps a closed side, and on shallow
+  // counters it gets shallower so the faucet behind it stays on the counter.
+  const bowlW = Math.min(clamp(mw - 0.16, 0.28, 0.5), mw - 0.06);
+  const bowlD = Math.min(clamp(d - 0.25, 0.22, 0.38), d - 0.19);
   const hole = { x0: sx - bowlW / 2, x1: sx + bowlW / 2, z0: fz - 0.06 - bowlD, z1: fz - 0.06 };
   const upperY = TOP + 0.46;
   const glove = sink > 0 ? sink - 1 : (n > 1 ? 1 : -1);
@@ -425,12 +430,16 @@ function buildCasework(kit, { w, d, h, color }) {
   const L = caseworkLayout(w, d, h);
   const ct = TOP - 0.03, bowlDepth = 0.18, cutY = TOP - bowlDepth - 0.03;
   const back = -d / 2, carcass = L.fz - FRONT_T - 0.004;
-  const sa = -w / 2 + L.sink * L.mw, sb = sa + L.mw;
+  const sb = -w / 2 + (L.sink + 1) * L.mw;
 
   kit.block(g, m.plinth, -w / 2 + 0.01, w / 2 - 0.01, 0, TOE, back, L.fz - 0.06);
-  for (const [a, b, y] of [[-w / 2, sa, ct], [sa, sb, cutY], [sb, w / 2, ct]]) {
-    if (b - a > 0.002) kit.block(g, m.case, a, b, TOE, y, back, carcass);
-  }
+  // Only a pocket around the bowl drops below the counter, so the back and both ends stay closed.
+  const p = { x0: L.hole.x0 - 0.01, x1: L.hole.x1 + 0.01, z0: Math.max(back, L.hole.z0 - 0.01), z1: Math.min(carcass, L.hole.z1 + 0.01) };
+  const parts = [
+    [-w / 2, p.x0, ct, back, carcass], [p.x1, w / 2, ct, back, carcass],
+    [p.x0, p.x1, ct, back, p.z0], [p.x0, p.x1, ct, p.z1, carcass], [p.x0, p.x1, cutY, p.z0, p.z1],
+  ];
+  for (const [a, b, y, za, zb] of parts) if (b - a > 0.002 && zb - za > 0.002) kit.block(g, m.case, a, b, TOE, y, za, zb);
   kit.block(g, m.reveal, -w / 2 + 0.005, w / 2 - 0.005, TOE, ct, carcass, L.fz - FRONT_T, false);
   for (let i = 0; i < L.n; i++) {
     const a = -w / 2 + i * L.mw, b = a + L.mw, cx = (a + b) / 2;
@@ -575,7 +584,7 @@ function deskLayout(w, d, pitch) {
   const chairs = d >= 0.75;
   const chairZ = Math.min(-d / 2 + 0.34, inner - 0.3);
   const work0 = Math.max(-d / 2 + 0.18, inner - 0.62);
-  const n = Math.max(1, Math.round(w / pitch));
+  const n = repeats(Math.round(w / pitch));
   const xs = Array.from({ length: n }, (_, i) => -w / 2 + ((i + 0.5) * w) / n);
   const monZ = ledge0 - 0.09;
   const kbZ = Math.max(work0 + 0.075, monZ - 0.26);
@@ -618,7 +627,7 @@ function buildDesk(kit, { w, d, h, color }, variant) {
   variant.dress(kit, g, m, w, fz, ledgeY);
   kit.block(g, m.quartz, -w / 2, w / 2, ledgeY, h, L.ledge0, L.front);
   kit.block(g, m.led, -w / 2 + 0.06, w / 2 - 0.06, ledgeY - 0.006, ledgeY, L.ledge0 + 0.02, L.ledge0 + 0.04, false);
-  const brackets = Math.max(2, Math.round(w / 0.9) + 1);
+  const brackets = repeats(Math.round(w / 0.9) + 1, 2);
   for (let i = 0; i < brackets; i++) {
     const x = -w / 2 + 0.12 + (i * (w - 0.24)) / (brackets - 1);
     kit.block(g, m.darkSteel, x - 0.005, x + 0.005, ledgeY - 0.16, ledgeY, L.ledge0 + 0.04, L.inner);
@@ -685,7 +694,7 @@ const NURSE = {
   pitch: 1.2,
   face: (kit) => kit.material('#538184', { roughness: 0.55 }),
   dress(kit, g, m, w, fz, ledgeY) {
-    const n = Math.max(1, Math.round(w / 0.8));
+    const n = repeats(Math.round(w / 0.8));
     for (let i = 1; i < n; i++) {
       const x = -w / 2 + (i * w) / n;
       kit.block(g, m.plinth, x - 0.003, x + 0.003, 0.08, ledgeY - 0.2, fz, fz + 0.002, false);
@@ -698,10 +707,11 @@ const NURSE = {
 // ---- Waiting chairs -----------------------------------------------------------------
 
 function waitingLayout(w, d) {
-  const n = Math.max(1, Math.round(w / 0.61));
+  const n = repeats(Math.round(w / 0.61));
   const p = w / n, armT = 0.05;
   const arms = Array.from({ length: n + 1 }, (_, i) => clamp(-w / 2 + i * p, -w / 2 + armT / 2, w / 2 - armT / 2));
-  const seatZ1 = d / 2 - 0.04, seatZ0 = seatZ1 - clamp(d - 0.19, 0.3, 0.52);
+  // Shallow rows get a shallower seat so the reclined back stays inside the footprint.
+  const seatZ1 = d / 2 - 0.04, seatZ0 = seatZ1 - Math.min(clamp(d - 0.19, 0.3, 0.52), d - 0.13);
   return { n, armT, arms, seatZ0, seatZ1, backZ: seatZ0 - 0.005, beamZ: (seatZ0 + seatZ1) / 2 - 0.1, foot: d / 2 - 0.05 };
 }
 
@@ -981,9 +991,14 @@ function drawCT(ctx, o) {
 
 // ---- Privacy curtain ----------------------------------------------------------------
 
-function curtainLayout(w, d) {
-  const n = Math.max(2, 2 * Math.round(w / 0.24));
-  return { n, s: w / n, a: Math.min(0.03, d / 2 - 0.012) };
+// The track sits just under a 9 ft ceiling, hung from drop rods that reach 10 ft (the item's height),
+// so it reads as ceiling mounted under any ceiling in that range; lower ceilings hide the rod tops.
+const CURTAIN = { track: 2.7, rod: 1.2 };
+
+function curtainLayout(w, d, h) {
+  const n = 2 * repeats(Math.round(w / 0.24));
+  const top = Math.min(CURTAIN.track, h);
+  return { n, s: w / n, a: Math.min(0.03, d / 2 - 0.012), top, rods: repeats(Math.round(w / CURTAIN.rod) + 1, 2) };
 }
 
 function buildCurtain(kit, { w, d, h, color }) {
@@ -991,8 +1006,9 @@ function buildCurtain(kit, { w, d, h, color }) {
   const m = palette(kit);
   const fabric = finish(kit, color, kit.mat.fabricCeladon, 0.95);
   const mesh = kit.material('#f4f6f5', { roughness: 0.9, transparent: true, opacity: 0.5, depthWrite: false });
-  const C = curtainLayout(w, d);
-  const trackY = h - 0.035, meshTop = h - 0.08, meshBot = Math.max(0.8, h - 0.56), hem = Math.min(0.35, h * 0.15);
+  const C = curtainLayout(w, d, h);
+  const { top } = C;
+  const trackY = top - 0.035, meshTop = top - 0.08, meshBot = Math.max(0.8, top - 0.56), hem = Math.min(0.35, top * 0.15);
   const zAt = (i) => (i % 2 ? C.a : -C.a);
   for (let i = 0; i < C.n; i++) {
     const xa = -w / 2 + i * C.s, za = zAt(i), zb = zAt(i + 1);
@@ -1006,15 +1022,23 @@ function buildCurtain(kit, { w, d, h, color }) {
     const x = clamp(-w / 2 + i * C.s, -w / 2 + 0.01, w / 2 - 0.01);
     rod(kit, g, m.alu, 0.003, [x, meshTop - 0.01, zAt(i)], [x, trackY, 0], { segments: 5 });
   }
-  kit.block(g, m.alu, -w / 2, w / 2, trackY, h, -0.018, 0.018);
-  for (const s of [-1, 1]) kit.block(g, m.darkSteel, ...span(s * w / 2, s * (w / 2 - 0.02)), trackY - 0.008, h, -0.02, 0.02);
+  kit.block(g, m.alu, -w / 2, w / 2, trackY, top, -0.018, 0.018);
+  for (const s of [-1, 1]) kit.block(g, m.darkSteel, ...span(s * w / 2, s * (w / 2 - 0.02)), trackY - 0.008, top, -0.02, 0.02);
+  if (h - top > 0.01) {
+    for (let i = 0; i < C.rods; i++) {
+      const x = -w / 2 + 0.15 + (i * (w - 0.3)) / (C.rods - 1);
+      kit.block(g, m.darkSteel, x - 0.03, x + 0.03, top, top + 0.012, -0.016, 0.016);
+      kit.cyl(g, m.alu, 0.008, h - top - 0.012, x, top + 0.012, 0, { segments: 10 });
+      kit.cyl(g, m.white, 0.035, 0.008, x, h - 0.008, 0, { segments: 16 });
+    }
+  }
   return g;
 }
 
 function drawCurtain(ctx, o) {
   const amp = clamp(2 * o.px, 0.02, o.d / 2);
   const period = Math.max(0.24, 10 * o.px);
-  const waves = Math.max(1, Math.round(o.w / period));
+  const waves = repeats(Math.round(o.w / period));
   pen(ctx, o, FINE, o.theme.muted, DASH);
   line(ctx, -o.w / 2, 0, o.w / 2, 0);
   pen(ctx, o, OUT);
@@ -1110,7 +1134,7 @@ registerItems([
     build: buildCasework, draw2d: drawCasework,
   },
   fixed({
-    type: 'physician-stool', name: 'Physician stool', category: 'medical', colorable: true, planFill: false,
+    type: 'physician-stool', name: 'Physician stool', category: 'medical', colorable: true, planFill: false, contactShadow: 'round',
     w: 0.51, d: 0.51, h: 0.6,
     tags: ['stool', 'rolling', 'doctor', 'seating'],
     build: buildPhysicianStool, draw2d: drawPhysicianStool,
@@ -1159,7 +1183,7 @@ registerItems([
   }),
   fixed({
     type: 'privacy-curtain', name: 'Privacy curtain', category: 'medical', colorable: true,
-    w: 2.44, d: 0.1, h: 2.29, blocking: false,
+    w: 2.44, d: 0.1, h: 3.05, blocking: false,
     tags: ['cubicle curtain', 'privacy', 'track', 'patient bay'],
     build: buildCurtain, draw2d: drawCurtain,
   }),

@@ -1,0 +1,752 @@
+// Developer page and Playwright checks for src/walkthrough.js.
+// In a browser (dev/walkthrough-test.html): mounts a full-window Walkthrough on a furnished test suite,
+// or on a sample with ?sample=<id>, and exposes window.walk, window.store and window.testReady.
+// In Node: `node dev/walkthrough-test.js [--url=http://localhost:8080] [--shots=<dir>]` runs the checks
+// in Chromium (starting its own static server when --url is not given) and saves screenshots.
+
+// ---- Test plan (meters, plan y down) ------------------------------------------------------
+
+/** Fixed spots the checks rely on; the plan keeps them clear of furniture. */
+const SPOTS = {
+  aisle: { x: 1.0, y: 7.0, yaw: 90, pitch: 0 },
+  breakWall: { x: 5.0, y: 11.5, yaw: 0, pitch: 0 },
+  breakWallY: 10 + 0.0635 + 0.25,
+  door: { x: 3.5, y: 12.0, yaw: 0, pitch: 0 },
+  glass: { x: 10.0, y: 4.0, yaw: 90, pitch: 0 },
+  glassX: 14 - 0.03175 - 0.25,
+  desk: { x: 19.5, y: 12.5, yaw: 0, pitch: 0 },
+  deskY: 10.2 + 0.91 / 2 + 0.25,
+  lobby: { x: 19.5, y: 13.4 },
+  passages: [
+    { name: 'sliding door', from: { x: 12.6, y: 13, yaw: 90 }, past: (p) => p.x > 15.2 },
+    { name: 'glass door', from: { x: 12.6, y: 5, yaw: 90 }, past: (p) => p.x > 15.2 },
+    { name: 'double door', from: { x: 17, y: 8, yaw: 0 }, past: (p) => p.y < 6 },
+    { name: 'entry doors', from: { x: 19.5, y: 14.8, yaw: 180 }, past: (p) => p.y > 16.6 },
+    { name: 'cased opening', from: { x: 7.5, y: 11.5, yaw: 0 }, past: (p) => p.y < 9 },
+  ],
+  window: { x: 2, y: 1.2, yaw: 0, pitch: 0 },
+  windowY: 0.1524 + 0.25,
+};
+
+function testPlan(model) {
+  const { createPlan, normalizePlan, addWall, addOpening, addRoom, addItem, addCamera, DEFAULTS } = model;
+  const plan = createPlan({ name: 'Walkthrough test suite', settings: { wallHeight: DEFAULTS.wallHeight, ceiling: 'tile', exterior: 'city' } });
+  const P = (x, y) => ({ x, y });
+  const wall = (a, b, kind = 'interior') => addWall(plan, P(...a), P(...b), { kind });
+  const open = (w, type, offset, props = {}) => addOpening(plan, w.id, type, offset, props);
+
+  const north = wall([0, 0], [24, 0], 'exterior');
+  const east = wall([24, 0], [24, 16], 'exterior');
+  const south = wall([24, 16], [0, 16], 'exterior');
+  const west = wall([0, 16], [0, 0], 'exterior');
+  for (const x of [2, 5.5, 9, 12.5]) open(north, 'window', x, { width: 1.8 });
+  for (const x of [17, 21]) open(north, 'window', x, { width: 2.4 });
+  open(east, 'window', 3.5, { width: 2.4 });
+  open(east, 'window', 11, { width: 1.8 });
+  open(south, 'double-door', 4.5, { side: 1 });
+  open(south, 'window', 16, { width: 1.8 });
+  open(south, 'window', 11.5, { width: 1.8 });
+  open(west, 'window', 11, { width: 1.8 });
+
+  const glass = wall([14, 0], [14, 7], 'glass');
+  open(glass, 'door', 5, { side: 1, hinge: 'end' });
+  const conf = wall([14, 7], [24, 7]);
+  open(conf, 'double-door', 3, { side: 1 });
+  const breakNorth = wall([0, 10], [14, 10]);
+  open(breakNorth, 'door', 3.5, { side: -1, hinge: 'start' });
+  open(breakNorth, 'opening', 7.5, { width: 1.5 });
+  const breakEast = wall([14, 10], [14, 16]);
+  open(breakEast, 'sliding-door', 3, { side: 1 });
+  wall([8.9, 7.7], [8.9, 9.7], 'partial');
+
+  addRoom(plan, [P(0, 0), P(14, 0), P(14, 10), P(0, 10)], { name: 'Open office', floor: 'carpet', ceiling: 'tile' });
+  addRoom(plan, [P(14, 0), P(24, 0), P(24, 7), P(14, 7)], { name: 'Conference', floor: 'wood', ceiling: 'drywall' });
+  addRoom(plan, [P(14, 7), P(24, 7), P(24, 16), P(14, 16)], { name: 'Reception', floor: 'polished-concrete', ceiling: 'drywall' });
+  addRoom(plan, [P(0, 10), P(14, 10), P(14, 16), P(0, 16)], { name: 'Break room', floor: 'vinyl', ceiling: 'open' });
+
+  const item = (type, x, y, rotation = 0, props = {}) => addItem(plan, type, x, y, { rotation, ...props });
+  item('benching-4', 3.2, 3.6);
+  item('benching-4', 7.4, 3.6);
+  item('phone-booth', 12.9, 1.0);
+  item('planter', 11.2, 5.8);
+  item('area-rug', 11.3, 8.7, 0, { w: 3.4, d: 2.2 });
+  item('sofa', 11.3, 9.48, 180);
+  item('coffee-table', 11.3, 8.5);
+  item('lounge-chair', 9.6, 8.3, 270);
+  item('plant', 0.55, 9.45);
+  item('plant', 0.55, 0.55);
+  item('conference-table-10', 19, 3.4);
+  item('tv-display', 23.62, 3.4, 90);
+  item('plant', 14.6, 6.4);
+  item('reception-desk', 19.5, 10.2);
+  item('waiting-chairs', 23.49, 13.5, 90);
+  item('area-rug', 19.5, 13.4, 0, { w: 3, d: 2 });
+  item('plant', 23.4, 15.4);
+  item('plant', 14.6, 15.4);
+  item('pantry-counter', 0.482, 13, 270);
+  item('round-table-4', 6.5, 13.4);
+  item('round-table-4', 10.5, 13.4);
+  item('plant', 13.4, 15.4);
+
+  addCamera(plan, 0.9, 7.6, 62, { name: 'Open office', pitch: -2 });
+  addCamera(plan, 23.2, 6.3, 300, { name: 'Conference room', pitch: -4 });
+  addCamera(plan, 22.6, 15.0, 318, { name: 'Reception', pitch: -3 });
+  addCamera(plan, 13.3, 11, 235, { name: 'Break room', pitch: -3 });
+  return normalizePlan(plan);
+}
+
+// ---- Browser page -------------------------------------------------------------------------
+
+async function mountPage() {
+  const err = document.getElementById('err');
+  window.addEventListener('error', (e) => { err.textContent += `${e.message}\n`; });
+  const params = new URLSearchParams(location.search);
+  const [model, { Walkthrough }] = await Promise.all([import('../src/model.js'), import('../src/walkthrough.js'), import('../src/catalog/index.js')]);
+
+  let plan = testPlan(model);
+  const sampleId = params.get('sample');
+  if (sampleId) {
+    const { SAMPLES } = await import('../src/samples/index.js');
+    const sample = SAMPLES.find((s) => s.id === sampleId);
+    if (sample) plan = await sample.build();
+    else err.textContent = `Unknown sample "${sampleId}"`;
+  }
+
+  const store = new model.PlanStore(plan);
+  const container = document.getElementById('walk');
+  const walk = new Walkthrough(container, store, { minimap: params.get('minimap') !== '0' });
+  // The environment's PMREM passes already count as renderer frames; wait for one more.
+  const setupFrames = walk.renderer.info.render.frame;
+  walk.start();
+  container.focus({ preventScroll: true });
+  Object.assign(window, { walk, store, testModel: model, testPlanFor: testPlan });
+
+  const modes = document.getElementById('modes');
+  modes.addEventListener('click', (e) => {
+    const mode = e.target.closest('button')?.dataset.mode;
+    if (mode) walk.setMode(mode);
+  });
+  walk.addEventListener('mode', (e) => {
+    for (const b of modes.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.mode === e.detail.mode));
+  });
+
+  const views = document.getElementById('views');
+  const renderViews = () => {
+    views.replaceChildren(...store.plan.cameras.slice(0, 9).map((cam, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      const key = document.createElement('kbd');
+      const name = document.createElement('span');
+      key.textContent = String(i + 1);
+      name.textContent = cam.name;
+      b.append(key, name);
+      b.title = cam.name;
+      b.addEventListener('click', () => walk.goToCamera(cam.id));
+      return b;
+    }));
+    views.hidden = !store.plan.cameras.length;
+  };
+  renderViews();
+  store.addEventListener('change', renderViews);
+
+  document.getElementById('shot').addEventListener('click', async () => {
+    const blob = await walk.screenshot();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${store.plan.name.replace(/[^\w-]+/g, '-').toLowerCase()}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+
+  const hint = document.getElementById('hint');
+  const dismiss = () => hint.classList.add('gone');
+  container.addEventListener('pointerdown', dismiss, { once: true });
+  container.addEventListener('keydown', dismiss, { once: true });
+
+  const ready = () => (walk.renderer.info.render.frame > setupFrames ? (window.testReady = true) : requestAnimationFrame(ready));
+  ready();
+}
+
+// ---- Node checks ----------------------------------------------------------------------------
+
+async function runChecks() {
+  const { chromium } = await import('playwright');
+  const { spawn } = await import('node:child_process');
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { fileURLToPath } = await import('node:url');
+
+  const args = Object.fromEntries(process.argv.slice(2).map((a) => {
+    const [k, ...v] = a.replace(/^--/, '').split('=');
+    return [k, v.join('=') || true];
+  }));
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const shots = args.shots || join(tmpdir(), 'walkthrough-shots');
+  await mkdir(shots, { recursive: true });
+
+  let server = null;
+  let base = args.url;
+  if (!base) {
+    const port = 8300 + Math.floor(Math.random() * 400);
+    server = spawn(process.execPath, ['scripts/serve.mjs', String(port)], { cwd: root, stdio: 'ignore' });
+    process.on('exit', () => server.kill());
+    base = `http://localhost:${port}`;
+    for (let i = 0; i < 50; i++) {
+      if (await fetch(base).then(() => true, () => false)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  const pageUrl = `${base.replace(/\/$/, '')}/dev/walkthrough-test.html`;
+  const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+  const results = [];
+  const errors = [];
+
+  async function openPage(options = {}) {
+    const context = await browser.newContext({ viewport: { width: 560, height: 340 }, ...options });
+    const page = await context.newPage();
+    page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
+    page.on('requestfailed', (r) => errors.push(`requestfailed: ${r.url()}`));
+    await page.goto(pageUrl, { waitUntil: 'load' });
+    await page.waitForFunction(() => window.testReady === true, null, { timeout: 60000 });
+    return page;
+  }
+
+  const page = await openPage();
+  const wait = (ms) => page.waitForTimeout(ms);
+  const pose = () => page.evaluate(() => window.walk.pose);
+  const place = (p) => page.evaluate((q) => window.walk.goTo(q, { animate: false }), p);
+  const focus = () => page.evaluate(() => window.walk.container.focus());
+  const frames = () => page.evaluate(() => window.walk.renderer.info.render.frame);
+  const shot = (name) => page.screenshot({ path: join(shots, `${name}.png`) });
+  async function hold(key, ms) {
+    await page.keyboard.down(key);
+    await wait(ms);
+    await page.keyboard.up(key);
+  }
+  /** Hold a key until the walker stops moving or `done(pose)` is true. Returns the sampled poses. */
+  async function walk(key, { done = () => false, maxMs = 40000, shift = false } = {}) {
+    if (shift) await page.keyboard.down('Shift');
+    await page.keyboard.down(key);
+    const t0 = Date.now();
+    let last = await pose(), still = 0;
+    const seen = [last];
+    while (Date.now() - t0 < maxMs) {
+      await wait(250);
+      const p = await pose();
+      seen.push(p);
+      still = Math.hypot(p.x - last.x, p.y - last.y) < 0.0005 && Date.now() - t0 > 800 ? still + 1 : 0;
+      last = p;
+      if (still >= 3 || done(p)) break;
+    }
+    await page.keyboard.up(key);
+    if (shift) await page.keyboard.up('Shift');
+    return seen;
+  }
+  async function idle() {
+    await page.waitForFunction(() => {
+      const w = window.walk;
+      return !w._raf && !w._anim && !w._glide && !w._tween && !w._stale;
+    }, null, { timeout: 40000 }).catch(() => {});
+  }
+  async function check(name, fn) {
+    try {
+      const detail = await fn();
+      results.push({ name, ok: true, detail });
+    } catch (e) {
+      results.push({ name, ok: false, detail: e.message });
+    }
+  }
+  const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
+  const near = (a, b, tol) => Math.abs(a - b) <= tol;
+  const fmt = (p) => `(${p.x.toFixed(3)}, ${p.y.toFixed(3)}) yaw ${p.yaw.toFixed(1)} pitch ${p.pitch.toFixed(1)}`;
+  const spots = SPOTS;
+
+  await check('start pose is the first saved camera', async () => {
+    const p = await pose();
+    const cam = await page.evaluate(() => window.store.plan.cameras[0]);
+    assert(near(p.x, cam.x, 0.01) && near(p.y, cam.y, 0.01) && near(p.yaw, cam.yaw, 0.01), `pose ${fmt(p)}`);
+    await shot('01-start');
+    return fmt(p);
+  });
+
+  await check('idle walkthrough renders no frames', async () => {
+    await idle();
+    const f0 = await frames();
+    await wait(1200);
+    const f1 = await frames();
+    assert(f1 === f0, `${f1 - f0} frames rendered while idle`);
+    return 'no frames in 1.2 s';
+  });
+
+  await check('W moves forward', async () => {
+    await place(spots.aisle);
+    await focus();
+    await idle();
+    const a = await pose();
+    await page.evaluate(() => {
+      window.poseTimes = [];
+      window.walk.addEventListener('pose', () => window.poseTimes.push(performance.now()));
+    });
+    await hold('w', 1000);
+    await idle();
+    const b = await pose();
+    const times = await page.evaluate(() => window.poseTimes);
+    const gaps = times.slice(1).map((t, i) => t - times[i]);
+    assert(b.x - a.x > 0.1 && b.x - a.x < 2, `moved ${(b.x - a.x).toFixed(3)} m along x`);
+    assert(Math.abs(b.y - a.y) < 0.005, `drifted ${(b.y - a.y).toFixed(3)} m sideways`);
+    assert(times.length >= 2 && Math.min(...gaps) >= 95, `pose events ${gaps.map(Math.round).join(', ')} ms apart`);
+    return `moved ${(b.x - a.x).toFixed(2)} m, ${times.length} pose events, at least ${Math.round(Math.min(...gaps))} ms apart`;
+  });
+
+  await check('walking into a wall stops short of it', async () => {
+    await place(spots.breakWall);
+    const seen = await walk('w');
+    await idle();
+    const end = await pose();
+    const minY = Math.min(...seen.map((p) => p.y), end.y);
+    assert(minY >= spots.breakWallY - 0.002, `got within ${(minY - 10).toFixed(3)} m of the wall centerline`);
+    assert(end.y < spots.breakWallY + 0.03, `stopped at y ${end.y.toFixed(3)}, too far from the wall`);
+    await shot('02-wall');
+    return `stopped at y ${end.y.toFixed(3)} (limit ${spots.breakWallY.toFixed(3)})`;
+  });
+
+  await check('running at a glass partition never tunnels through', async () => {
+    await place(spots.glass);
+    const seen = await walk('w', { shift: true });
+    await idle();
+    const maxX = Math.max(...seen.map((p) => p.x), (await pose()).x);
+    assert(maxX <= spots.glassX + 0.002, `reached x ${maxX.toFixed(3)}`);
+    assert(maxX > spots.glassX - 0.03, `stopped early at x ${maxX.toFixed(3)}`);
+    return `max x ${maxX.toFixed(3)} (limit ${spots.glassX.toFixed(3)})`;
+  });
+
+  await check('walking into furniture stops short', async () => {
+    await place(spots.desk);
+    await walk('w');
+    await idle();
+    const p = await pose();
+    assert(p.y >= spots.deskY - 0.002 && p.y < spots.deskY + 0.05, `stopped at y ${p.y.toFixed(3)} (desk limit ${spots.deskY.toFixed(3)})`);
+    return `stopped at y ${p.y.toFixed(3)}`;
+  });
+
+  await check('sliding along a wall keeps moving', async () => {
+    await place({ ...spots.breakWall, yaw: 30 });
+    const a = await pose();
+    await walk('w', { done: (p) => p.x - a.x > 0.8 });
+    await idle();
+    const b = await pose();
+    assert(b.y >= spots.breakWallY - 0.002, `penetrated to y ${b.y.toFixed(3)}`);
+    assert(b.x - a.x > 0.6, `slid only ${(b.x - a.x).toFixed(3)} m`);
+    return `slid ${(b.x - a.x).toFixed(2)} m along the wall`;
+  });
+
+  await check('walks through a doorway', async () => {
+    await place(spots.door);
+    await walk('w', { done: (p) => p.y < 8.8 });
+    await idle();
+    const p = await pose();
+    assert(p.y < 9.4, `ended at ${fmt(p)}, still south of the door`);
+    await shot('03-through-door');
+    return `ended at ${fmt(p)}`;
+  });
+
+  await check('doors and openings are passable, windows are not', async () => {
+    const passed = [];
+    for (const door of spots.passages) {
+      await place({ ...door.from, pitch: 0 });
+      await walk('w', { done: door.past });
+      await idle();
+      const p = await pose();
+      assert(door.past(p), `${door.name}: stopped at ${fmt(p)}`);
+      passed.push(door.name);
+    }
+    await place(spots.window);
+    await walk('w');
+    await idle();
+    const p = await pose();
+    assert(p.y >= spots.windowY - 0.002 && p.y < spots.windowY + 0.03, `window: ended at ${fmt(p)}`);
+    return `${passed.join(', ')}; stopped at the window`;
+  });
+
+  await check('click on the floor walks there', async () => {
+    await place(spots.aisle);
+    const vp = page.viewportSize();
+    const fov = await page.evaluate(() => window.walk._camera.fov);
+    const t = Math.tan((fov * Math.PI) / 360) * 0.4;
+    const expected = spots.aisle.x + 1.6 / t;
+    await page.mouse.move(vp.width / 2, vp.height * 0.7);
+    await wait(400);
+    const ring = await page.evaluate(() => window.walk._ring.visible);
+    await shot('04-hover-ring');
+    await page.mouse.click(vp.width / 2, vp.height * 0.7);
+    await page.mouse.move(vp.width - 5, 80);
+    await wait(500);
+    await idle();
+    const p = await pose();
+    assert(ring, 'no ground ring while hovering the floor');
+    assert(near(p.x, expected, 0.12) && near(p.y, spots.aisle.y, 0.05), `ended at ${fmt(p)}, expected x ${expected.toFixed(2)}`);
+    return `arrived at x ${p.x.toFixed(2)} (expected ${expected.toFixed(2)})`;
+  });
+
+  await check('drag looks around like grabbing the view', async () => {
+    await place(spots.aisle);
+    const vp = page.viewportSize();
+    const fov = await page.evaluate(() => window.walk._camera.fov);
+    await page.mouse.move(vp.width / 2, vp.height / 2);
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i++) await page.mouse.move(vp.width / 2 + i * 20, vp.height / 2 + i * 6);
+    await wait(60);
+    const mid = await pose();
+    await page.mouse.up();
+    await page.mouse.move(vp.width - 5, 80);
+    await idle();
+    const expectYaw = 90 - (200 * fov) / vp.height;
+    assert(near(mid.yaw, expectYaw, 2.5), `yaw ${mid.yaw.toFixed(1)}, expected about ${expectYaw.toFixed(1)}`);
+    assert(mid.pitch > 3, `pitch ${mid.pitch.toFixed(1)} should rise when dragging down`);
+    const p = await pose();
+    assert(near(p.x, spots.aisle.x, 0.001), 'a drag must not walk');
+    return `yaw ${mid.yaw.toFixed(1)}, pitch ${mid.pitch.toFixed(1)}`;
+  });
+
+  await check('goToCamera and number keys', async () => {
+    const cams = await page.evaluate(() => window.store.plan.cameras);
+    await page.evaluate((id) => window.walk.goToCamera(id), cams[1].id);
+    await wait(300);
+    const mid = await pose();
+    await idle();
+    const a = await pose();
+    assert(Math.hypot(mid.x - cams[1].x, mid.y - cams[1].y) > 0.2, 'goToCamera should animate');
+    assert(near(a.x, cams[1].x, 0.02) && near(a.y, cams[1].y, 0.02) && near(a.yaw, cams[1].yaw, 0.5), `pose ${fmt(a)}`);
+    await shot('05-camera-2');
+    await focus();
+    await page.keyboard.press('3');
+    await idle();
+    const b = await pose();
+    assert(near(b.x, cams[2].x, 0.02) && near(b.y, cams[2].y, 0.02) && near(b.yaw, cams[2].yaw, 0.5), `key 3 gave ${fmt(b)}`);
+    await shot('06-camera-3');
+    await page.keyboard.press('4');
+    await idle();
+    await shot('07-camera-4');
+    await page.keyboard.press('1');
+    await idle();
+    await shot('08-camera-1');
+    return 'camera 2 by id, cameras 3, 4 and 1 by key';
+  });
+
+  await check('overview and back', async () => {
+    await place(spots.lobby);
+    const before = await pose();
+    await page.evaluate(() => {
+      window.modeEvents = [];
+      window.walk.addEventListener('mode', (e) => window.modeEvents.push(e.detail.mode));
+      window.walk.setMode('overview');
+    });
+    await wait(350);
+    await shot('09-overview-transition');
+    await idle();
+    const ceilings = await page.evaluate(() => window.walk._built.ceilings.every((c) => !c.visible));
+    await shot('10-overview');
+    const vp = page.viewportSize();
+    await page.mouse.move(vp.width / 2, vp.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(vp.width / 2 + 160, vp.height / 2 + 30, { steps: 8 });
+    await page.mouse.up();
+    await wait(200);
+    await idle();
+    await shot('11-overview-orbit');
+    await page.evaluate(() => window.walk.setMode('walk'));
+    await idle();
+    const after = await pose();
+    const events = await page.evaluate(() => window.modeEvents);
+    const mode = await page.evaluate(() => window.walk.mode);
+    assert(ceilings, 'ceilings stay visible in overview');
+    assert(events.join() === 'overview,walk' && mode === 'walk', `mode events ${events.join()}`);
+    assert(near(after.x, before.x, 1e-6) && near(after.y, before.y, 1e-6) && near(after.yaw, before.yaw, 1e-6), `pose changed to ${fmt(after)}`);
+    const ceilingsBack = await page.evaluate(() => window.walk._built.ceilings.every((c) => c.visible));
+    assert(ceilingsBack, 'ceilings hidden after returning to walk');
+    return 'mode events and pose restored';
+  });
+
+  await check('rebuilds after store.update and keeps the pose', async () => {
+    await place(spots.aisle);
+    await page.evaluate(() => {
+      window.builtBefore = window.walk._built;
+      const { addWall } = window.testModel;
+      window.store.update((d) => addWall(d, { x: 4, y: 6.3 }, { x: 4, y: 7.8 }, { kind: 'interior' }), { label: 'Add wall' });
+    });
+    await wait(150);
+    const early = await page.evaluate(() => window.walk._built === window.builtBefore);
+    await wait(500);
+    await idle();
+    const rebuilt = await page.evaluate(() => window.walk._built !== window.builtBefore);
+    const kept = await pose();
+    await walk('w');
+    await idle();
+    const p = await pose();
+    const limit = 4 - 0.0635 - 0.25;
+    assert(early, 'rebuilt before the debounce delay');
+    assert(rebuilt, 'scene was not rebuilt');
+    assert(near(kept.x, spots.aisle.x, 1e-6), 'pose changed on rebuild');
+    assert(p.x <= limit + 0.002 && p.x > limit - 0.05, `stopped at x ${p.x.toFixed(3)} (new wall limit ${limit.toFixed(3)})`);
+    await shot('12-new-wall');
+    await page.evaluate(() => window.store.undo());
+    await wait(700);
+    await idle();
+    await walk('w', { done: (p) => p.x > limit + 0.5 });
+    await idle();
+    const q = await pose();
+    assert(q.x > limit + 0.3, `still blocked at x ${q.x.toFixed(3)} after undo`);
+    return `blocked at x ${p.x.toFixed(3)}, free again after undo`;
+  });
+
+  await check('rebuilds do not leak GPU resources', async () => {
+    const mem = () => page.evaluate(() => ({ ...window.walk.renderer.info.memory }));
+    await page.evaluate(() => window.walk.rebuild());
+    await wait(300);
+    await idle();
+    const a = await mem();
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => window.walk.rebuild());
+      await wait(300);
+      await idle();
+    }
+    const b = await mem();
+    assert(b.geometries <= a.geometries && b.textures <= a.textures, `geometries ${a.geometries} -> ${b.geometries}, textures ${a.textures} -> ${b.textures}`);
+    return `geometries ${b.geometries}, textures ${b.textures}`;
+  });
+
+  await check('screenshot() returns a PNG', async () => {
+    await page.keyboard.press('1');
+    await idle();
+    const info = await page.evaluate(async () => {
+      const blob = await window.walk.screenshot();
+      const head = new Uint8Array(await blob.slice(0, 8).arrayBuffer());
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let s = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      return { type: blob.type, size: blob.size, magic: [...head.slice(1, 4)].map((c) => String.fromCharCode(c)).join(''), data: btoa(s) };
+    });
+    assert(info.type === 'image/png' && info.magic === 'PNG', `type ${info.type}`);
+    assert(info.size > 30000, `only ${info.size} bytes`);
+    await writeFile(join(shots, '13-screenshot-api.png'), Buffer.from(info.data, 'base64'));
+    return `${Math.round(info.size / 1024)} KB PNG`;
+  });
+
+  await check('minimap click goes there', async () => {
+    const target = spots.lobby;
+    const pt = await page.evaluate(({ x, y }) => {
+      const m = window.walk._mini;
+      const r = m.el.getBoundingClientRect();
+      return { x: r.left + m.view.ox + x * m.view.scale, y: r.top + m.view.oy + y * m.view.scale, shown: m.shown };
+    }, target);
+    assert(pt.shown, 'minimap is not shown');
+    await page.mouse.click(pt.x, pt.y);
+    await wait(200);
+    await idle();
+    const p = await pose();
+    const active = await page.evaluate(() => document.activeElement === window.walk.container);
+    assert(Math.hypot(p.x - target.x, p.y - target.y) < 0.12, `ended at ${fmt(p)}`);
+    assert(active, 'minimap click moved keyboard focus away from the walkthrough');
+    await shot('14-minimap-teleport');
+    return `arrived at ${fmt(p)}`;
+  });
+
+  await check('keys typed elsewhere do not move the walker', async () => {
+    await place(spots.aisle);
+    await page.evaluate(() => {
+      const input = document.createElement('input');
+      input.id = 'probe';
+      Object.assign(input.style, { position: 'fixed', right: '16px', bottom: '16px', zIndex: 10 });
+      document.body.append(input);
+      input.focus();
+    });
+    await hold('w', 600);
+    await page.keyboard.type('wasd');
+    await focus();
+    await page.keyboard.down('Alt');
+    await hold('w', 400);
+    await page.keyboard.up('Alt');
+    await idle();
+    const p = await pose();
+    const typed = await page.evaluate(() => document.getElementById('probe').value);
+    await page.evaluate(() => document.getElementById('probe').remove());
+    assert(near(p.x, spots.aisle.x, 1e-6) && near(p.y, spots.aisle.y, 1e-6), `moved to ${fmt(p)}`);
+    assert(typed.startsWith('w'), `input received "${typed}"`);
+    return 'input kept its keys, Alt+W ignored';
+  });
+
+  await check('wheel adjusts the field of view within limits', async () => {
+    const vp = page.viewportSize();
+    const fovOf = () => page.evaluate(() => window.walk._fovTarget);
+    await page.mouse.move(vp.width / 2, vp.height / 2);
+    for (let i = 0; i < 8; i++) await page.mouse.wheel(0, 400);
+    const wide = await fovOf();
+    for (let i = 0; i < 16; i++) await page.mouse.wheel(0, -400);
+    const narrow = await fovOf();
+    await idle();
+    await shot('15-zoomed');
+    for (let i = 0; i < 5; i++) await page.mouse.wheel(0, 80);
+    while (await fovOf() < 69.5) await page.mouse.wheel(0, 40);
+    await page.evaluate(() => { window.walk._fovTarget = 70; });
+    await idle();
+    assert(wide === 80 && narrow === 35, `fov range ${narrow} to ${wide}`);
+    return `fov ${narrow} to ${wide}`;
+  });
+
+  await check('slow frames lower the motion pixel ratio only', async () => {
+    const r = await page.evaluate(() => ({ base: window.walk._baseRatio, motion: window.walk._motionRatio, now: window.walk.renderer.getPixelRatio() }));
+    assert(r.now === r.base, `idle pixel ratio ${r.now}, base ${r.base}`);
+    return `base ${r.base}, motion ${r.motion}`;
+  });
+
+  await check('touch: tap walks, drag looks', async () => {
+    const touch = await openPage({ hasTouch: true });
+    const vp = touch.viewportSize();
+    await touch.evaluate((p) => window.walk.goTo(p, { animate: false }), spots.aisle);
+    await touch.touchscreen.tap(vp.width / 2, vp.height * 0.7);
+    await touch.waitForTimeout(500);
+    await touch.waitForFunction(() => !window.walk._glide, null, { timeout: 40000 });
+    const p = await touch.evaluate(() => window.walk.pose);
+    const cdp = await touch.context().newCDPSession(touch);
+    const tp = (x, y) => [{ x, y, id: 1 }];
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: tp(vp.width / 2, vp.height / 2) });
+    for (let i = 1; i <= 8; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: tp(vp.width / 2 - i * 25, vp.height / 2) });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await touch.waitForTimeout(300);
+    await touch.waitForFunction(() => !window.walk._raf && !window.walk._inertia, null, { timeout: 40000 });
+    const q = await touch.evaluate(() => window.walk.pose);
+    const cx = vp.width / 2, cy = vp.height / 2;
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: cx - 40, y: cy, id: 1 }, { x: cx + 40, y: cy, id: 2 }] });
+    for (let i = 1; i <= 6; i++) {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: cx - 40 - i * 10, y: cy, id: 1 }, { x: cx + 40 + i * 10, y: cy, id: 2 }] });
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await touch.waitForTimeout(300);
+    const pinch = await touch.evaluate(() => ({ fov: window.walk._fovTarget, pose: window.walk.pose, glide: !!window.walk._glide }));
+    await touch.context().close();
+    assert(p.x - spots.aisle.x > 3, `tap moved only ${(p.x - spots.aisle.x).toFixed(2)} m`);
+    assert(q.yaw > p.yaw + 5, `touch drag left should turn right: yaw ${p.yaw.toFixed(1)} -> ${q.yaw.toFixed(1)}`);
+    assert(pinch.fov < 45, `pinch out left the field of view at ${pinch.fov.toFixed(1)}`);
+    assert(!pinch.glide && near(pinch.pose.yaw, q.yaw, 0.01) && near(pinch.pose.x, q.x, 1e-6), 'pinch also walked or turned');
+    return `tap walked ${(p.x - spots.aisle.x).toFixed(2)} m, drag turned ${(q.yaw - p.yaw).toFixed(1)} degrees, pinch set fov ${pinch.fov.toFixed(0)}`;
+  });
+
+  await check('start pose without saved cameras', async () => {
+    const cameras = await page.evaluate(async () => {
+      const plan = JSON.parse(JSON.stringify(window.store.plan));
+      plan.cameras = [];
+      window.store.replace(plan);
+      await new Promise((res) => setTimeout(res, 350));
+      return window.store.plan.cameras.length;
+    });
+    await idle();
+    const p = await pose();
+    const inside = await page.evaluate(async (q) => {
+      const { pointInPolygon } = await import('../src/geometry.js');
+      const rooms = window.store.plan.rooms;
+      const biggest = rooms.find((rm) => rm.name === 'Open office');
+      return pointInPolygon(q, biggest.points);
+    }, p);
+    const free = await page.evaluate((q) => window.walk._world && !window.walk._world.query(q.x - 1, q.y - 1, q.x + 1, q.y + 1, []).some((e) => {
+      if (!e.seg) return false;
+      const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y, l2 = dx * dx + dy * dy;
+      const t = Math.max(0, Math.min(1, ((q.x - e.a.x) * dx + (q.y - e.a.y) * dy) / l2));
+      return Math.hypot(q.x - (e.a.x + dx * t), q.y - (e.a.y + dy * t)) < e.r + 0.25;
+    }), p);
+    assert(cameras === 0, 'plan still has cameras');
+    assert(inside, `start ${fmt(p)} is not in the largest room`);
+    assert(free, `start ${fmt(p)} touches a wall`);
+    assert(p.yaw === 90 || p.yaw === 270, `faces ${p.yaw}, not along the long axis`);
+    await shot('18-no-cameras-start');
+    return `started at ${fmt(p)}`;
+  });
+
+  await check('empty plan and plan replacement', async () => {
+    await page.evaluate(async () => {
+      window.store.replace(window.testModel.createPlan());
+      await new Promise((res) => setTimeout(res, 350));
+    });
+    await idle();
+    const empty = await page.evaluate(() => ({ pose: window.walk.pose, mini: window.walk._mini.shown }));
+    await page.evaluate(() => window.walk.setMode('overview'));
+    await idle();
+    await page.evaluate(() => window.walk.setMode('walk'));
+    await idle();
+    await page.evaluate(async () => {
+      window.store.replace(window.testPlanFor(window.testModel));
+      await new Promise((res) => setTimeout(res, 350));
+    });
+    await idle();
+    const back = await pose();
+    const cam = await page.evaluate(() => window.store.plan.cameras[0]);
+    assert(!empty.mini, 'minimap shown for an empty plan');
+    assert(near(back.x, cam.x, 0.01) && near(back.y, cam.y, 0.01), `replaced plan started at ${fmt(back)}`);
+    return `empty plan at ${fmt(empty.pose)}, replacement reset to the first camera`;
+  });
+
+  await check('reduced motion makes camera moves instant', async () => {
+    const rm = await openPage({ reducedMotion: 'reduce' });
+    const r = await rm.evaluate(() => {
+      const w = window.walk, cams = window.store.plan.cameras;
+      w.goToCamera(cams[1].id);
+      const a = w.pose;
+      w.setMode('overview');
+      const tween = !!w._tween;
+      w.setMode('walk');
+      return { a, cam: cams[1], tween, anim: !!w._anim };
+    });
+    await rm.context().close();
+    assert(near(r.a.x, r.cam.x, 0.02) && near(r.a.y, r.cam.y, 0.02) && !r.anim, `pose ${fmt(r.a)} right after goToCamera`);
+    assert(!r.tween, 'mode change animated');
+    return 'goToCamera and mode switches are instant';
+  });
+
+  await check('dispose releases the walkthrough', async () => {
+    const r = await page.evaluate(() => {
+      const w = window.walk;
+      const c = w.container;
+      w.dispose();
+      return { children: c.children.length, lost: w.renderer.getContext().isContextLost() };
+    });
+    assert(r.children === 0 && r.lost, `children ${r.children}, context lost ${r.lost}`);
+    return 'canvas, overlays and GL context released';
+  });
+
+  await check('samples load', async () => {
+    const sample = await browser.newPage({ viewport: { width: 800, height: 500 } });
+    sample.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+    sample.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
+    await sample.goto(`${pageUrl}?sample=lab-suite`, { waitUntil: 'load' });
+    await sample.waitForFunction(() => window.testReady === true, null, { timeout: 60000 });
+    const settled = () => sample.waitForFunction(() => !window.walk._raf && !window.walk._tween, null, { timeout: 90000 });
+    await settled();
+    await sample.screenshot({ path: join(shots, '16-sample-start.png'), timeout: 90000 });
+    const p = await sample.evaluate(() => window.walk.pose);
+    await sample.evaluate(() => window.walk.setMode('overview'));
+    await sample.waitForTimeout(500);
+    await settled();
+    await sample.screenshot({ path: join(shots, '17-sample-overview.png'), timeout: 90000 });
+    await sample.close();
+    return `lab suite start ${fmt(p)}`;
+  });
+
+  await check('no console errors', async () => {
+    assert(!errors.length, errors.join('\n'));
+    return 'clean';
+  });
+
+  await browser.close();
+  server?.kill();
+  let failed = 0;
+  for (const r of results) {
+    if (!r.ok) failed++;
+    console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `: ${r.detail}` : ''}`);
+  }
+  console.log(`\n${results.length - failed} of ${results.length} checks passed. Screenshots in ${shots}`);
+  process.exit(failed ? 1 : 0);
+}
+
+if (typeof window === 'undefined') await runChecks();
+else await mountPage();

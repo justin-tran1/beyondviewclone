@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1360" viewBox="0 0 1680 1360">
+  <title>Suite 210 floor plan, 1/4 inch = 1 foot (24 px per foot)</title>
+  <rect width="1680" height="1360" fill="#ffffff"/>
+  <!-- Drawing units are feet: 24 px per foot, plan origin at the exterior wall centerline corner. -->
+  <g transform="translate(120 200) scale(24)" font-family="Calibre, Arial, Helvetica, sans-serif" fill="#111111">
+
+    <!-- Exterior walls, 12 in poche with window and door openings -->
+    <g fill="#111111">
+      <rect x="-0.5" y="-0.5" width="3.5" height="1"/>
+      <rect x="9" y="-0.5" width="2" height="1"/>
+      <rect x="17" y="-0.5" width="6" height="1"/>
+      <rect x="29" y="-0.5" width="6" height="1"/>
+      <rect x="41" y="-0.5" width="6" height="1"/>
+      <rect x="53" y="-0.5" width="7.5" height="1"/>
+
+      <rect x="59.5" y="-0.5" width="1" height="4.5"/>
+      <rect x="59.5" y="10" width="1" height="12"/>
+      <rect x="59.5" y="27" width="1" height="6"/>
+      <rect x="59.5" y="37" width="1" height="3.5"/>
+
+      <rect x="-0.5" y="39.5" width="7.75" height="1"/>
+      <rect x="10.75" y="39.5" width="11.25" height="1"/>
+      <rect x="28" y="39.5" width="6" height="1"/>
+      <rect x="40" y="39.5" width="20.5" height="1"/>
+
+      <rect x="-0.5" y="-0.5" width="1" height="4.5"/>
+      <rect x="-0.5" y="10" width="1" height="16"/>
+      <rect x="-0.5" y="32" width="1" height="8.5"/>
+    </g>
+
+    <!-- Interior partitions, 5 in poche -->
+    <g fill="#111111">
+      <rect x="0.5" y="13.792" width="15" height="0.417"/>
+      <rect x="18.5" y="13.792" width="3" height="0.417"/>
+      <rect x="24.5" y="13.792" width="9" height="0.417"/>
+      <rect x="36.5" y="13.792" width="9" height="0.417"/>
+      <rect x="48.5" y="13.792" width="11" height="0.417"/>
+      <rect x="19.792" y="0.5" width="0.417" height="13.5"/>
+      <rect x="31.792" y="0.5" width="0.417" height="13.5"/>
+      <rect x="43.792" y="0.5" width="0.417" height="13.5"/>
+
+      <rect x="0.5" y="18.792" width="13" height="0.417"/>
+      <rect x="16.5" y="18.792" width="1.708" height="0.417"/>
+      <rect x="17.792" y="18.792" width="0.417" height="20.708"/>
+
+      <rect x="43.792" y="18.792" width="15.708" height="0.417"/>
+      <rect x="43.792" y="18.792" width="0.417" height="3.208"/>
+      <rect x="43.792" y="26" width="0.417" height="7.5"/>
+      <rect x="43.792" y="36.5" width="0.417" height="3"/>
+      <rect x="44.208" y="29.792" width="10.292" height="0.417"/>
+      <rect x="57.5" y="29.792" width="2" height="0.417"/>
+      <rect x="51.792" y="30.208" width="0.417" height="9.292"/>
+    </g>
+
+    <!-- Windows: wall faces plus a double glazing line -->
+    <g fill="none" stroke="#111111" stroke-width="0.05">
+      <path d="M3 -0.5H9M3 0.5H9M3 -0.08H9M3 0.08H9M11 -0.5H17M11 0.5H17M11 -0.08H17M11 0.08H17"/>
+      <path d="M23 -0.5H29M23 0.5H29M23 -0.08H29M23 0.08H29M35 -0.5H41M35 0.5H41M35 -0.08H41M35 0.08H41"/>
+      <path d="M47 -0.5H53M47 0.5H53M47 -0.08H53M47 0.08H53"/>
+      <path d="M59.5 4V10M60.5 4V10M59.92 4V10M60.08 4V10M59.5 22V27M60.5 22V27M59.92 22V27M60.08 22V27"/>
+      <path d="M59.5 33V37M60.5 33V37M59.92 33V37M60.08 33V37"/>
+      <path d="M22 39.5H28M22 40.5H28M22 39.92H28M22 40.08H28M34 39.5H40M34 40.5H40M34 39.92H40M34 40.08H40"/>
+      <path d="M-0.5 4V10M0.5 4V10M-0.08 4V10M0.08 4V10M-0.5 26V32M0.5 26V32M-0.08 26V32M0.08 26V32"/>
+    </g>
+
+    <!-- Doors: leaf and swing arc -->
+    <g fill="none" stroke="#111111" stroke-width="0.06">
+      <path d="M7.25 39.5V36M7.25 36A3.5 3.5 0 0 1 10.75 39.5"/>
+      <path d="M18.5 13.792V10.792M18.5 10.792A3 3 0 0 0 15.5 13.792"/>
+      <path d="M21.5 13.792V10.792M21.5 10.792A3 3 0 0 1 24.5 13.792"/>
+      <path d="M33.5 13.792V10.792M33.5 10.792A3 3 0 0 1 36.5 13.792"/>
+      <path d="M45.5 13.792V10.792M45.5 10.792A3 3 0 0 1 48.5 13.792"/>
+      <path d="M16.5 19.208V22.208M16.5 22.208A3 3 0 0 1 13.5 19.208"/>
+      <path d="M44.208 36.5H47.208M47.208 36.5A3 3 0 0 0 44.208 33.5"/>
+      <path d="M57.5 30.208V33.208M57.5 33.208A3 3 0 0 1 54.5 30.208"/>
+    </g>
+    <g fill="none" stroke="#111111" stroke-width="0.04" stroke-dasharray="0.25 0.18">
+      <path d="M43.6 22H44.4M43.6 26H44.4"/>
+    </g>
+
+    <!-- Room names and numbers -->
+    <g text-anchor="middle" font-size="0.72" font-weight="700" letter-spacing="0.06">
+      <text x="10" y="7">CONFERENCE</text>
+      <text x="26" y="7">OFFICE</text>
+      <text x="38" y="7">OFFICE</text>
+      <text x="52" y="7">OFFICE</text>
+      <text x="9" y="16.85">CORRIDOR</text>
+      <text x="9" y="29">RECEPTION</text>
+      <text x="31" y="29">OPEN OFFICE</text>
+      <text x="52" y="24.4">BREAK ROOM</text>
+      <text x="48" y="32.3">RESTROOM</text>
+      <text x="56" y="34.6">WORKROOM</text>
+    </g>
+    <g text-anchor="middle" font-size="0.55" fill="#444444">
+      <text x="10" y="8">101</text>
+      <text x="26" y="8">102</text>
+      <text x="38" y="8">103</text>
+      <text x="52" y="8">104</text>
+      <text x="9" y="30">105</text>
+      <text x="31" y="30">106</text>
+      <text x="52" y="25.4">107</text>
+      <text x="48" y="33.2">108</text>
+      <text x="56" y="35.6">109</text>
+    </g>
+
+    <!-- Dimension strings to wall centerlines -->
+    <g fill="none" stroke="#111111" stroke-width="0.04">
+      <path d="M0 -3.1H60M0 -5.6H60"/>
+      <path d="M0 -0.9V-6M20 -0.9V-3.6M32 -0.9V-3.6M44 -0.9V-3.6M60 -0.9V-6"/>
+      <path d="M-0.3 -2.8L0.3 -3.4M19.7 -2.8L20.3 -3.4M31.7 -2.8L32.3 -3.4M43.7 -2.8L44.3 -3.4M59.7 -2.8L60.3 -3.4"/>
+      <path d="M-0.3 -5.3L0.3 -5.9M59.7 -5.3L60.3 -5.9"/>
+      <path d="M-3.4 0V40M-0.9 0H-3.9M-0.9 40H-3.9M-3.7 0.3L-3.1 -0.3M-3.7 40.3L-3.1 39.7"/>
+    </g>
+    <g text-anchor="middle" font-size="0.62">
+      <text x="10" y="-3.45">20'-0"</text>
+      <text x="26" y="-3.45">12'-0"</text>
+      <text x="38" y="-3.45">12'-0"</text>
+      <text x="52" y="-3.45">16'-0"</text>
+      <text x="30" y="-5.95">60'-0"</text>
+      <text transform="translate(-3.75 20) rotate(-90)">40'-0"</text>
+    </g>
+
+    <!-- Scale bar, title and north arrow -->
+    <g stroke="#111111" stroke-width="0.04">
+      <rect x="0" y="43.6" width="2" height="0.45" fill="#111111"/>
+      <rect x="2" y="43.6" width="2" height="0.45" fill="#ffffff"/>
+      <rect x="4" y="43.6" width="4" height="0.45" fill="#111111"/>
+      <rect x="8" y="43.6" width="8" height="0.45" fill="#ffffff"/>
+    </g>
+    <g font-size="0.55" text-anchor="middle">
+      <text x="0" y="43.3">0</text>
+      <text x="2" y="43.3">2</text>
+      <text x="4" y="43.3">4</text>
+      <text x="8" y="43.3">8</text>
+      <text x="16" y="43.3">16 FT</text>
+    </g>
+    <text x="0" y="45.3" font-size="0.55" letter-spacing="0.04">SCALE 1/4" = 1'-0"</text>
+    <text x="30" y="44.4" font-size="0.95" font-weight="700" text-anchor="middle" letter-spacing="0.12">SUITE 210</text>
+    <text x="30" y="45.4" font-size="0.6" text-anchor="middle" letter-spacing="0.12">FLOOR PLAN</text>
+    <g transform="translate(57.5 44.6)">
+      <circle r="1.5" fill="none" stroke="#111111" stroke-width="0.05"/>
+      <path d="M0 -1.25L0.6 0.9L0 0.45L-0.6 0.9Z" fill="#111111"/>
+      <text y="-1.75" font-size="0.6" font-weight="700" text-anchor="middle">N</text>
+    </g>
+  </g>
+</svg>

@@ -120,6 +120,7 @@ export class PlanEditor extends EventTarget {
   //   'cursor'      {x, y}          plan position under the pointer
   //   'calibrate'   {a, b, meters}  user picked two points; UI asks for the true length, then calls applyCalibration
   //   'teleport'    {x, y}          double-click on the plan while a walker is shown
+  //   'view'        {scale, ox, oy} after any zoom, pan or resize
 }
 ```
 
@@ -153,6 +154,7 @@ export class Walkthrough extends EventTarget {
   setMode('walk' | 'overview')
   goTo({x, y, yaw, pitch}, { animate = true })
   goToCamera(id)
+  setMinimap(on)                 // hide the minimap when a 2D plan is already visible (Split)
   get pose()                     // {x, y, yaw, pitch}
   screenshot() -> Promise<Blob>  // PNG of the current view
   resize(), dispose()

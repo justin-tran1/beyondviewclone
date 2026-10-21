@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Builder Preview</title>
+  <script type="importmap">
+    { "imports": { "three": "../assets/vendor/three/three.module.min.js", "three/addons/": "../assets/vendor/three/addons/" } }
+  </script>
+  <style>
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: flex; flex-direction: column; background: #f6f6f6; color: #435254;
+      font: 14px/1.4 Calibre, "Segoe UI", system-ui, sans-serif;
+    }
+    header {
+      display: flex; align-items: center; gap: 16px; padding: 0 16px; height: 44px; flex: none;
+      background: #003f2d; color: #fff;
+    }
+    header strong { font: 600 16px/1 "Financier Display", Georgia, serif; letter-spacing: 0.01em; white-space: nowrap; }
+    nav { display: flex; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+    nav a { color: #cad1d3; text-decoration: none; padding: 4px 8px; border-radius: 4px; white-space: nowrap; }
+    nav a:hover { color: #fff; background: #012a2d; }
+    nav a[aria-current] { color: #fff; box-shadow: inset 0 -2px 0 #17e88f; }
+    #stats { margin-left: auto; color: #cad1d3; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    #stage { flex: 1; display: block; width: 100%; min-height: 0; }
+    #err { position: fixed; left: 16px; bottom: 16px; max-width: 70%; color: #8a1f1f; background: #fff; white-space: pre-wrap; }
+    #err:empty { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>Builder preview</strong>
+    <nav id="views"></nav>
+    <span id="stats"></span>
+  </header>
+  <canvas id="stage"></canvas>
+  <div id="err"></div>
+  <script type="module" src="builder-test.js"></script>
+</body>
+</html>

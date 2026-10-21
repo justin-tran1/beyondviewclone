@@ -94,7 +94,7 @@ const FLOOR_SPECS = {
     meters: 0.6096,
     roughness: 0.25,
     draw: (ctx, s) => {
-      mottled('#e4e2dd', { count: 12, size: 0.3, colors: ['rgba(200,196,188,0.25)'] }, { count: 600, size: 1, colors: ['rgba(150,145,140,0.25)'] }, 15)(ctx, s);
+      mottled('#e4e2dd', { count: 10, size: 0.25, colors: ['rgba(200,196,188,0.1)'] }, { count: 600, size: 1, colors: ['rgba(150,145,140,0.18)'] }, 15)(ctx, s);
       ctx.fillStyle = '#b9b6b0';
       ctx.fillRect(0, 0, s, 3);
       ctx.fillRect(0, 0, 3, s);
@@ -108,20 +108,24 @@ const FLOOR_SPECS = {
   },
 };
 
+/** Rows of planks two per tile width, so the pattern repeats seamlessly with no gaps. */
 function plankDraw(ctx, s, tones, rows, seed) {
   const r = rng(seed);
   const h = s / rows;
+  const plank = s / 2;
   for (let i = 0; i < rows; i++) {
-    const offset = r() * s;
-    for (let k = -1; k < 2; k++) {
-      ctx.fillStyle = tones[(i + k + 4) % tones.length];
-      ctx.fillRect(offset + k * s * 0.66, i * h, s * 0.66, h);
+    const offset = r() * plank;
+    for (let k = -1; k < 3; k++) {
+      const x = offset + k * plank;
+      ctx.fillStyle = tones[(i * 2 + ((k % 2) + 2) % 2) % tones.length];
+      ctx.fillRect(x, i * h, plank, h);
+      const grain = rng(seed * 31 + i * 7 + (((k % 2) + 2) % 2));
       for (let g = 0; g < 14; g++) {
-        ctx.fillStyle = `rgba(60,35,15,${0.05 + r() * 0.07})`;
-        ctx.fillRect(offset + k * s * 0.66, i * h + r() * h, s * 0.66, 1);
+        ctx.fillStyle = `rgba(60,35,15,${0.05 + grain() * 0.07})`;
+        ctx.fillRect(x, i * h + grain() * h, plank, 1);
       }
       ctx.fillStyle = 'rgba(50,30,15,0.45)';
-      ctx.fillRect(offset + k * s * 0.66, i * h, 2, h);
+      ctx.fillRect(x, i * h, 2, h);
     }
     ctx.fillStyle = 'rgba(50,30,15,0.5)';
     ctx.fillRect(0, i * h, s, 2);
@@ -256,8 +260,19 @@ export function createKit() {
     return m;
   }
 
+  /** Release every cached material and texture. Call once the scene using this kit is gone. */
+  function dispose() {
+    for (const m of cache.values()) m.dispose();
+    for (const t of textures.values()) t.dispose();
+    glass.dispose();
+    frostedGlass.dispose();
+    cache.clear();
+    textures.clear();
+  }
+
   return {
     THREE,
+    dispose,
     material,
     mat,
     glass,

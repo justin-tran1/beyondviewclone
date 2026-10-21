@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sample Plans Check</title>
+  <script type="importmap">
+    { "imports": { "three": "../assets/vendor/three/three.module.min.js", "three/addons/": "../assets/vendor/three/addons/" } }
+  </script>
+  <style>
+    :root {
+      --green: #003f2d; --dark-green: #012a2d; --accent: #17e88f; --text: #435254; --light: #cad1d3;
+      --tint: #f6f6f6; --divider: #c7c8ca; --sage: #538184; --cement: #7f8480; --error: #a8332c; --warn: #9a6a12;
+    }
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: flex; flex-direction: column; background: var(--tint); color: var(--text);
+      font: 14px/1.45 Calibre, "Segoe UI", system-ui, sans-serif;
+    }
+    header {
+      display: flex; align-items: center; gap: 16px; padding: 0 16px; height: 48px; flex: none;
+      background: var(--green); color: #fff;
+    }
+    header strong { font: 600 17px/1 "Financier Display", Georgia, serif; white-space: nowrap; }
+    nav { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+    nav a { color: var(--light); text-decoration: none; padding: 5px 9px; border-radius: 4px; white-space: nowrap; }
+    nav a:hover { color: #fff; background: var(--dark-green); }
+    nav a[aria-current] { color: #fff; box-shadow: inset 0 -2px 0 var(--accent); }
+    nav.views { margin-left: auto; }
+    main { flex: 1; display: flex; min-height: 0; }
+    #stage { flex: 1; position: relative; min-width: 0; }
+    #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    #report { width: 400px; flex: none; overflow-y: auto; background: #fff; border-left: 1px solid var(--divider); padding: 16px 18px 24px; }
+    #report h1 { font: 600 22px/1.2 "Financier Display", Georgia, serif; color: var(--green); margin: 0 0 4px; }
+    #report .desc { margin: 0 0 14px; color: var(--cement); }
+    #report h2 { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sage); margin: 18px 0 6px; }
+    #report table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    #report td { padding: 3px 0; border-bottom: 1px solid #eceeee; vertical-align: top; }
+    #report td + td { text-align: right; padding-left: 12px; white-space: nowrap; }
+    #report ul { list-style: none; margin: 0; padding: 0; }
+    #report li { padding: 4px 0 4px 14px; position: relative; border-bottom: 1px solid #eceeee; }
+    #report li::before { content: ''; position: absolute; left: 0; top: 11px; width: 7px; height: 7px; border-radius: 50%; background: var(--sage); }
+    #report li.error::before { background: var(--error); }
+    #report li.warn::before { background: #d9a43a; }
+    #report li.ok::before { background: var(--green); }
+    #summary { display: flex; gap: 8px; margin: 10px 0 4px; }
+    #summary span { padding: 3px 10px; border-radius: 12px; background: var(--tint); font-weight: 600; }
+    #summary .bad { color: #fff; background: var(--error); }
+    #summary .good { color: #fff; background: var(--green); }
+    #err { position: fixed; left: 16px; bottom: 16px; max-width: 60%; color: var(--error); background: #fff; padding: 8px 12px; white-space: pre-wrap; border: 1px solid var(--divider); }
+    #err:empty { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>Sample plans</strong>
+    <nav id="samples"></nav>
+    <nav id="views" class="views"></nav>
+  </header>
+  <main>
+    <div id="stage"><canvas id="plan"></canvas></div>
+    <aside id="report"></aside>
+  </main>
+  <div id="err"></div>
+  <script type="module" src="samples-test.js"></script>
+</body>
+</html>

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CBRE Virtual Walkthrough</title>
+  <meta name="description" content="Internal CBRE tool to trace a floor plan, lay out furniture and equipment, and walk through the space in 3D.">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#003F2D">
+  <link rel="icon" href="assets/img/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./assets/vendor/three/three.module.min.js",
+        "three/addons/": "./assets/vendor/three/addons/"
+      }
+    }
+  </script>
+  <script type="module" src="src/app.js"></script>
+</head>
+<body data-mode="plan">
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="topbar-left">
+        <img class="brand-logo" src="assets/img/cbre-logo-white.png" alt="CBRE" width="88" height="22">
+        <span class="brand-divider" aria-hidden="true"></span>
+        <span class="brand-name">Virtual Walkthrough</span>
+        <span class="plan-name-wrap">
+          <input class="plan-name" id="plan-name" type="text" aria-label="Plan name" spellcheck="false" autocomplete="off" data-tip="Rename the plan">
+        </span>
+      </div>
+
+      <div class="topbar-center">
+        <div class="segmented segmented-dark modes" role="group" aria-label="View">
+          <button type="button" class="seg" data-mode="plan" aria-pressed="true" data-tip="Plan only" data-key="Ctrl 1"><span class="icon" data-icon="plan"></span><span class="btn-label">Plan</span></button>
+          <button type="button" class="seg" data-mode="split" aria-pressed="false" data-tip="Plan and 3D side by side" data-key="Ctrl 2"><span class="icon" data-icon="split"></span><span class="btn-label">Split</span></button>
+          <button type="button" class="seg" data-mode="walk" aria-pressed="false" data-tip="Walk through in 3D" data-key="Ctrl 3"><span class="icon" data-icon="cube"></span><span class="btn-label">Walk</span></button>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <button type="button" class="bar-btn" id="undo" aria-label="Undo" data-tip="Undo" data-key="Ctrl Z" disabled><span class="icon" data-icon="undo"></span></button>
+        <button type="button" class="bar-btn" id="redo" aria-label="Redo" data-tip="Redo" data-key="Ctrl Shift Z" disabled><span class="icon" data-icon="redo"></span></button>
+        <span class="bar-sep" aria-hidden="true"></span>
+        <button type="button" class="bar-btn bar-btn-text" id="open-menu" aria-label="Open"><span class="icon" data-icon="folder"></span><span class="btn-label">Open</span><span class="icon icon-chevron" data-icon="chevron-down"></span></button>
+        <button type="button" class="bar-btn bar-btn-text" id="save" aria-label="Save plan" data-tip="Download the plan file" data-key="Ctrl S"><span class="icon" data-icon="save"></span><span class="btn-label">Save</span></button>
+        <button type="button" class="bar-btn" id="save-image" aria-label="Save image" data-tip="Save an image of the plan"><span class="icon" data-icon="photo"></span></button>
+        <span class="bar-sep" aria-hidden="true"></span>
+        <button type="button" class="bar-btn" id="settings" aria-label="Settings" data-tip="Settings"><span class="icon" data-icon="settings"></span></button>
+        <button type="button" class="bar-btn" id="help" aria-label="Help and shortcuts" data-tip="Help and shortcuts" data-key="?"><span class="icon" data-icon="help"></span></button>
+      </div>
+    </header>
+
+    <aside class="panel panel-left" id="left-panel" aria-label="Tools and library">
+      <section class="tools" id="tools" aria-label="Tools"></section>
+      <section class="library" id="library" aria-label="Furniture and equipment"></section>
+    </aside>
+
+    <main class="stage" id="stage">
+      <div class="pane plan-pane" id="plan-pane">
+        <canvas id="plan-canvas" class="plan-canvas" tabindex="0" aria-label="Floor plan editor. Use the tools on the left, or press V, W, R, D, N or C to switch tools."></canvas>
+        <div class="coach" id="coach" hidden>
+          <span class="coach-icon icon" data-icon="calibrate"></span>
+          <div class="coach-text">
+            <strong class="coach-title">Set the image scale</strong>
+            <span class="coach-step" id="coach-step"></span>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm coach-cancel" id="coach-cancel">Cancel</button>
+        </div>
+        <div class="empty-state" id="empty-state" hidden>
+          <h2 class="empty-title">Start your floor plan</h2>
+          <p class="empty-text">Import a floor plan image to trace over, or draw walls from scratch.</p>
+          <div class="empty-actions">
+            <button type="button" class="btn btn-primary" id="empty-import"><span class="icon" data-icon="upload"></span><span class="btn-label">Import floor plan image</span></button>
+            <button type="button" class="btn btn-secondary" id="empty-walls"><span class="icon" data-icon="wall"></span><span class="btn-label">Draw walls</span></button>
+          </div>
+          <button type="button" class="link-btn" id="empty-samples">Or open a sample plan</button>
+        </div>
+      </div>
+      <div class="split-divider" id="split-divider" role="separator" aria-orientation="vertical" aria-label="Resize the plan and 3D views" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" tabindex="0"></div>
+      <div class="pane walk-pane" id="walk-pane">
+        <div class="walk-view" id="walk-view"></div>
+      </div>
+    </main>
+
+    <aside class="panel panel-right" id="right-panel" aria-label="Properties"></aside>
+
+    <footer class="statusbar" id="statusbar"></footer>
+  </div>
+
+  <div class="drop-overlay" id="drop-overlay" hidden>
+    <div class="drop-card">
+      <span class="icon drop-icon" data-icon="drop"></span>
+      <strong>Drop to open</strong>
+      <span>A floor plan image (PNG, JPG, WebP or SVG) or a saved plan file</span>
+    </div>
+  </div>
+
+  <noscript><p class="noscript">CBRE Virtual Walkthrough needs JavaScript to run.</p></noscript>
+</body>
+</html>

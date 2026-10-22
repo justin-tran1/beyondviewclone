@@ -1,8 +1,14 @@
 // Plan to Three.js scene: walls with openings, floors, ceilings, furnished items and the exterior.
 // Static geometry is written straight into per-material buckets and merged at the end, so large
 // plans stay at a few dozen draw calls. Contract: docs/architecture.md (builder3d.js).
+//
+// Lighting is set up like an architectural rendering: daylight enters through the windows (area
+// lights at the glass, aimed at the windows nearest the viewer, plus a shadowed sun), fixtures glow
+// over a fill from above that stands in for their light, the outdoors reads several stops brighter
+// than the interior, and captureEnvironment() renders the finished interior into the image based
+// lighting so floors, glass and metals reflect the room they are in. Light levels are scene-linear.
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { OPENING_TYPES } from './model.js';
 import {
   add, sub, dot, norm, clamp, cross, samePoint, wallLength, wallDir, openingSpan, pointOnWall, pointInPolygon,
@@ -41,7 +47,38 @@ const MAX_ITEM_LIGHTS = 8;
 const UP = [0, 1, 0];
 const DOWN = [0, -1, 0];
 const WORLD = { o: { x: 0, y: 0 }, d: { x: 1, y: 0 }, n: { x: 0, y: 1 } };
-const SUN_DIR = new THREE.Vector3(-0.48, 0.8, 0.36).normalize();
+// Afternoon sun from the south west, about 40 degrees up, so sun patches reach into the room.
+const SUN_DIR = new THREE.Vector3(-0.6, 0.64, 0.48).normalize();
+
+// ---- Light levels (scene-linear; the walkthrough exposes by 1.65 and grades around a lit wall at 0.45).
+// Sky radiance is the dome's vertex colors times SKY_SCALE, the same daylight scale photo.js uses.
+const SKY_SCALE = 4;
+const SKY = { horizon: '#e6ecee', zenith: '#93b6d3' };
+// Exponential haze density (per meter): under 1 percent at 60 m, about a third at 500 m.
+const HAZE = 0.0013;
+// The sun is daylight strong: outdoors and sun patches read several stops above the interior.
+const SUN = { color: '#ffecd6', intensity: 11 };
+// Skylight on outdoor surfaces in shade, as emission of albedo times this (the fill light below
+// cannot tell outdoors from indoors, and must stay at interior level).
+const OUTDOOR_FILL = 1.6;
+// The fixture-lit baseline: strong from above (fixtures), weak from below (floor bounce), so floors
+// read brightest, walls mid and ceilings darker, as in a real office.
+const FILL = { sky: '#fff1df', ground: '#8f877c', intensity: 1.9 };
+// Sky light through the windows: radiance of the area lights at the glass, at most `max` of them
+// (aimed at the runs nearest the viewer), and the gap (m) under which windows in a row share one.
+const DAYLIGHT = { color: '#f1f4f8', radiance: 3.5, max: 10, maxLow: 5, merge: 1.6 };
+const LED = { color: '#fff3e4', troffer: 4.5, downlight: 7, pendant: 5, reflector: 0.28 };
+// Image based lighting strength for every material once the interior has been captured.
+const ENV_INTENSITY = 0.75;
+// While capturing, room surfaces are lit this much less (bright windows and fixtures keep full
+// strength), so reflections stay vivid without the capture's ambient flattening every room.
+const CAPTURE_DIM = 0.4;
+// Cube face size for the base and captured environments; both match so shaders are shared.
+const ENV_SIZE = 128;
+const PROBE_HEIGHT = 1.5;
+const PAINT = '#efece6';
+const WINDOW_TINT = '#dfe9e6';
+const PARTITION_TINT = '#edf1ef';
 
 const _m = new THREE.Matrix4();
 const _nm = new THREE.Matrix3();
@@ -59,6 +96,8 @@ const _y = new THREE.Vector3(0, 1, 0);
 export function buildPlanScene(plan, { kit, quality = 'high' } = {}) {
   if (!kit) throw new Error('buildPlanScene needs opts.kit from createKit()');
   checkPlan(plan);
+  // Kit materials reflect the captured interior at a physically sensible strength.
+  kit.setEnvironmentIntensity?.(ENV_INTENSITY);
   const owned = { geometries: [], materials: [], textures: [] };
   const loose = [];
   try {
@@ -103,6 +142,7 @@ function buildScene(ctx) {
   const root = new THREE.Group();
   root.name = 'plan-scene';
   const structure = namedGroup('structure');
+  const furnishings = namedGroup('furnishings');
   const ceilings = namedGroup('ceilings');
   const exterior = namedGroup('exterior');
   const shading = namedGroup('shading');
@@ -112,8 +152,11 @@ function buildScene(ctx) {
   buildCeilings(ctx);
   buildItems(ctx);
   buildExterior(ctx, exterior);
+  const probe = environmentProbe(ctx);
+  const daylight = buildDaylight(ctx, probe);
 
   flush(ctx.main, structure, ctx.owned);
+  flush(ctx.items, furnishings, ctx.owned);
   const walkable = flush(ctx.floors, structure, ctx.owned);
   walkable.push(buildSlab(ctx, structure));
   flush(ctx.ceil, ceilings, ctx.owned);
@@ -121,8 +164,9 @@ function buildScene(ctx) {
   flush(ctx.ext, exterior, ctx.owned);
   for (const o of ctx.loose) structure.add(o);
 
-  root.add(exterior, structure, shading, ceilings);
+  root.add(exterior, structure, furnishings, shading, ceilings, daylight);
   root.userData.horizon = exterior.userData.horizon;
+  root.userData.daylight = daylight;
   root.updateMatrixWorld(true);
 
   return {
@@ -132,28 +176,46 @@ function buildScene(ctx) {
     obstacles: ctx.obstacles,
     ceilings: [ceilings],
     bounds: { ...ctx.bounds },
+    // Real-time lights the build created (window daylight); photo.js skips them via userData.overlay.
+    lights: daylight.children.slice(),
+    // Where captureEnvironment() looks from by default: the largest room's middle, at 1.5 m.
+    probe,
     dispose() {
       root.removeFromParent();
+      for (const l of daylight.children) l.dispose();
       release(ctx.owned, ctx.loose);
     },
   };
 }
 
-/** Image based lighting, sky fill and a warm shadow casting sun. fit(bounds) re-aims the sun. */
+// Per scene: the PMREM generator, cube target and base environment from setupEnvironment().
+const ENV_STATE = new WeakMap();
+let areaLightsReady = false;
+
+function initAreaLights() {
+  if (areaLightsReady) return;
+  RectAreaLightUniformsLib.init();
+  areaLightsReady = true;
+}
+
+/**
+ * Image based lighting, a soft fill from above and a warm shadow casting sun. fit(bounds) re-aims
+ * the sun. The environment starts as a neutral interior (so materials never look like chrome in a
+ * void) and is replaced per build by captureEnvironment().
+ */
 export function setupEnvironment(renderer, scene) {
+  initAreaLights();
   const pmrem = new THREE.PMREMGenerator(renderer);
-  const room = new RoomEnvironment(renderer);
-  const env = pmrem.fromScene(room, 0.04);
-  room.dispose();
-  pmrem.dispose();
+  const cube = new THREE.WebGLCubeRenderTarget(ENV_SIZE, { type: THREE.HalfFloatType });
+  const env = baseEnvironment(renderer, pmrem, cube);
   scene.environment = env.texture;
-  // Matches the sky dome's horizon, in case a short camera far plane clips the dome.
-  const background = scene.background ? null : new THREE.Color('#e8eff2');
+  // The horizon at daylight strength, in case a short camera far plane clips the dome.
+  const background = scene.background ? null : new THREE.Color(SKY.horizon).multiplyScalar(SKY_SCALE);
   if (background) scene.background = background;
 
-  const hemi = new THREE.HemisphereLight('#eef3f8', '#e2dcd1', 1.0);
+  const hemi = new THREE.HemisphereLight(FILL.sky, FILL.ground, FILL.intensity);
   hemi.name = 'sky-fill';
-  const sun = new THREE.DirectionalLight('#fff1dc', 2.2);
+  const sun = new THREE.DirectionalLight(SUN.color, SUN.intensity);
   sun.name = 'sun';
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
@@ -161,6 +223,16 @@ export function setupEnvironment(renderer, scene) {
   sun.shadow.normalBias = 0.02;
   sun.shadow.radius = 2;
   scene.add(hemi, sun, sun.target);
+  ENV_STATE.set(scene, { pmrem, cube, base: env });
+  // A light haze toward the horizon color: nothing indoors, a soft fade on distant buildings.
+  const fog = scene.fog ? null : new THREE.FogExp2(new THREE.Color(SKY.horizon).multiplyScalar(SKY_SCALE * 0.9), HAZE);
+  if (fog) scene.fog = fog;
+  // Window daylight follows the viewer; scene.onBeforeRender runs before three gathers the lights.
+  const hook = scene.onBeforeRender;
+  scene.onBeforeRender = function (r, sc, camera, target) {
+    hook.call(this, r, sc, camera, target);
+    aimSceneDaylight(sc, camera);
+  };
 
   function fit(bounds) {
     const b = emptyBounds(bounds) ? { minX: -10, minY: -10, maxX: 10, maxY: 10 } : bounds;
@@ -202,12 +274,111 @@ export function setupEnvironment(renderer, scene) {
     fit,
     dispose() {
       scene.remove(hemi, sun, sun.target);
+      scene.onBeforeRender = hook;
       sun.dispose();
+      hemi.dispose();
       if (scene.environment === env.texture) scene.environment = null;
       if (background && scene.background === background) scene.background = null;
+      if (fog && scene.fog === fog) scene.fog = null;
+      if (ENV_STATE.get(scene)?.base === env) ENV_STATE.delete(scene);
       env.dispose();
+      cube.dispose();
+      pmrem.dispose();
     },
   };
+}
+
+/**
+ * A neutral stand-in interior, rendered like a capture so its PMREM has the same size (and the
+ * materials the same shader variants): grey floor, light walls and ceiling, a band of daylight.
+ */
+function baseEnvironment(renderer, pmrem, cube) {
+  const scene = new THREE.Scene();
+  const g = new THREE.BoxGeometry(12, 4, 12, 1, 8, 1);
+  const pos = g.attributes.position;
+  const col = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i);
+    if (y > 1.99) c.setRGB(0.32, 0.31, 0.3);
+    else if (y < -1.99) c.setRGB(0.09, 0.09, 0.09);
+    else if (y > -0.6 && y < 1.2) c.setRGB(1.6, 1.7, 1.8);
+    else c.setRGB(0.36, 0.35, 0.33);
+    col.set([c.r, c.g, c.b], i * 3);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const m = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide });
+  scene.add(new THREE.Mesh(g, m));
+  const cam = new THREE.CubeCamera(0.1, 50, cube);
+  cam.position.set(0, -0.5, 0);
+  const prev = renderer.getRenderTarget();
+  try {
+    cam.update(renderer, scene);
+    return pmrem.fromCubemap(cube.texture);
+  } finally {
+    renderer.setRenderTarget(prev);
+    g.dispose();
+    m.dispose();
+  }
+}
+
+/**
+ * Render the built interior into a PMREM environment for reflections and ambient tint, from
+ * `position` (world, default built.probe: the largest room's middle at 1.5 m). Lights, ceilings
+ * and the exterior are included, furnishings are left out (they are most of the geometry and
+ * barely show in blurred reflections); the caller hides its own overlays first. The capture sees the
+ * scene lit by the neutral base environment, never by an earlier capture, so rebuilds converge on
+ * the same look. The caller assigns texture to scene.environment and disposes the previous one.
+ */
+export function captureEnvironment(renderer, scene, built, { position } = {}) {
+  initAreaLights();
+  const state = ENV_STATE.get(scene);
+  const pmrem = state?.pmrem || new THREE.PMREMGenerator(renderer);
+  const cube = state?.cube || new THREE.WebGLCubeRenderTarget(ENV_SIZE, { type: THREE.HalfFloatType });
+  const p = position || built?.probe || { x: 0, y: PROBE_HEIGHT, z: 0 };
+  const far = Math.max(600, (built?.root?.userData.horizon || 1000) * 1.3);
+  const cam = new THREE.CubeCamera(0.05, far, cube);
+  cam.position.set(p.x, p.y, p.z);
+  cam.updateMatrixWorld(true);
+  const prev = { target: renderer.getRenderTarget(), env: scene.environment };
+  if (state) scene.environment = state.base.texture;
+  // Aim the window lights at the probe; the scene hook would otherwise re-aim them for every face.
+  const hook = scene.onBeforeRender;
+  scene.onBeforeRender = THREE.Object3D.prototype.onBeforeRender;
+  if (built?.root?.userData.daylight) aimDaylight(built.root.userData.daylight, p.x, p.z);
+  // Sun patches are local: left in, they would brighten every room's ambient like the sunniest one.
+  // The fill and window lights are dimmed by CAPTURE_DIM so room surfaces stay modest next to the
+  // windows and fixtures that reflections need. Only intensities change, so shaders are reused.
+  const saved = [];
+  scene.traverseVisible((o) => {
+    if (!o.isDirectionalLight && !o.isHemisphereLight && !o.isRectAreaLight) return;
+    saved.push([o, o.intensity]);
+    o.intensity *= o.isDirectionalLight ? 0 : CAPTURE_DIM;
+  });
+  // Furniture barely shows in blurred reflections and ambient, and is most of the geometry.
+  const furnishings = built?.root?.getObjectByName('furnishings');
+  const shown = furnishings?.visible;
+  if (furnishings) furnishings.visible = false;
+  // The sun is off, so its shadow map can wait for the next frame (which sees the furniture too).
+  const shadows = renderer.shadowMap, shadowState = [shadows.autoUpdate, shadows.needsUpdate];
+  shadows.autoUpdate = shadows.needsUpdate = false;
+  let rt = null;
+  try {
+    cam.update(renderer, scene);
+    rt = pmrem.fromCubemap(cube.texture);
+  } finally {
+    [shadows.autoUpdate, shadows.needsUpdate] = shadowState;
+    scene.onBeforeRender = hook;
+    if (furnishings) furnishings.visible = shown;
+    for (const [o, v] of saved) o.intensity = v;
+    scene.environment = prev.env;
+    renderer.setRenderTarget(prev.target);
+    if (!state) {
+      pmrem.dispose();
+      cube.dispose();
+    }
+  }
+  return { texture: rt.texture, dispose: () => rt.dispose() };
 }
 
 // ---- Context, materials and textures ------------------------------------------
@@ -223,19 +394,23 @@ function createContext(plan, kit, quality, owned, loose) {
     plan, kit, low, owned, loose, rooms, bounds,
     settings: plan.settings,
     main: createBuckets(low ? Infinity : Math.max(CELL_SIZE, span / 16), { x: bounds.minX, y: bounds.minY }),
+    // Furnishings merge on their own, so the environment capture can leave them out.
+    items: createBuckets(low ? Infinity : Math.max(CELL_SIZE, span / 16), { x: bounds.minX, y: bounds.minY }),
     floors: createBuckets(),
     ceil: createBuckets(),
     fx: createBuckets(),
     ext: createBuckets(),
     colliders: [],
     obstacles: [],
+    // Glazing that lets daylight in: candidates for the window area lights.
+    windows: [],
     lights: 0,
     fixtures: MAX_FIXTURES,
     itemVerts: 0,
     unit: new Map(),
-    tints: new Map(),
+    tints: sharedStore(kit).tints,
   };
-  ctx.mats = createMaterials(kit, owned);
+  ctx.mats = createMaterials(kit);
   ctx.mask = buildMask(plan, rooms, building);
   const H = plan.settings.wallHeight;
   // Untraced building area, one space per connected patch of the mask.
@@ -251,58 +426,127 @@ function createContext(plan, kit, quality, owned, loose) {
   return ctx;
 }
 
-function createMaterials(kit, owned) {
-  const own = (m) => (owned.materials.push(m), m);
-  const cache = {};
+// Builder materials that do not depend on the plan are shared by every build made with one kit, so
+// a rebuild neither recompiles their shaders nor re-uploads their textures. They live as long as
+// the kit does (textures they use stay acquired for that long).
+const SHARED = new WeakMap();
+
+function sharedStore(kit) {
+  let store = SHARED.get(kit);
+  if (!store) SHARED.set(kit, (store = { materials: new Map(), owned: { geometries: [], materials: [], textures: [] }, tints: new Map() }));
+  return store;
+}
+
+/** The kit's shared material under `key`, made once by make(owned), where owned keeps its textures. */
+function sharedMaterial(kit, key, make) {
+  const store = sharedStore(kit);
+  let m = store.materials.get(key);
+  if (!m) {
+    m = make(store.owned);
+    store.materials.set(key, m);
+    store.owned.materials.push(m);
+  }
+  return m;
+}
+
+function createMaterials(kit) {
+  // Builder-made standard materials take the same image based lighting strength as the kit's.
+  const standard = (opts) => new THREE.MeshStandardMaterial({ envMapIntensity: ENV_INTENSITY, ...opts });
+  // Outdoor surfaces: skylight fill on top of the sun, and little of the interior's reflections.
+  const outside = (opts, fill) => outdoor(standard({ envMapIntensity: 0.3, ...opts }), fill);
   const textured = {
-    tile: () => new THREE.MeshStandardMaterial({ map: acquireTexture(owned, 'ceiling-tile'), roughness: 0.95, envMapIntensity: 0.75 }),
-    diffuser: () => new THREE.MeshStandardMaterial({ map: acquireTexture(owned, 'diffuser'), roughness: 0.55, envMapIntensity: 0.6 }),
-    paving: () => new THREE.MeshStandardMaterial({ map: acquireTexture(owned, 'paving'), roughness: 0.92 }),
-    grass: () => new THREE.MeshStandardMaterial({ map: acquireTexture(owned, 'grass'), roughness: 1 }),
-    neutral: () => new THREE.MeshStandardMaterial({ color: '#d7dad9', roughness: 0.95 }),
-    facadeGlass: () => new THREE.MeshStandardMaterial({ map: acquireTexture(owned, 'facade-glass'), roughness: 0.4, metalness: 0.1 }),
-    facadePrecast: () => new THREE.MeshStandardMaterial({ map: acquireTexture(owned, 'facade-precast'), roughness: 0.85 }),
-    asphalt: () => new THREE.MeshStandardMaterial({ map: acquireTexture(owned, 'asphalt'), roughness: 0.9 }),
-    deck: () => new THREE.MeshStandardMaterial({ map: acquireTexture(owned, 'deck'), roughness: 0.9, metalness: 0.15 }),
-    aoFloor: () => shadeMaterial(owned, 0.28),
-    aoWall: () => shadeMaterial(owned, 0.14),
-    aoCeiling: () => shadeMaterial(owned, 0.16),
-    blob: () => shadeMaterial(owned, 0.42),
+    diffuser: (owned) => standard({ map: acquireTexture(owned, 'diffuser'), roughness: 0.45 }),
+    // Exterior paving: the kit's broom finished concrete with room-scale variation, offset under the slab.
+    paving: () => outdoor(Object.assign(kit.floorMaterial('concrete').clone(), {
+      envMapIntensity: 0.3, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 4,
+    })),
+    grass: (owned) => outside({ map: acquireTexture(owned, 'grass'), roughness: 1 }),
+    neutral: () => outside({ color: '#c9cbc8', roughness: 0.95 }),
+    facadeGlass: (owned) => outside({ map: acquireTexture(owned, 'facade-glass'), roughness: 0.35, metalness: 0.2 }),
+    facadePrecast: (owned) => outside({ map: acquireTexture(owned, 'facade-precast'), roughness: 0.85 }),
+    asphalt: (owned) => outside({ map: acquireTexture(owned, 'asphalt'), roughness: 0.88 }),
+    stripe: () => outside({ color: '#dddbd3', roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }),
+    roof: () => outside({ color: '#9a9e9f', roughness: 0.9 }),
+    // Canopies shade themselves, so foliage takes a third of the open-sky fill.
+    trunk: () => outside({ color: '#4f4339', roughness: 0.95 }, OUTDOOR_FILL / 3),
+    foliage: (owned) => outside({ map: acquireTexture(owned, 'foliage'), alphaTest: 0.5, roughness: 0.8 }, OUTDOOR_FILL / 3),
+    aoFloor: (owned) => shadeMaterial(owned, 0.22, 'shade-floor'),
+    aoWall: (owned) => shadeMaterial(owned, 0.13, 'shade-wall'),
+    aoCeiling: (owned) => shadeMaterial(owned, 0.12, 'shade-ceiling'),
+    blob: (owned) => shadeMaterial(owned, 0.36, 'shade-contact'),
+    // The polished slab under the building, depth-offset so rooms never z-fight with it.
+    slab: () => Object.assign(kit.floorMaterial('polished-concrete').clone(), { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 2 }),
+    sky: () => skyMaterial(),
+    'skyline-city': (owned) => skylineMaterial(owned, 'skyline-city'),
+    'skyline-campus': (owned) => skylineMaterial(owned, 'skyline-campus'),
   };
-  return {
-    paint: kit.material('#f3f1ec', { roughness: 0.9, envMapIntensity: 0.6 }),
-    facade: kit.material('#d5d8d5', { roughness: 0.85 }),
-    cut: kit.material('#435254', { roughness: 0.9 }),
-    base: kit.material('#3a4143', { roughness: 0.7 }),
-    frame: kit.material('#5f696c', { roughness: 0.45, metalness: 0.3 }),
-    alu: kit.material('#c6cbce', { roughness: 0.38, metalness: 0.55 }),
+  const lit = (color, emissiveIntensity, roughness = 0.3) => kit.material(color, { roughness, emissive: LED.color, emissiveIntensity });
+  const mats = {
+    paint: kit.paintMaterial(PAINT),
+    // The outside face of exterior walls: the kit's paint in a warm grey, with the outdoor fill.
+    facade: sharedMaterial(kit, 'facade', () => outdoor(kit.paintMaterial('#cbc7be', { roughness: 0.8 }).clone())),
+    cut: kit.material('#454d4f', { roughness: 0.9 }),
+    base: kit.material('#3b4042', { roughness: 0.6 }),
+    // Painted hollow metal door frames and clear anodized aluminum storefront and window frames.
+    frame: kit.material('#596164', { roughness: 0.38 }),
+    alu: kit.material('#b9bdbf', { roughness: 0.34, metalness: 0.65 }),
     leaf: kit.mat.oak,
-    handle: kit.mat.chrome,
+    handle: kit.mat.steel,
     sill: kit.mat.quartz,
     cap: kit.mat.oak,
-    glass: kit.glass,
-    frosted: kit.frostedGlass,
-    drywall: kit.material('#f6f6f3', { roughness: 0.95, envMapIntensity: 0.75 }),
-    trim: kit.material('#f1f1ee', { roughness: 0.5 }),
-    led: kit.mat.led,
+    glass: kit.glassMaterial({ tint: WINDOW_TINT }),
+    partition: kit.glassMaterial({ tint: PARTITION_TINT }),
+    frosted: kit.glassMaterial({ frosted: true }),
+    tile: kit.ceilingMaterial('tile'),
+    drywall: kit.ceilingMaterial('drywall'),
+    deckSoffit: kit.ceilingMaterial('open'),
+    trim: kit.material('#eeede9', { roughness: 0.36 }),
+    // Fixture faces: bright enough to bloom a little in the 'high' pipeline; reflectors read as lit.
+    led: lit('#f6f5f1', LED.troffer),
+    spot: lit('#f6f5f1', LED.downlight),
+    strip: lit('#f6f5f1', LED.pendant),
+    reflector: lit('#e9e8e4', LED.reflector, 0.45),
     deck: kit.material('#353d40', { roughness: 0.95 }),
-    beam: kit.material('#2b3235', { roughness: 0.8, metalness: 0.2 }),
-    duct: kit.material('#a9b0b3', { roughness: 0.42, metalness: 0.6 }),
+    beam: kit.material('#2d3437', { roughness: 0.7 }),
+    duct: kit.material('#aab0b2', { roughness: 0.38, metalness: 1 }),
     pendant: kit.mat.black,
     sprinkler: kit.mat.chrome,
-    trunk: kit.material('#6a5646', { roughness: 0.95 }),
-    leaves: [kit.material('#5c7d4c', { roughness: 0.9 }), kit.material('#6d8f56', { roughness: 0.9 }), kit.material('#4f6f45', { roughness: 0.9 })],
-    roof: kit.material('#9da3a5', { roughness: 0.9 }),
     get(name) {
-      return cache[name] || (cache[name] = own(textured[name]()));
+      return sharedMaterial(kit, name, textured[name]);
     },
   };
+  Object.defineProperties(mats, {
+    roof: { get: () => mats.get('roof') },
+    trunk: { get: () => mats.get('trunk') },
+  });
+  return mats;
+}
+
+/**
+ * Give an outdoor material a skylight fill: emission of its albedo times `fill`, so shaded facades
+ * and ground read as daylit without brightening the interior. Keeps any shader patch the material
+ * already has (kit materials). photo.js clones materials without it, as the path tracer finds the
+ * real skylight.
+ */
+function outdoor(m, fill = OUTDOOR_FILL) {
+  const base = m.onBeforeCompile, key = m.customProgramCacheKey;
+  m.onBeforeCompile = function (shader, renderer) {
+    base.call(this, shader, renderer);
+    shader.uniforms.outdoorFill = { value: fill };
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float outdoorFill;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += diffuseColor.rgb * outdoorFill;');
+  };
+  m.customProgramCacheKey = function () {
+    return `${key.call(this)}|outdoor`;
+  };
+  return m;
 }
 
 /** Unlit dark overlay whose alpha comes from the shared falloff texture: fake ambient occlusion. */
-function shadeMaterial(owned, opacity) {
+function shadeMaterial(owned, opacity, name) {
   return new THREE.MeshBasicMaterial({
-    color: '#1d2527', alphaMap: acquireTexture(owned, 'falloff'), transparent: true, opacity, depthWrite: false,
+    name, color: '#1d2321', alphaMap: acquireTexture(owned, 'falloff'), transparent: true, opacity, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
   });
 }
@@ -346,14 +590,16 @@ function skylineTexture(draw) {
 }
 
 const TEXTURE_MAKERS = {
-  'ceiling-tile': () => canvasTexture(512, 512, drawCeilingTile, [1 / TILE, 1 / TILE]),
   diffuser: () => canvasTexture(256, 256, drawDiffuser),
-  paving: () => canvasTexture(512, 512, drawPaving, [1 / 4.8, 1 / 4.8]),
   grass: () => canvasTexture(512, 512, drawGrass, [1 / 9, 1 / 9]),
   'facade-glass': () => canvasTexture(256, 256, drawGlassFacade, [1 / 3, 1 / 4]),
   'facade-precast': () => canvasTexture(256, 256, drawPrecastFacade, [1 / 3, 1 / 4]),
   asphalt: () => canvasTexture(256, 256, drawAsphalt, [1 / 4, 1 / 4]),
-  deck: () => canvasTexture(256, 64, drawDeck, [1 / (4 * 0.1524), 1]),
+  foliage: () => {
+    const t = canvasTexture(1024, 1024, drawFoliage);
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    return t;
+  },
   falloff: () => {
     const t = canvasTexture(64, 64, drawFalloff);
     t.colorSpace = THREE.NoColorSpace;
@@ -511,6 +757,99 @@ function box(F, faces, s0, s1, u0, u1, y0, y1) {
   if (faces.bottom) quad(faces.bottom, a, b, c, e, DOWN, s0, u0, s1, u1);
   if (faces.s1) quad(faces.s1, b, c, c2, b2, [d.x, 0, d.y], u0, y0, u1, y1);
   if (faces.s0) quad(faces.s0, a, e, e2, a2, [-d.x, 0, -d.y], u0, y0, u1, y1);
+}
+
+/** Triangle or quad of [x, y, z, nx, ny, nz, u, v] vertices, wound to face along its normals. */
+function poly(b, vs) {
+  const i0 = b.count;
+  for (const v of vs) vert(b, ...v);
+  const [a, p, q] = vs;
+  const ax = p[0] - a[0], ay = p[1] - a[1], az = p[2] - a[2], bx = q[0] - a[0], by = q[1] - a[1], bz = q[2] - a[2];
+  let nx = 0, ny = 0, nz = 0;
+  for (const v of vs) { nx += v[3]; ny += v[4]; nz += v[5]; }
+  const f = (ay * bz - az * by) * nx + (az * bx - ax * bz) * ny + (ax * by - ay * bx) * nz;
+  const order = f >= 0 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2];
+  for (let k = 0; k < (vs.length === 4 ? 6 : 3); k += 3) tri(b, i0 + order[k], i0 + order[k + 1], i0 + order[k + 2]);
+}
+
+const FACE_KEYS = [['s0', 's1'], ['nu', 'pu'], ['bottom', 'top']];
+
+/**
+ * Box like box() whose edges between drawn faces are rounded off to radius r: each face is inset by
+ * r, joined to its neighbors by a strip whose normals turn from one face to the other, and closed at
+ * corners by a small triangle, so edges catch highlights instead of reading razor sharp. One bucket
+ * for every face; `faces` lists the faces to draw (all by default). UVs are in meters like box();
+ * grain: true turns them a quarter so wood grain runs up a door leaf. 44 triangles for a full box.
+ */
+function rbox(ctx, F, b, s0, s1, u0, u1, y0, y1, r, { faces = null, grain = false } = {}) {
+  const lo = [s0, u0, y0], hi = [s1, u1, y1];
+  const has = FACE_KEYS.map((pair) => pair.map((k) => !faces || faces.includes(k)));
+  const size = [s1 - s0, u1 - u0, y1 - y0];
+  if (size.some((v) => v < 1e-5)) return;
+  r = Math.min(r, ...size.map((v) => v * 0.45));
+  if (ctx.low || r < 0.0008) {
+    const set = {};
+    FACE_KEYS.forEach((pair, i) => pair.forEach((k, side) => { if (has[i][side]) set[k] = b; }));
+    box(F, set, s0, s1, u0, u1, y0, y1);
+    return;
+  }
+  const { o, d, n } = F;
+  const axisN = [[d.x, 0, d.y], [n.x, 0, n.y], [0, 1, 0]];
+  // A vertex on the face of axis i, side `side`, at local point c, with that face's normal and uv.
+  const V = (i, side, c) => {
+    const sg = side ? 1 : -1;
+    const x = o.x + d.x * c[0] + n.x * c[1], z = o.y + d.y * c[0] + n.y * c[1];
+    const [pu, pv] = i === 0 ? [c[1], c[2]] : i === 1 ? [c[0], c[2]] : [c[0], c[1]];
+    const [uu, vv] = grain ? [pv, pu] : [pu, pv];
+    return [x, c[2], z, axisN[i][0] * sg, axisN[i][1] * sg, axisN[i][2] * sg, uu, vv];
+  };
+  // Inset of axis j at its low or high end: r where the face there is drawn (that edge is rounded).
+  const lim = (j, side) => (side ? hi[j] - (has[j][1] ? r : 0) : lo[j] + (has[j][0] ? r : 0));
+  const at = (i, side) => (side ? hi[i] : lo[i]);
+  for (let i = 0; i < 3; i++) {
+    const j = (i + 1) % 3, k = (i + 2) % 3;
+    for (const side of [0, 1]) {
+      if (!has[i][side]) continue;
+      const c = (sj, sk) => {
+        const p = [0, 0, 0];
+        p[i] = at(i, side);
+        p[j] = lim(j, sj);
+        p[k] = lim(k, sk);
+        return V(i, side, p);
+      };
+      poly(b, [c(0, 0), c(1, 0), c(1, 1), c(0, 1)]);
+    }
+  }
+  // Edges between faces of axes i and j, along axis k.
+  for (let k = 0; k < 3; k++) {
+    const i = (k + 1) % 3, j = (k + 2) % 3;
+    for (const si of [0, 1]) {
+      for (const sj of [0, 1]) {
+        if (!has[i][si] || !has[j][sj]) continue;
+        const e = (sk, onI) => {
+          const p = [0, 0, 0];
+          p[k] = lim(k, sk);
+          p[i] = onI ? at(i, si) : lim(i, si);
+          p[j] = onI ? lim(j, sj) : at(j, sj);
+          return V(onI ? i : j, onI ? si : sj, p);
+        };
+        poly(b, [e(0, true), e(1, true), e(1, false), e(0, false)]);
+      }
+    }
+  }
+  // Corners where three drawn faces meet.
+  for (const ss of [0, 1]) {
+    for (const su of [0, 1]) {
+      for (const sy of [0, 1]) {
+        const sides = [ss, su, sy];
+        if (![0, 1, 2].every((a) => has[a][sides[a]])) continue;
+        poly(b, [0, 1, 2].map((a) => {
+          const p = [0, 1, 2].map((m) => (m === a ? at(m, sides[m]) : lim(m, sides[m])));
+          return V(a, sides[a], p);
+        }));
+      }
+    }
+  }
 }
 
 /** Append a BufferGeometry transformed by matrix; range limits it to one geometry group. */
@@ -1296,9 +1635,10 @@ function floorTrim(ctx, info, runs, { base = true, width = 0.3 } = {}) {
       const s0 = r.s0 - (r.s0 <= -ext.a + 1e-6 ? wrap('a', side) : 0);
       const s1 = r.s1 + (r.s1 >= L + ext.b - 1e-6 ? wrap('b', side) : 0);
       if (base) {
-        const f = { top: b, s0: b, s1: b, [side > 0 ? 'pu' : 'nu']: b };
-        if (side > 0) box(F, f, s0, s1, ht, ht + BASE.out, 0, BASE.h);
-        else box(F, f, s0, s1, -ht - BASE.out, -ht, 0, BASE.h);
+        // Rubber cove base with an eased top edge; the face against the wall and the floor are hidden.
+        const faces = ['top', 's0', 's1', side > 0 ? 'pu' : 'nu'];
+        if (side > 0) rbox(ctx, F, b, s0, s1, ht, ht + BASE.out, 0, BASE.h, 0.0025, { faces });
+        else rbox(ctx, F, b, s0, s1, -ht - BASE.out, -ht, 0, BASE.h, 0.0025, { faces });
       }
       floorShade(ctx, F, side, ht + (base ? BASE.out : 0), s0, s1, r.fade0, r.fade1, width);
     }
@@ -1320,7 +1660,8 @@ function floorShade(ctx, F, side, face, s0, s1, fade0, fade1, width) {
 /** Soft shading where a wall meets a flat ceiling, on the wall face and on the ceiling. */
 function ceilingShade(ctx, info) {
   const { w, L, F, ext, spans, inner } = info;
-  const ht = w.thickness / 2, band = 0.35;
+  // A tall, soft band on the wall reads like the falloff of light from fixtures set back from it.
+  const ht = w.thickness / 2, band = 0.7, cband = 0.35;
   const mid = pointOnWall(w, L / 2);
   for (const side of [1, -1]) {
     if (inner !== 0 && side !== inner) continue;
@@ -1332,7 +1673,7 @@ function ceilingShade(ctx, info) {
     const ceilB = ctx.ceil.get(ctx.mats.get('aoCeiling'), false, false);
     const P = (s, u, y) => [F.o.x + F.d.x * s + F.n.x * u, y, F.o.y + F.d.y * s + F.n.y * u];
     const n = [F.n.x * side, 0, F.n.y * side];
-    const u0 = side * (ht + 0.0015), u1 = side * ht, u2 = side * (ht + band), yc = h - 0.0015;
+    const u0 = side * (ht + 0.0015), u1 = side * ht, u2 = side * (ht + cband), yc = h - 0.0015;
     let cursor = -ext.a;
     const run = (s0, s1) => {
       if (s1 - s0 < 0.01) return;
@@ -1362,6 +1703,10 @@ function doorOpening(ctx, info, sp, f, get) {
   // Doors in exterior walls are aluminum storefront entries with glass leaves.
   const storefront = w.kind === 'exterior';
   casing(ctx, info, start, end, oh, storefront ? ctx.mats.alu : ctx.mats.frame);
+  // Storefront glass lets daylight in too, a little less than a window (rails and stiles).
+  if (storefront && info.inner !== 0) {
+    ctx.windows.push({ info, s0: start + CASING.in, s1: end - CASING.in, y0: 0.2, y1: oh - CASING.in, u: 0, side: info.inner, weight: 0.7 });
+  }
   const leaf = storefront ? 'storefront' : 'wood';
   const s0 = start + CASING.in, s1 = end - CASING.in, top = oh - CASING.in;
   if (o.type === 'door') {
@@ -1381,10 +1726,10 @@ function casing(ctx, { w, F }, start, end, oh, material) {
   const b = ctx.main.get(material, !ctx.low);
   const u = w.thickness / 2 + CASING.proud;
   const head = Math.min(w.height, oh + CASING.out);
-  const f = noBottom(b);
-  box(F, f, start - CASING.out, start + CASING.in, -u, u, 0, head);
-  box(F, f, end - CASING.in, end + CASING.out, -u, u, 0, head);
-  if (head > oh - CASING.in + 0.001) box(F, all(b), start + CASING.in, end - CASING.in, -u, u, oh - CASING.in, head);
+  const faces = ['s0', 's1', 'pu', 'nu', 'top'];
+  rbox(ctx, F, b, start - CASING.out, start + CASING.in, -u, u, 0, head, 0.004, { faces });
+  rbox(ctx, F, b, end - CASING.in, end + CASING.out, -u, u, 0, head, 0.004, { faces });
+  if (head > oh - CASING.in + 0.001) rbox(ctx, F, b, start + CASING.in, end - CASING.in, -u, u, oh - CASING.in, head, 0.004);
 }
 
 /**
@@ -1408,7 +1753,8 @@ function swingLeaf(ctx, { w, F }, pivotS, dirSign, side, width, top, kind) {
 }
 
 function woodLeaf(ctx, LF, width, y0, y1) {
-  box(LF, all(ctx.main.get(ctx.mats.leaf)), 0, width, -LEAF_T / 2, LEAF_T / 2, y0, y1);
+  // Veneer grain runs up the leaf, and its eased edges catch the light.
+  rbox(ctx, LF, ctx.main.get(ctx.mats.leaf), 0, width, -LEAF_T / 2, LEAF_T / 2, y0, y1, 0.003, { grain: true });
   lever(ctx, LF, width - 0.065, Math.min(1.0, y1 - 0.2), LEAF_T / 2);
 }
 
@@ -1424,14 +1770,15 @@ function lever(ctx, LF, s, y, face) {
 }
 
 function glassLeaf(ctx, LF, width, y0, y1, stiles) {
-  const alu = all(ctx.main.get(ctx.mats.alu, !ctx.low));
+  const alu = ctx.main.get(ctx.mats.alu, !ctx.low);
   const st = stiles ? 0.07 : 0, bottom = stiles ? 0.18 : 0.09, face = stiles ? 0.02 : 0.006;
-  box(LF, faces2(ctx.main.get(ctx.mats.glass, false)), st, width - st, -0.006, 0.006, y0 + bottom, y1 - 0.06);
-  box(LF, alu, 0, width, -0.02, 0.02, y0, y0 + bottom);
-  box(LF, alu, 0, width, -0.02, 0.02, y1 - 0.06, y1);
+  // Storefront leaves are exterior glazing; frameless interior leaves match the partitions.
+  box(LF, faces2(ctx.main.get(stiles ? ctx.mats.glass : ctx.mats.partition, false)), st, width - st, -0.006, 0.006, y0 + bottom, y1 - 0.06);
+  rbox(ctx, LF, alu, 0, width, -0.02, 0.02, y0, y0 + bottom, 0.003);
+  rbox(ctx, LF, alu, 0, width, -0.02, 0.02, y1 - 0.06, y1, 0.003);
   if (stiles) {
-    box(LF, alu, 0, st, -0.02, 0.02, y0 + bottom, y1 - 0.06);
-    box(LF, alu, width - st, width, -0.02, 0.02, y0 + bottom, y1 - 0.06);
+    rbox(ctx, LF, alu, 0, st, -0.02, 0.02, y0 + bottom, y1 - 0.06, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
+    rbox(ctx, LF, alu, width - st, width, -0.02, 0.02, y0 + bottom, y1 - 0.06, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
   }
   pullBar(ctx, LF, width - (stiles ? 0.035 : 0.09), face, Math.min(1.45, y1 - 0.2));
 }
@@ -1457,7 +1804,7 @@ function slidingPanels(ctx, info, sp, s0, s1, top) {
   const { o } = sp;
   const alu = ctx.main.get(ctx.mats.alu, !ctx.low);
   const trackTop = top, trackBottom = top - 0.05;
-  box(F, all(alu), s0, s1, -0.05, 0.05, trackBottom, trackTop);
+  rbox(ctx, F, alu, s0, s1, -0.05, 0.05, trackBottom, trackTop, 0.004);
   box(F, noBottom(alu), s0, s1, -0.05, 0.05, 0, 0.008);
   const clear = s1 - s0;
   const pw = clear / 2 + 0.03;
@@ -1470,8 +1817,9 @@ function slidingPanels(ctx, info, sp, s0, s1, top) {
   const r = 0.04;
   const glass = fixedAtStart ? [sp.start, s1 - slide - r] : [s0 + slide + r, sp.end];
   if (glass[1] > glass[0]) ctx.colliders.push({ a: pointOnWall(w, glass[0]), b: pointOnWall(w, glass[1]), r });
-  glassPanel(ctx, F, fixed[0], fixed[1], -side * 0.022, 0.008, trackBottom);
-  glassPanel(ctx, F, moving[0], moving[1], side * 0.022, 0.008, trackBottom);
+  const pane = w.kind === 'exterior' ? ctx.mats.glass : ctx.mats.partition;
+  glassPanel(ctx, F, fixed[0], fixed[1], -side * 0.022, 0.008, trackBottom, pane);
+  glassPanel(ctx, F, moving[0], moving[1], side * 0.022, 0.008, trackBottom, pane);
   const lead = fixedAtStart ? moving[1] - 0.06 : moving[0] + 0.06;
   const u = side * 0.022;
   const PF = { o: { x: F.o.x + F.n.x * u, y: F.o.y + F.n.y * u }, d: F.d, n: F.n };
@@ -1479,14 +1827,14 @@ function slidingPanels(ctx, info, sp, s0, s1, top) {
 }
 
 /** Framed glass panel centered at uc: stiles, rails and a glass light. */
-function glassPanel(ctx, F, s0, s1, uc, y0, y1) {
+function glassPanel(ctx, F, s0, s1, uc, y0, y1, glass = ctx.mats.partition) {
   const alu = ctx.main.get(ctx.mats.alu, !ctx.low);
-  const g = ctx.main.get(ctx.mats.glass, false);
-  const t = 0.0175, st = 0.045;
-  box(F, all(alu), s0, s0 + st, uc - t, uc + t, y0, y1);
-  box(F, all(alu), s1 - st, s1, uc - t, uc + t, y0, y1);
-  box(F, all(alu), s0 + st, s1 - st, uc - t, uc + t, y0, y0 + 0.09);
-  box(F, all(alu), s0 + st, s1 - st, uc - t, uc + t, y1 - 0.06, y1);
+  const g = ctx.main.get(glass, false);
+  const t = 0.0175, st = 0.045, r = 0.003;
+  rbox(ctx, F, alu, s0, s0 + st, uc - t, uc + t, y0, y1, r);
+  rbox(ctx, F, alu, s1 - st, s1, uc - t, uc + t, y0, y1, r);
+  rbox(ctx, F, alu, s0 + st, s1 - st, uc - t, uc + t, y0, y0 + 0.09, r, { faces: ['pu', 'nu', 'top', 'bottom'] });
+  rbox(ctx, F, alu, s0 + st, s1 - st, uc - t, uc + t, y1 - 0.06, y1, r, { faces: ['pu', 'nu', 'top', 'bottom'] });
   box(F, faces2(g), s0 + st, s1 - st, uc - 0.005, uc + 0.005, y0 + 0.09, y1 - 0.06);
 }
 
@@ -1511,24 +1859,28 @@ function windowOpening(ctx, info, sp, f, get) {
   const fd = Math.min(0.1, w.thickness * 0.6), fw = 0.05;
   const uc = inner !== 0 ? -inner * Math.max(0, ht - fd / 2 - 0.03) : 0;
   const u0 = uc - fd / 2, u1 = uc + fd / 2;
-  const fr = all(B.get(M.alu, !ctx.low));
-  box(F, fr, start, start + fw, u0, u1, sill, top);
-  box(F, fr, end - fw, end, u0, u1, sill, top);
-  box(F, fr, start + fw, end - fw, u0, u1, sill, sill + fw);
-  box(F, fr, start + fw, end - fw, u0, u1, top - fw, top);
+  const fr = B.get(M.alu, !ctx.low);
+  // Extruded aluminum frame and mullions with eased edges; the glass sits in the middle of the frame.
+  const r = 0.003;
+  rbox(ctx, F, fr, start, start + fw, u0, u1, sill, top, r, { faces: ['s1', 'pu', 'nu'] });
+  rbox(ctx, F, fr, end - fw, end, u0, u1, sill, top, r, { faces: ['s0', 'pu', 'nu'] });
+  rbox(ctx, F, fr, start + fw, end - fw, u0, u1, sill, sill + fw, r, { faces: ['top', 'pu', 'nu'] });
+  rbox(ctx, F, fr, start + fw, end - fw, u0, u1, top - fw, top, r, { faces: ['bottom', 'pu', 'nu'] });
   const bays = clamp(Math.round((end - start) / MULLION_STEP), 1, 200);
   const bay = (end - start - 2 * fw) / bays;
   for (let k = 1; k < bays; k++) {
     const s = start + fw + k * bay;
-    box(F, fr, s - 0.025, s + 0.025, u0 + 0.01, u1 - 0.01, sill + fw, top - fw);
+    rbox(ctx, F, fr, s - 0.025, s + 0.025, u0 + 0.01, u1 - 0.01, sill + fw, top - fw, r, { faces: ['s0', 's1', 'pu', 'nu'] });
   }
-  box(F, faces2(B.get(M.glass, false)), start + fw, end - fw, uc - 0.005, uc + 0.005, sill + fw, top - fw);
+  box(F, faces2(B.get(inner !== 0 ? M.glass : M.partition, false)), start + fw, end - fw, uc - 0.005, uc + 0.005, sill + fw, top - fw);
+  // Glazing between inside and outdoors lets daylight in.
+  if (inner !== 0) ctx.windows.push({ info, s0: start + fw, s1: end - fw, y0: sill + fw, y1: top - fw, u: uc, side: inner, weight: 1 });
 
   if (sill < 0.05) return;
-  const ledge = all(B.get(M.sill, !ctx.low));
+  const ledge = B.get(M.sill, !ctx.low);
   for (const side of inner !== 0 ? [inner] : [1, -1]) {
-    if (side > 0) box(F, ledge, start - 0.04, end + 0.04, uc, ht + 0.035, sill, sill + 0.025);
-    else box(F, ledge, start - 0.04, end + 0.04, -ht - 0.035, uc, sill, sill + 0.025);
+    if (side > 0) rbox(ctx, F, ledge, start - 0.04, end + 0.04, uc, ht + 0.035, sill, sill + 0.025, 0.004, { faces: ['s0', 's1', 'pu', 'top', 'bottom'] });
+    else rbox(ctx, F, ledge, start - 0.04, end + 0.04, -ht - 0.035, uc, sill, sill + 0.025, 0.004, { faces: ['s0', 's1', 'nu', 'top', 'bottom'] });
   }
 }
 
@@ -1539,11 +1891,11 @@ function glassWall(ctx, info) {
   const ht = w.thickness / 2, H = w.height;
   const head = 0.05, foot = 0.07;
   const alu = B.get(M.alu);
-  const glass = faces2(B.get(M.glass, false));
+  const glass = faces2(B.get(M.partition, false));
   const frost = faces2(B.get(M.frosted, false));
   box(F, endFaces(ctx, info, { ...noBottom(alu), top: B.get(M.cut) }, true, true, H), -ext.a, L + ext.b, -ht, ht, H - head, H);
 
-  const post = (s) => box(F, all(alu), s - 0.02, s + 0.02, -ht, ht, foot, H - head);
+  const post = (s) => rbox(ctx, F, alu, s - 0.02, s + 0.02, -ht, ht, foot, H - head, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
   const pane = (s0, s1, y0) => {
     box(F, glass, s0, s1, -0.006, 0.006, y0, H - head);
     if (H - head > 1.25 && y0 < 1.05) box(F, frost, s0, s1, -0.0075, 0.0075, 1.05, 1.2);
@@ -1571,9 +1923,9 @@ function glassDoor(ctx, info, sp, alu, pane) {
   const ht = w.thickness / 2;
   const oh = Math.min(o.height, w.height - 0.12);
   const jamb = 0.045;
-  box(F, all(alu), start, start + jamb, -ht, ht, 0, oh);
-  box(F, all(alu), end - jamb, end, -ht, ht, 0, oh);
-  box(F, all(alu), start, end, -ht, ht, oh, oh + 0.05);
+  rbox(ctx, F, alu, start, start + jamb, -ht, ht, 0, oh, 0.003, { faces: ['s0', 's1', 'pu', 'nu', 'top'] });
+  rbox(ctx, F, alu, end - jamb, end, -ht, ht, 0, oh, 0.003, { faces: ['s0', 's1', 'pu', 'nu', 'top'] });
+  rbox(ctx, F, alu, start, end, -ht, ht, oh, oh + 0.05, 0.003);
   pane(start + jamb, end - jamb, oh + 0.05);
   const s0 = start + jamb, s1 = end - jamb;
   if (o.type === 'door') {
@@ -1598,7 +1950,10 @@ function partialWall(ctx, info) {
   const piece = (s0, s1, first, last) => {
     if (s1 - s0 < 1e-3) return;
     box(F, endFaces(ctx, info, { pu: paint, nu: paint, s0: paint, s1: paint }, first, last, H), s0, s1, -ht, ht, 0, H);
-    box(F, endFaces(ctx, info, all(cap), first, last, H + 0.03), s0, s1, -ht - 0.015, ht + 0.015, H, H + 0.03);
+    // Wood cap with rounded edges; ends buried in a neighbor stay square.
+    const ends = endFaces(ctx, info, all(cap), first, last, H + 0.03);
+    const faces = Object.keys(ends).filter((k) => ends[k]);
+    rbox(ctx, F, cap, s0, s1, -ht - 0.015, ht + 0.015, H, H + 0.03, 0.006, { faces });
   };
   let cursor = -ext.a;
   spans.forEach((sp, i) => {
@@ -1739,9 +2094,7 @@ function slabCells(ctx) {
  * z-fight with it. A plan without walls or rooms gets a slab under its items.
  */
 function buildSlab(ctx, parent) {
-  const mat = ctx.kit.floorMaterial('polished-concrete').clone();
-  Object.assign(mat, { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 2 });
-  ctx.owned.materials.push(mat);
+  const mat = ctx.mats.get('slab');
   const m = ctx.kit.floorMeters('polished-concrete');
   const buckets = createBuckets();
   const b = buckets.get(mat, false, true);
@@ -1775,7 +2128,7 @@ function buildCeilings(ctx) {
     }
     const tile = rm.ceiling === 'tile';
     // Grown slightly so neighbors overlap without cracks; ceilY staggers them so the overlap never z-fights.
-    horizontalPolygon(B.get(tile ? ctx.mats.get('tile') : ctx.mats.drywall, false, false), rm.grown.contour, rm.grown.faces, rm.ceilY, false, 1);
+    horizontalPolygon(B.get(tile ? ctx.mats.tile : ctx.mats.drywall, false, false), rm.grown.contour, rm.grown.faces, rm.ceilY, false, 1);
     if (tile) tileFixtures(ctx, region, fixtureGrid(ctx, region, TROFFER_STEP, TILE / 2 + 0.1, true));
     else drywallFixtures(ctx, region, fixtureGrid(ctx, region, DOWNLIGHT_STEP, 0.35, false));
   });
@@ -1880,7 +2233,7 @@ function generalCeiling(ctx) {
     return ri < 0 || (rooms[ri].ceiling !== 'open' && Math.abs(rooms[ri].height - H) < 0.01);
   });
   const tile = settings.ceiling === 'tile';
-  const b = ctx.ceil.get(tile ? ctx.mats.get('tile') : ctx.mats.drywall, false, false);
+  const b = ctx.ceil.get(tile ? ctx.mats.tile : ctx.mats.drywall, false, false);
   for (const r of maskRects(mask, plane)) rectQuad(b, r, H, DOWN);
   if (tile) tileFixtures(ctx, region, fixtureGrid(ctx, region, TROFFER_STEP, TILE / 2 + 0.1, true));
   else drywallFixtures(ctx, region, fixtureGrid(ctx, region, DOWNLIGHT_STEP, 0.35, false));
@@ -1893,7 +2246,7 @@ function generalCeiling(ctx) {
  */
 function structuralDeck(ctx) {
   const { mask, rooms, generals } = ctx;
-  const b = ctx.ceil.get(ctx.mats.get('deck'), true, false);
+  const b = ctx.ceil.get(ctx.mats.deckSoffit, true, false);
   for (const rm of rooms) horizontalPolygon(b, rm.grown.contour, rm.grown.faces, rm.deck, false, 1);
   for (const deck of new Set(generals.map((g) => g.deck))) {
     const src = mask.free.map((v) => (v >= 0 && generals[v].deck === deck ? 1 : 0));
@@ -2055,21 +2408,38 @@ function drywallFixtures(ctx, region, points) {
   }
 }
 
+/**
+ * 2 x 2 LED troffer: a slim white frame with eased edges, a short reflector sloping up to a lens
+ * recessed about a centimeter into it, and the glowing lens itself.
+ */
 function troffer(ctx, p, h) {
   const B = ctx.ceil;
-  const hs = TILE / 2 - 0.004, rim = 0.03;
-  const led = { bottom: B.get(ctx.mats.led, false, false) };
+  const hs = TILE / 2 - 0.004, rim = 0.024, depth = 0.014;
+  const lens = B.get(ctx.mats.led, false, false);
   if (ctx.low) {
-    box(WORLD, led, p.x - hs, p.x + hs, p.y - hs, p.y + hs, h - 0.002, h);
+    box(WORLD, { bottom: lens }, p.x - hs, p.x + hs, p.y - hs, p.y + hs, h - 0.002, h);
     return;
   }
-  box(WORLD, led, p.x - hs + rim, p.x + hs - rim, p.y - hs + rim, p.y + hs - rim, h - 0.006, h);
-  const f = { ...faces2(B.get(ctx.mats.trim, false, false)), bottom: B.get(ctx.mats.trim, false, false), s0: B.get(ctx.mats.trim, false, false), s1: B.get(ctx.mats.trim, false, false) };
-  const y0 = h - 0.014;
-  box(WORLD, f, p.x - hs, p.x + hs, p.y - hs, p.y - hs + rim, y0, h);
-  box(WORLD, f, p.x - hs, p.x + hs, p.y + hs - rim, p.y + hs, y0, h);
-  box(WORLD, f, p.x - hs, p.x - hs + rim, p.y - hs + rim, p.y + hs - rim, y0, h);
-  box(WORLD, f, p.x + hs - rim, p.x + hs, p.y - hs + rim, p.y + hs - rim, y0, h);
+  const trim = B.get(ctx.mats.trim, false, false), y0 = h - depth, r = 0.003;
+  const long = ['bottom', 'pu', 'nu', 's0', 's1'], short = ['bottom', 'pu', 'nu'];
+  rbox(ctx, WORLD, trim, p.x - hs, p.x + hs, p.y - hs, p.y - hs + rim, y0, h, r, { faces: long });
+  rbox(ctx, WORLD, trim, p.x - hs, p.x + hs, p.y + hs - rim, p.y + hs, y0, h, r, { faces: long });
+  const side = { o: { x: 0, y: 0 }, d: { x: 0, y: 1 }, n: { x: -1, y: 0 } };
+  rbox(ctx, side, trim, p.y - hs + rim, p.y + hs - rim, -(p.x - hs + rim), -(p.x - hs), y0, h, r, { faces: short });
+  rbox(ctx, side, trim, p.y - hs + rim, p.y + hs - rim, -(p.x + hs), -(p.x + hs - rim), y0, h, r, { faces: short });
+  // Reflector bands from the frame's inner edge up to the lens, facing down and in.
+  const a = hs - rim, l = a - 0.012, yl = h - 0.004;
+  const rise = yl - y0, run = a - l, k = Math.hypot(rise, run);
+  const refl = B.get(ctx.mats.reflector, false, false);
+  for (const [tx, tz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    // Corners of the band on the side opposite (tx, tz): outer low edge, then inner high edge.
+    const ox = -tx, oz = -tz, px = -oz, pz = ox;
+    const at = (d, along, y) => [p.x + ox * d + px * along, y, p.y + oz * d + pz * along];
+    const nrm = [tx * rise / k, -run / k, tz * rise / k];
+    const V = (c) => [...c, ...nrm, c[0], -c[2]];
+    poly(refl, [V(at(a, -a, y0)), V(at(a, a, y0)), V(at(l, l, yl)), V(at(l, -l, yl))]);
+  }
+  quad(lens, [p.x - l, yl, p.y - l], [p.x + l, yl, p.y - l], [p.x + l, yl, p.y + l], [p.x - l, yl, p.y + l], DOWN, 0, 1, 1, 0);
 }
 
 function diffuser(ctx, p, h) {
@@ -2078,10 +2448,11 @@ function diffuser(ctx, p, h) {
   quad(b, [p.x - hs, y, p.y - hs], [p.x + hs, y, p.y - hs], [p.x + hs, y, p.y + hs], [p.x - hs, y, p.y + hs], DOWN, 0, 1, 1, 0);
 }
 
+/** Recessed LED downlight: a white trim ring around a bright lens. */
 function downlight(ctx, p, h) {
   const seg = ctx.low ? 12 : 24;
-  cylinder(ctx, ctx.ceil.get(ctx.mats.trim, false, false), p.x, h - 0.006, p.y, 0.085, 0.006, seg);
-  cylinder(ctx, ctx.ceil.get(ctx.mats.led, false, false), p.x, h - 0.008, p.y, 0.06, 0.004, seg);
+  cylinder(ctx, ctx.ceil.get(ctx.mats.trim, false, false), p.x, h - 0.008, p.y, 0.09, 0.008, seg);
+  cylinder(ctx, ctx.ceil.get(ctx.mats.spot, false, false), p.x, h - 0.0086, p.y, 0.064, 0.0006, seg);
 }
 
 function sprinkler(ctx, p, h) {
@@ -2187,7 +2558,7 @@ function pendant(ctx, p0, p1, h, deck) {
   const F = frameOf(p0, { x: d.x / len, y: d.y / len });
   const y0 = h - 0.18, y1 = h - 0.1;
   box(F, all(B.get(ctx.mats.pendant, false, false)), 0, len, -0.03, 0.03, y0, y1);
-  box(F, { bottom: B.get(ctx.mats.led, false, false) }, 0.01, len - 0.01, -0.02, 0.02, y0 - 0.002, y0);
+  box(F, { bottom: B.get(ctx.mats.strip, false, false) }, 0.01, len - 0.01, -0.02, 0.02, y0 - 0.002, y0);
   const cable = all(B.get(ctx.mats.duct, false, false));
   for (const s of [0.25, len - 0.25]) box(F, cable, s - 0.002, s + 0.002, -0.002, 0.002, y1, deck);
 }
@@ -2218,6 +2589,158 @@ function duct(ctx, p0, p1, r, deck) {
   }
 }
 
+// ---- Daylight and the environment probe -------------------------------------------
+
+/**
+ * Sky light through the glazing as one-sided area lights at the glass, facing in: windows read as
+ * the main light source and their light falls off softly across floors and walls. Windows in a row
+ * (same line, sill and head, gaps under DAYLIGHT.merge) form one run whose radiance is scaled by
+ * its glass share. A fixed set of at most DAYLIGHT.max lights is aimed at the runs nearest the
+ * viewer before every render (see aimDaylight; the count never changes, so shaders stay compiled).
+ * They are real-time stand-ins (the path traced photo finds the real daylight), so the group is
+ * flagged as an overlay that photo.js leaves out.
+ */
+function buildDaylight(ctx, probe) {
+  const group = namedGroup('daylight');
+  group.userData.overlay = true;
+  group.userData.realtimeOnly = true;
+  const runs = daylightRuns(ctx);
+  group.userData.runs = runs;
+  const n = Math.min(runs.length, ctx.low ? DAYLIGHT.maxLow : DAYLIGHT.max);
+  if (!n) return group;
+  initAreaLights();
+  for (let i = 0; i < n; i++) {
+    const light = new THREE.RectAreaLight(DAYLIGHT.color, 0, 1, 1);
+    light.name = 'window-light';
+    light.userData.run = -1;
+    group.add(light);
+  }
+  // Until a render aims them, the lights sit on the runs nearest the environment probe.
+  aimDaylight(group, probe.x, probe.z);
+  return group;
+}
+
+/**
+ * Put the daylight group's lights on the runs nearest plan point (x, z). Lights already on a
+ * chosen run stay, so only the farthest lights ever move as the viewer walks.
+ */
+function aimDaylight(group, x, z) {
+  const runs = group.userData.runs, lights = group.children;
+  if (!runs?.length || !lights.length) return;
+  const near = runs.map((r, i) => {
+    const t = clamp((z - r.center.y) * r.normal.x - (x - r.center.x) * r.normal.y, -r.width / 2, r.width / 2);
+    // Closest point of the run's span, from the run center along its tangent (-normal.y, normal.x).
+    return [Math.hypot(x - (r.center.x - r.normal.y * t), z - (r.center.y + r.normal.x * t)), i];
+  }).sort((a, b) => a[0] - b[0]).slice(0, lights.length).map((e) => e[1]);
+  const chosen = new Set(near), kept = new Set(), free = [];
+  for (const l of lights) {
+    if (chosen.has(l.userData.run) && !kept.has(l.userData.run)) kept.add(l.userData.run);
+    else free.push(l);
+  }
+  for (const i of near) {
+    if (kept.has(i)) continue;
+    const l = free.pop(), r = runs[i];
+    l.userData.run = i;
+    l.width = r.width;
+    l.height = r.height;
+    l.intensity = DAYLIGHT.radiance * r.weight * Math.min(1, r.glass / r.area) * r.sun;
+    l.color.copy(r.tint);
+    // Just inside the glass, emitting into the room (a RectAreaLight shines along its -z, which lookAt aims).
+    const y = (r.y0 + r.y1) / 2;
+    l.position.set(r.center.x + r.normal.x * 0.02, y, r.center.y + r.normal.y * 0.02);
+    l.lookAt(l.position.x + r.normal.x, y, l.position.z + r.normal.y);
+    l.updateMatrixWorld();
+  }
+}
+
+/** Before each render of a scene from setupEnvironment(): aim every built plan's daylight at the camera. */
+function aimSceneDaylight(scene, camera) {
+  let p = null;
+  for (const c of scene.children) {
+    const group = c.userData.daylight;
+    if (!group?.children.length) continue;
+    p ||= new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+    aimDaylight(group, p.x, p.z);
+  }
+}
+
+/** Glazing grouped into runs along each facade line: { center, normal, width, height, y0, y1, glass, area, weight }. */
+function daylightRuns(ctx) {
+  const lines = new Map();
+  for (const w of ctx.windows) {
+    if (w.s1 - w.s0 < 0.2 || w.y1 - w.y0 < 0.2) continue;
+    const { F } = w.info;
+    const N = { x: F.n.x * w.side, y: F.n.y * w.side }, T = { x: -N.y, y: N.x };
+    const P = (s) => ({ x: F.o.x + F.d.x * s + F.n.x * w.u, y: F.o.y + F.d.y * s + F.n.y * w.u });
+    const ta = dot(P(w.s0), T), tb = dot(P(w.s1), T), off = dot(P(w.s0), N);
+    const key = `${N.x.toFixed(2)}|${N.y.toFixed(2)}|${Math.round(off / 0.05)}|${w.y0.toFixed(2)}|${w.y1.toFixed(2)}|${w.weight}`;
+    if (!lines.has(key)) lines.set(key, { N, T, off, y0: w.y0, y1: w.y1, weight: w.weight, spans: [] });
+    lines.get(key).spans.push([Math.min(ta, tb), Math.max(ta, tb)]);
+  }
+  const runs = [];
+  for (const line of lines.values()) {
+    line.spans.sort((p, q) => p[0] - q[0]);
+    let run = null;
+    const close = () => {
+      if (!run) return;
+      const tm = (run.t0 + run.t1) / 2, h = line.y1 - line.y0;
+      runs.push({
+        center: { x: line.N.x * line.off + line.T.x * tm, y: line.N.y * line.off + line.T.y * tm },
+        normal: line.N, width: run.t1 - run.t0, height: h, y0: line.y0, y1: line.y1,
+        glass: run.glass * h, area: (run.t1 - run.t0) * h, weight: line.weight, ...sunSide(line.N),
+      });
+    };
+    for (const [t0, t1] of line.spans) {
+      if (run && t0 - run.t1 < DAYLIGHT.merge) {
+        run.t1 = Math.max(run.t1, t1);
+        run.glass += t1 - t0;
+      } else {
+        close();
+        run = { t0, t1, glass: t1 - t0 };
+      }
+    }
+    close();
+  }
+  return runs;
+}
+
+/**
+ * How a window's daylight changes with its facing: glazing toward the sun sees sunlit ground and
+ * the bright sky around the sun (brighter, warmer); glazing away from it sees blue sky (cooler).
+ */
+function sunSide(N) {
+  const h = Math.hypot(SUN_DIR.x, SUN_DIR.z);
+  // N points into the room, so the window looks out along -N.
+  const toward = clamp(-(N.x * SUN_DIR.x + N.y * SUN_DIR.z) / h, -1, 1);
+  const tint = new THREE.Color(DAYLIGHT.color).lerp(new THREE.Color(toward > 0 ? '#fff3e2' : '#e8f0fb'), Math.abs(toward) * 0.6);
+  return { sun: 1 + 0.3 * toward, tint };
+}
+
+/**
+ * Default viewpoint for captureEnvironment(): the middle of the largest room (the point nearest its
+ * centroid that lies inside it and clear of tall items) at PROBE_HEIGHT, kept under its ceiling.
+ */
+function environmentProbe(ctx) {
+  const clear = (p, y) => ctx.tall.every((t) => t.top < y - 0.3 || p.x < t.bounds.minX - 0.4 || p.x > t.bounds.maxX + 0.4 || p.y < t.bounds.minY - 0.4 || p.y > t.bounds.maxY + 0.4);
+  const rooms = ctx.rooms.slice().sort((a, b) => polygonArea(b.points) - polygonArea(a.points));
+  for (const rm of rooms.slice(0, 3)) {
+    const y = Math.min(PROBE_HEIGHT, rm.ceilY - 0.3);
+    const c = rm.centroid, b = rm.bounds;
+    if (rm.contains(c) && clear(c, y)) return { x: c.x, y, z: c.y };
+    const step = Math.max(0.3, Math.max(b.maxX - b.minX, b.maxY - b.minY) / 40);
+    let best = null, bestD = Infinity;
+    for (let x = b.minX + step / 2; x < b.maxX; x += step) {
+      for (let z = b.minY + step / 2; z < b.maxY; z += step) {
+        const d = Math.hypot(x - c.x, z - c.y), p = { x, y: z };
+        if (d < bestD && rm.contains(p) && clear(p, y)) { best = p; bestD = d; }
+      }
+    }
+    if (best) return { x: best.x, y, z: best.y };
+  }
+  const b = ctx.bounds;
+  return { x: (b.minX + b.maxX) / 2, y: Math.min(PROBE_HEIGHT, ctx.settings.wallHeight - 0.3), z: (b.minY + b.maxY) / 2 };
+}
+
 // ---- Items ---------------------------------------------------------------------
 
 /**
@@ -2236,7 +2759,7 @@ function buildItems(ctx) {
     if (parts === undefined) templates.set(key, (parts = itemTemplate(ctx, buildItem(ctx, def, dims, item))));
     const rotation = (-normDeg(item.rotation || 0) * Math.PI) / 180;
     place.compose(_v.set(item.x, item.elevation ?? 0, item.y), _q.setFromAxisAngle(_y, rotation), _s.set(1, 1, 1));
-    ctx.main.at(item.x, item.y);
+    ctx.items.at(item.x, item.y);
     try {
       // Past the detail budget items are plain blocks, so a plan with thousands of items stays quick.
       if (ctx.itemVerts > MAX_ITEM_VERTS) itemBlock(ctx, item, dims);
@@ -2257,7 +2780,7 @@ function itemBlock(ctx, item, dims) {
   const r = (normDeg(item.rotation || 0) * Math.PI) / 180;
   const F = frameOf({ x: item.x, y: item.y }, { x: Math.cos(r), y: Math.sin(r) });
   const y0 = item.elevation ?? 0;
-  box(F, noBottom(ctx.main.get(ctx.kit.mat.plastic, false)), -dims.w / 2, dims.w / 2, -dims.d / 2, dims.d / 2, y0, y0 + dims.h);
+  box(F, noBottom(ctx.items.get(ctx.kit.mat.plastic, false)), -dims.w / 2, dims.w / 2, -dims.d / 2, dims.d / 2, y0, y0 + dims.h);
 }
 
 /**
@@ -2351,7 +2874,7 @@ function stampParts(ctx, parts, place) {
   for (const p of parts) {
     ctx.itemVerts += p.g.attributes.position.count;
     const tint = tintedMaterial(ctx, p.mat);
-    const b = ctx.main.get(tint || p.mat, p.cast, p.receive);
+    const b = ctx.items.get(tint || p.mat, p.cast, p.receive);
     const from = b.count;
     appendGeometry(b, p.g, _w.multiplyMatrices(place, p.local), p.range);
     if (tint) (b.tints ||= []).push(from, b.count, p.mat.color);
@@ -2377,7 +2900,7 @@ function tintedMaterial(ctx, m) {
       shared = m.clone();
       shared.vertexColors = true;
       shared.color.set('#ffffff');
-      ctx.owned.materials.push(shared);
+      sharedStore(ctx.kit).owned.materials.push(shared);
       ctx.tints.set(sig, shared);
     }
   }
@@ -2429,16 +2952,15 @@ function buildExterior(ctx, group) {
   group.userData.horizon = R * 1.12;
 }
 
-function ownMesh(ctx, geometry, material) {
-  ctx.owned.geometries.push(geometry);
-  ctx.owned.materials.push(material);
-  return new THREE.Mesh(geometry, material);
-}
-
+/**
+ * Sky dome. Its vertex colors hold the plain horizon to zenith gradient (photo.js reads them to
+ * build its own sky); the shader lifts them to daylight strength and adds the bright, warm haze
+ * along the horizon toward the sun and a soft glow around it.
+ */
 function skyDome(ctx, cx, cz, radius, kind) {
-  const g = new THREE.SphereGeometry(radius, 32, 16);
-  const zenith = new THREE.Color(kind === 'none' ? '#d6dfe5' : '#8ab7da');
-  const horizon = new THREE.Color(kind === 'none' ? '#f1f3f4' : '#e8eff2');
+  const g = new THREE.SphereGeometry(radius, 48, 24);
+  const zenith = new THREE.Color(kind === 'none' ? '#d3dce2' : SKY.zenith);
+  const horizon = new THREE.Color(kind === 'none' ? '#eceff0' : SKY.horizon);
   const pos = g.attributes.position;
   const colors = new Float32Array(pos.count * 3);
   const c = new THREE.Color();
@@ -2447,18 +2969,53 @@ function skyDome(ctx, cx, cz, radius, kind) {
     colors.set([c.r, c.g, c.b], i * 3);
   }
   g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  const mesh = ownMesh(ctx, g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, depthWrite: false, fog: false, toneMapped: false }));
+  ctx.owned.geometries.push(g);
+  const mesh = new THREE.Mesh(g, ctx.mats.get('sky'));
   mesh.position.set(cx, 0, cz);
   mesh.renderOrder = -1;
   mesh.name = 'sky';
   return mesh;
 }
 
+/** The dome's shader: vertex colors at daylight strength, the warm horizon toward the sun and its glow. */
+function skyMaterial() {
+  return new THREE.ShaderMaterial({
+    name: 'sky',
+    vertexColors: true, side: THREE.BackSide, depthWrite: false, fog: false,
+    uniforms: { sunDir: { value: SUN_DIR.clone() }, scale: { value: SKY_SCALE } },
+    vertexShader: /* glsl */`
+      varying vec3 vSkyDir;
+      varying vec3 vSkyColor;
+      void main() {
+        vSkyDir = position;
+        vSkyColor = color;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+      }`,
+    fragmentShader: /* glsl */`
+      uniform vec3 sunDir;
+      uniform float scale;
+      varying vec3 vSkyDir;
+      varying vec3 vSkyColor;
+      void main() {
+        vec3 d = normalize( vSkyDir );
+        float mu = max( dot( d, sunDir ), 0.0 );
+        float low = 1.0 - clamp( d.y, 0.0, 1.0 );
+        vec3 c = vSkyColor * scale * ( 1.0 + 0.25 * pow( low, 8.0 ) );
+        c += vec3( 1.0, 0.92, 0.8 ) * ( 1.1 * pow( mu, 5.0 ) * pow( low, 3.0 ) + 1.4 * pow( mu, 40.0 ) );
+        gl_FragColor = vec4( c, 1.0 );
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
+}
+
 function groundDisc(ctx, cx, cz, radius, kind) {
   const g = new THREE.CircleGeometry(radius, 96);
   g.rotateX(-Math.PI / 2);
+  // City paving is the kit's concrete, whose maps repeat every floorMeters; grass repeats in meters.
+  const k = kind === 'city' ? 1 / ctx.kit.floorMeters('concrete') : 1;
   const pos = g.attributes.position, uv = g.attributes.uv;
-  for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) + cx, -(pos.getZ(i) + cz));
+  for (let i = 0; i < pos.count; i++) uv.setXY(i, (pos.getX(i) + cx) * k, -(pos.getZ(i) + cz) * k);
   const mat = ctx.mats.get(kind === 'city' ? 'paving' : kind === 'campus' ? 'grass' : 'neutral');
   Object.assign(mat, { polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 4 });
   ctx.owned.geometries.push(g);
@@ -2469,14 +3026,28 @@ function groundDisc(ctx, cx, cz, radius, kind) {
   return mesh;
 }
 
+/**
+ * Distant skyline on a ring, unlit like the sky and lifted by the same SKY_SCALE (photo.js lights
+ * unlit backdrops at that scale too, so both agree).
+ */
 function skylineRing(ctx, cx, cz, R, key) {
   const h = R * SKY_RATIO;
   const g = new THREE.CylinderGeometry(R, R, h, 128, 1, true);
-  const mat = new THREE.MeshBasicMaterial({ map: acquireTexture(ctx.owned, key), side: THREE.BackSide, alphaTest: 0.5, fog: false, toneMapped: false });
-  const mesh = ownMesh(ctx, g, mat);
+  ctx.owned.geometries.push(g);
+  const mesh = new THREE.Mesh(g, ctx.mats.get(key));
   mesh.position.set(cx, h / 2 - 1.5, cz);
   mesh.name = 'skyline';
   return mesh;
+}
+
+function skylineMaterial(owned, key) {
+  // Blended edges keep the hazy silhouettes soft; depth is still written, so photo.js keeps the ring.
+  const mat = new THREE.MeshBasicMaterial({ map: acquireTexture(owned, key), side: THREE.BackSide, transparent: true, alphaTest: 0.02, fog: false });
+  mat.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace('#include <opaque_fragment>', `outgoingLight *= ${SKY_SCALE.toFixed(1)};\n#include <opaque_fragment>`);
+  };
+  mat.customProgramCacheKey = () => 'skyline-daylight';
+  return mat;
 }
 
 /** Place footprints in a ring around the building without overlaps. */
@@ -2516,7 +3087,7 @@ function cityBlocks(ctx, b, R) {
 /** A street ring around the block with a dashed center line. */
 function cityStreets(ctx, b) {
   const asphalt = ctx.ext.get(ctx.mats.get('asphalt'), false, true);
-  const paint = ctx.ext.get(ctx.kit.material('#e6e4dc', { roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }), false, true);
+  const paint = ctx.ext.get(ctx.mats.get('stripe'), false, true);
   const gap = 13, width = 10, y = GROUND_Y + 0.015;
   const x0 = b.minX - gap - width, x1 = b.maxX + gap + width, z0 = b.minY - gap - width, z1 = b.maxY + gap + width;
   const rect = (bucket, ax, az, bx, bz, yy) => quad(bucket, [ax, yy, az], [bx, yy, az], [bx, yy, bz], [ax, yy, bz], UP, ax, -az, bx, -bz);
@@ -2560,9 +3131,9 @@ function campusGrounds(ctx, b, R) {
   const cx = (b.minX + b.maxX) / 2, cz = (b.minY + b.maxY) / 2;
   const near = Math.hypot(b.maxX - b.minX, b.maxY - b.minY) / 2;
   const apron = ctx.ext.get(ctx.mats.get('paving'), false, true);
-  const y = GROUND_Y + 0.02, p = 4;
+  const y = GROUND_Y + 0.02, p = 4, k = 1 / ctx.kit.floorMeters('concrete');
   quad(apron, [b.minX - p, y, b.minY - p], [b.maxX + p, y, b.minY - p], [b.maxX + p, y, b.maxY + p], [b.minX - p, y, b.maxY + p], UP,
-    b.minX - p, -(b.minY - p), b.maxX + p, -(b.maxY + p));
+    (b.minX - p) * k, -(b.minY - p) * k, (b.maxX + p) * k, -(b.maxY + p) * k);
   const clusters = scatter(r, cx, cz, near + 14, Math.min(R * 0.6, near + 110), ctx.low ? 14 : 30, () => ({ w: 9, d: 9 }), 4);
   for (const c of clusters) {
     const n = 2 + Math.floor(r() * 4);
@@ -2574,38 +3145,62 @@ function campusGrounds(ctx, b, R) {
   massing(ctx, halls, ctx.mats.get('facadePrecast'));
 }
 
+/**
+ * A street tree: a slender trunk that forks into the crown, and a canopy of crossed foliage cards
+ * (a procedural leaf cluster texture, alpha tested) plus one flat card for views from above.
+ */
 function tree(ctx, x, z, s, r) {
   const B = ctx.ext;
-  const seg = ctx.low ? 8 : 16;
-  cylinder(ctx, B.get(ctx.mats.trunk, false, false), x, GROUND_Y, z, 0.12 * s, 2.6 * s, 7);
-  const n = ctx.low ? 2 : 3;
+  const bark = B.get(ctx.mats.trunk, false, false);
+  const H = (3.9 + r() * 0.8) * s, fork = H - 1.1 * s;
+  cylinder(ctx, bark, x, GROUND_Y, z, 0.11 * s, fork - GROUND_Y, 7);
+  for (let k = 0; k < 3; k++) {
+    const a = r() * Math.PI * 2, reach = (0.6 + r() * 0.5) * s;
+    tube(ctx, bark, new THREE.Vector3(x, fork - 0.05, z), new THREE.Vector3(x + Math.cos(a) * reach, fork + (0.9 + r() * 0.5) * s, z + Math.sin(a) * reach), 0.05 * s, 6);
+  }
+  const leaf = B.get(ctx.mats.get('foliage'), false, false);
+  const w = (3.7 + r() * 1.3) * s, h = w * (0.8 + r() * 0.15);
+  // Each tree takes one of the four clusters in the texture, and a random turn.
+  const q = Math.floor(r() * 4), u0 = (q % 2) * 0.5, v0 = Math.floor(q / 2) * 0.5;
+  const a0 = r() * Math.PI;
+  for (let k = 0; k < (ctx.low ? 2 : 3); k++) foliageCard(leaf, x, H, z, w, h, a0 + (k * Math.PI) / 3, u0, v0);
+  // From above: a level card just under the crown's top.
+  const c = w * 0.42, y = H + h * 0.18;
+  const n = [0, 1, 0];
+  const V = (dx, dz, u, v) => [x + dx * c, y, z + dz * c, ...n, u0 + u * 0.5, v0 + v * 0.5];
+  const ca = Math.cos(a0), sa = Math.sin(a0);
+  const rot = (dx, dz) => [dx * ca - dz * sa, dx * sa + dz * ca];
+  poly(leaf, [V(...rot(-1, -1), 0, 0), V(...rot(1, -1), 1, 0), V(...rot(1, 1), 1, 1), V(...rot(-1, 1), 0, 1)]);
+  treeShadow(ctx, x, z, w * 0.45);
+}
+
+/**
+ * One vertical foliage card, drawn as two front-facing quads (one per side) whose normals lean up,
+ * so both sides take light like the top of a crown instead of going dark from behind.
+ */
+function foliageCard(b, x, yc, z, w, h, angle, u0, v0) {
+  const dx = Math.cos(angle) * (w / 2), dz = Math.sin(angle) * (w / 2);
+  const y0 = yc - h / 2, y1 = yc + h / 2;
+  for (const side of [1, -1]) {
+    const nx = -Math.sin(angle) * side * 0.45, nz = Math.cos(angle) * side * 0.45, l = Math.hypot(nx, 0.9, nz);
+    const N = [nx / l, 0.9 / l, nz / l];
+    const V = (sx, y, u, v) => [x + dx * sx, y, z + dz * sx, ...N, u0 + u * 0.5, v0 + v * 0.5];
+    poly(b, [V(-1, y0, 0, 0), V(1, y0, 1, 0), V(1, y1, 1, 1), V(-1, y1, 0, 1)]);
+  }
+}
+
+/** Soft round shade on the ground under a tree's crown. */
+function treeShadow(ctx, x, z, radius) {
+  const b = ctx.fx.at(x, z).get(ctx.mats.get('blob'), false, false);
+  const y = GROUND_Y + 0.03, n = 16;
+  const ring = (k, rr) => [x + Math.cos((k / n) * Math.PI * 2) * rr, y, z + Math.sin((k / n) * Math.PI * 2) * rr];
   for (let k = 0; k < n; k++) {
-    const leaf = ctx.mats.leaves[Math.floor(r() * ctx.mats.leaves.length)];
-    const rad = (1.3 + r() * 0.7) * s;
-    sphere(ctx, B.get(leaf, false, false), x + (r() - 0.5) * 1.6 * s, (3.3 + r() * 1.3) * s, z + (r() - 0.5) * 1.6 * s, rad, seg, 0.85);
+    quad(b, [x, y, z], ring(k, radius * 0.4), ring(k + 1, radius * 0.4), [x, y, z], UP, 0.7, 0.7, 0.7, 0.7);
+    quad(b, ring(k, radius * 0.4), ring(k, radius), ring(k + 1, radius), ring(k + 1, radius * 0.4), UP, 0.7, 0.7, 0, 0.7);
   }
 }
 
 // ---- Procedural textures -------------------------------------------------------
-
-function drawCeilingTile(g, s) {
-  const r = rng(17);
-  g.fillStyle = '#eeede9';
-  g.fillRect(0, 0, s, s);
-  for (let i = 0; i < 3400; i++) {
-    g.fillStyle = `rgba(112,110,102,${0.05 + r() * 0.15})`;
-    g.fillRect(r() * s, r() * s, 1 + r() * 3, 1 + r() * 1.3);
-  }
-  const tee = Math.round(s * 0.024);
-  g.fillStyle = 'rgba(70,72,68,0.22)';
-  g.fillRect(tee / 2, tee / 2, s - tee, 3);
-  g.fillRect(tee / 2, tee / 2, 3, s - tee);
-  g.fillStyle = '#f8f8f6';
-  g.fillRect(0, 0, s, tee / 2);
-  g.fillRect(0, s - tee / 2, s, tee / 2);
-  g.fillRect(0, 0, tee / 2, s);
-  g.fillRect(s - tee / 2, 0, tee / 2, s);
-}
 
 /** f(u) * f(v) with a smooth ramp from 0 at the edges to 1 at u = v = 1 (used as an alpha map). */
 function drawFalloff(g, s) {
@@ -2622,19 +3217,46 @@ function drawFalloff(g, s) {
   g.putImageData(img, 0, 0);
 }
 
-/** Composite metal deck: four 6 inch flutes across the tile. */
-function drawDeck(g, w, h) {
-  const rib = w / 4;
-  for (let i = 0; i < 4; i++) {
-    const x = i * rib;
-    const grad = g.createLinearGradient(x, 0, x + rib, 0);
-    grad.addColorStop(0, '#2c3336');
-    grad.addColorStop(0.18, '#454e52');
-    grad.addColorStop(0.5, '#3b4347');
-    grad.addColorStop(0.82, '#30383b');
-    grad.addColorStop(1, '#2c3336');
-    g.fillStyle = grad;
-    g.fillRect(x, 0, rib, h);
+/**
+ * Four leaf clusters (2 x 2) on transparent ground: thousands of small leaves, darker and denser
+ * inside the crown, lighter toward the sunlit upper edge, with a few branches showing through.
+ */
+function drawFoliage(g, s) {
+  const r = rng(31);
+  g.clearRect(0, 0, s, s);
+  const half = s / 2;
+  for (let q = 0; q < 4; q++) {
+    const ox = (q % 2) * half, oy = Math.floor(q / 2) * half, cx = ox + half / 2, cy = oy + half * 0.5, R = half * 0.44;
+    const ph = [r() * 6.28, r() * 6.28, r() * 6.28];
+    const shape = (a) => 1 + 0.12 * Math.sin(3 * a + ph[0]) + 0.08 * Math.sin(5 * a + ph[1]) + 0.05 * Math.sin(9 * a + ph[2]);
+    g.save();
+    g.beginPath();
+    g.rect(ox + 2, oy + 2, half - 4, half - 4);
+    g.clip();
+    g.strokeStyle = 'rgba(70,58,48,0.9)';
+    for (let k = 0; k < 6; k++) {
+      g.lineWidth = 2 + r() * 3;
+      g.beginPath();
+      g.moveTo(cx + (r() - 0.5) * 10, oy + half * 0.98);
+      g.quadraticCurveTo(cx + (r() - 0.5) * R, cy + R * 0.3, cx + (r() - 0.5) * R * 1.4, cy - R * (0.2 + r() * 0.5));
+      g.stroke();
+    }
+    // Inner leaves first (in shade), then the outer shell, lit from the upper left.
+    for (let pass = 0; pass < 2; pass++) {
+      const count = pass ? 2600 : 1600;
+      for (let i = 0; i < count; i++) {
+        const a = r() * Math.PI * 2, rr = Math.sqrt(r()) * (pass ? 0.75 + 0.25 * r() : 0.8);
+        const px = Math.cos(a) * rr * shape(a), py = Math.sin(a) * rr * shape(a) * 0.9;
+        const light = Math.max(0, Math.min(1, 0.5 - 0.35 * px - 0.45 * py + (r() - 0.5) * 0.35)) * (pass ? 1 : 0.45);
+        const tone = [[52, 68, 42], [64, 82, 48], [74, 90, 54], [58, 74, 40]][Math.floor(r() * 4)];
+        const k = 0.75 + light * 0.75;
+        g.fillStyle = `rgb(${Math.round(tone[0] * k)},${Math.round(tone[1] * k)},${Math.round(tone[2] * k)})`;
+        g.beginPath();
+        g.ellipse(cx + px * R, cy + py * R, 3 + r() * 5, 2 + r() * 3, r() * Math.PI, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+    g.restore();
   }
 }
 
@@ -2661,38 +3283,21 @@ function drawDiffuser(g, s) {
   g.fillRect(s / 2 - 16, s / 2 - 16, 32, 32);
 }
 
-function drawPaving(g, s) {
-  const r = rng(5);
-  const n = 8, cell = s / n;
-  g.fillStyle = '#a19d95';
-  g.fillRect(0, 0, s, s);
-  for (let j = 0; j < n; j++) {
-    for (let i = 0; i < n; i++) {
-      const t = 184 + Math.floor(r() * 16);
-      g.fillStyle = `rgb(${t + 6},${t + 3},${t - 4})`;
-      g.fillRect(i * cell + 1.5, j * cell + 1.5, cell - 3, cell - 3);
-    }
-  }
-  for (let i = 0; i < 4000; i++) {
-    g.fillStyle = r() < 0.5 ? 'rgba(120,115,108,0.25)' : 'rgba(255,255,255,0.25)';
-    g.fillRect(r() * s, r() * s, 1.5, 1.5);
-  }
-}
-
 function drawGrass(g, s) {
   const r = rng(12);
-  g.fillStyle = '#7c9a58';
+  // Mown lawn: a muted, slightly dry green (about 15 percent reflectance), patchy at meter scale.
+  g.fillStyle = '#66784a';
   g.fillRect(0, 0, s, s);
   for (let i = 0; i < 70; i++) {
     const x = r() * s, y = r() * s, rad = s * (0.05 + r() * 0.16);
     const grad = g.createRadialGradient(x, y, 0, x, y, rad);
-    grad.addColorStop(0, i % 2 ? 'rgba(98,128,66,0.16)' : 'rgba(150,170,100,0.14)');
+    grad.addColorStop(0, i % 2 ? 'rgba(78,100,56,0.2)' : 'rgba(132,140,92,0.18)');
     grad.addColorStop(1, 'rgba(0,0,0,0)');
     g.fillStyle = grad;
     for (const dx of [-s, 0, s]) for (const dy of [-s, 0, s]) g.fillRect(x - rad + dx, y - rad + dy, rad * 2, rad * 2);
   }
   for (let i = 0; i < 16000; i++) {
-    g.fillStyle = r() < 0.5 ? 'rgba(70,96,48,0.35)' : 'rgba(170,190,120,0.3)';
+    g.fillStyle = r() < 0.5 ? 'rgba(58,78,42,0.35)' : 'rgba(146,156,104,0.3)';
     g.fillRect(r() * s, r() * s, 1, 2 + r() * 2);
   }
 }
@@ -2712,15 +3317,16 @@ function drawGlassFacade(g, s) {
 }
 
 function drawPrecastFacade(g, s) {
-  g.fillStyle = '#ddd6c9';
+  g.fillStyle = '#cfc8bb';
   g.fillRect(0, 0, s, s);
   const w = s * (1.6 / 3), h = s * (1.8 / 4);
   const x = (s - w) / 2, y = s * 0.2;
-  g.fillStyle = '#5d6c74';
+  // Punched windows read darker than the panel, reflecting a little sky at the head.
+  g.fillStyle = '#46535a';
   g.fillRect(x, y, w, h);
-  g.fillStyle = 'rgba(200,215,222,0.35)';
-  g.fillRect(x, y, w, h * 0.35);
-  g.fillStyle = '#c9c2b4';
+  g.fillStyle = 'rgba(170,190,200,0.3)';
+  g.fillRect(x, y, w, h * 0.3);
+  g.fillStyle = '#bab3a5';
   g.fillRect(x - 4, y + h, w + 8, 6);
 }
 
@@ -2738,85 +3344,110 @@ function skylineDrawer(width, height) {
 
 function drawCitySkyline(g, W, Hh) {
   const r = rng(2024);
-  const { wrap, yOf, ky } = skylineDrawer(W, Hh);
   g.clearRect(0, 0, W, Hh);
+  // Far to near, each layer a little darker and crisper: atmospheric haze flattens distant towers.
+  // Distant layers are drawn at lower resolution, so upscaling softens their edges.
   const layers = [
-    { color: '#c6d1d8', window: 'rgba(225,233,238,0.55)', count: 150, w: [0.5, 1.8], h: [1.6, 8.2], rows: 0.3 },
-    { color: '#a9b8c0', window: 'rgba(205,216,223,0.6)', count: 120, w: [0.7, 2.4], h: [1, 4.8], rows: 0.24 },
-    { color: '#8d9da6', window: 'rgba(188,201,209,0.7)', count: 95, w: [1, 3.2], h: [0.5, 2.6], rows: 0.18 },
+    { rgb: [199, 209, 216], bands: 0.05, count: 150, w: [0.5, 1.8], h: [1.6, 8.2], scale: 4 },
+    { rgb: [181, 193, 201], bands: 0.07, count: 120, w: [0.7, 2.4], h: [1, 4.8], scale: 3 },
+    { rgb: [160, 174, 183], bands: 0.09, count: 95, w: [1, 3.2], h: [0.5, 2.6], scale: 2 },
   ];
   for (const L of layers) {
-    for (let i = 0; i < L.count; i++) {
-      const x = r() * 360, w = L.w[0] + r() * (L.w[1] - L.w[0]);
-      const h = L.h[0] + Math.pow(r(), 1.6) * (L.h[1] - L.h[0]);
-      const top = yOf(h);
-      const setback = r() < 0.3;
-      wrap(x, w, (px, pw) => {
-        g.fillStyle = L.color;
-        g.fillRect(px, top, pw, Hh - top);
-        if (setback) g.fillRect(px + pw * 0.2, top - ky * h * 0.08, pw * 0.6, ky * h * 0.08 + 1);
-        g.fillStyle = L.window;
-        for (let y = top + ky * 0.12; y < Hh - ky * 0.1; y += ky * L.rows) {
-          g.fillRect(px + pw * 0.08, y, pw * 0.84, Math.max(1, ky * L.rows * 0.42));
-        }
-      });
-    }
-  }
-  for (let i = 0; i < 70; i++) {
-    const x = r() * 360, rad = 0.35 + r() * 0.5;
-    const tone = ['#6f8a76', '#7d977f', '#647f6c'][i % 3];
-    wrap(x, rad * 2, (px, pw) => {
-      g.fillStyle = tone;
-      g.beginPath();
-      g.ellipse(px + pw / 2, yOf(rad * 0.75), pw / 2, rad * ky * 0.75, 0, 0, Math.PI * 2);
-      g.fill();
-      g.fillRect(px, yOf(rad * 0.75), pw, Hh);
+    softLayer(g, W, Hh, L.scale, (c, { wrap, yOf, ky }, H) => {
+      for (let i = 0; i < L.count; i++) {
+        const x = r() * 360, w = L.w[0] + r() * (L.w[1] - L.w[0]);
+        const h = L.h[0] + Math.pow(r(), 1.6) * (L.h[1] - L.h[0]);
+        const top = yOf(h), tone = 1 + (r() - 0.5) * 0.07, lit = r() < 0.55;
+        const setback = r() < 0.3;
+        const rgb = (k) => `rgb(${L.rgb.map((v) => Math.round(Math.min(255, v * tone * k))).join(',')})`;
+        wrap(x, w, (px, pw) => {
+          c.fillStyle = rgb(1);
+          c.fillRect(px, top, pw, H - top);
+          if (setback) c.fillRect(px + pw * 0.2, top - ky * h * 0.08, pw * 0.6, ky * h * 0.08 + 1);
+          // The face toward the afternoon sun reads a touch brighter.
+          if (lit) {
+            c.fillStyle = rgb(1.06);
+            c.fillRect(px, top, pw * 0.38, H - top);
+          }
+          c.fillStyle = `rgba(236,242,245,${L.bands})`;
+          for (let y = top + ky * 0.12; y < H; y += ky * 0.22) c.fillRect(px + pw * 0.06, y, pw * 0.88, Math.max(0.5, ky * 0.07));
+        });
+      }
     });
   }
+  softLayer(g, W, Hh, 2, (c, { wrap, yOf, ky }, H) => {
+    for (let i = 0; i < 90; i++) {
+      const x = r() * 360, rad = 0.3 + r() * 0.45;
+      const tone = ['#7f9584', '#8a9e8b', '#768c7b'][i % 3];
+      wrap(x, rad * 2, (px, pw) => {
+        c.fillStyle = tone;
+        c.beginPath();
+        c.ellipse(px + pw / 2, yOf(rad * 0.6), pw / 2, rad * ky * 0.6, 0, 0, Math.PI * 2);
+        c.fill();
+        c.fillRect(px, yOf(rad * 0.6), pw, H);
+      });
+    }
+  });
   hazeBase(g, W, Hh);
+}
+
+/** Draw into a canvas `scale` times smaller (skylineDrawer coordinates), then upscale it onto g. */
+function softLayer(g, W, Hh, scale, draw) {
+  const c = document.createElement('canvas');
+  c.width = Math.ceil(W / scale);
+  c.height = Math.ceil(Hh / scale);
+  const ctx = c.getContext('2d');
+  draw(ctx, skylineDrawer(c.width, c.height), c.height);
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(c, 0, 0, W, Hh);
 }
 
 function drawCampusSkyline(g, W, Hh) {
   const r = rng(77);
-  const { wrap, yOf, ky } = skylineDrawer(W, Hh);
   g.clearRect(0, 0, W, Hh);
   const hills = [
-    { color: '#b7c7c2', amp: 2.4, base: 1.2, f: [2, 5, 9] },
-    { color: '#9db3a8', amp: 1.4, base: 0.6, f: [3, 7, 13] },
+    { color: '#bccac6', amp: 2.4, base: 1.2, f: [2, 5, 9], scale: 4 },
+    { color: '#a6b8ae', amp: 1.4, base: 0.6, f: [3, 7, 13], scale: 3 },
   ];
-  for (const H of hills) {
-    const ph = H.f.map(() => r() * Math.PI * 2);
-    g.fillStyle = H.color;
-    g.beginPath();
-    g.moveTo(0, Hh);
-    for (let x = 0; x <= W; x += 4) {
-      const a = (x / W) * Math.PI * 2;
-      const e = H.base + H.amp * (0.5 + 0.5 * H.f.reduce((acc, f, i) => acc + Math.sin(a * f + ph[i]) / (i + 1.5), 0) / 1.4);
-      g.lineTo(x, yOf(Math.max(0.2, e)));
+  for (const Hl of hills) {
+    const ph = Hl.f.map(() => r() * Math.PI * 2);
+    softLayer(g, W, Hh, Hl.scale, (c, { yOf }, H) => {
+      const w = c.canvas.width;
+      c.fillStyle = Hl.color;
+      c.beginPath();
+      c.moveTo(0, H);
+      for (let x = 0; x <= w; x += 2) {
+        const a = (x / w) * Math.PI * 2;
+        const e = Hl.base + Hl.amp * (0.5 + 0.5 * Hl.f.reduce((acc, f, i) => acc + Math.sin(a * f + ph[i]) / (i + 1.5), 0) / 1.4);
+        c.lineTo(x, yOf(Math.max(0.2, e)));
+      }
+      c.lineTo(w, H);
+      c.fill();
+    });
+  }
+  softLayer(g, W, Hh, 2, (c, { wrap, yOf, ky }, H) => {
+    for (let i = 0; i < 9; i++) {
+      const x = r() * 360, w = 1.5 + r() * 3, h = 0.4 + r() * 0.6;
+      wrap(x, w, (px, pw) => {
+        c.fillStyle = '#ccd1ce';
+        c.fillRect(px, yOf(h), pw, H);
+        c.fillStyle = 'rgba(130,145,150,0.4)';
+        c.fillRect(px + 1, yOf(h * 0.7), pw - 2, Math.max(1, ky * 0.08));
+      });
     }
-    g.lineTo(W, Hh);
-    g.fill();
-  }
-  for (let i = 0; i < 9; i++) {
-    const x = r() * 360, w = 1.5 + r() * 3, h = 0.4 + r() * 0.6;
-    wrap(x, w, (px, pw) => {
-      g.fillStyle = '#c9cfcb';
-      g.fillRect(px, yOf(h), pw, Hh);
-      g.fillStyle = 'rgba(120,135,140,0.5)';
-      g.fillRect(px + 2, yOf(h * 0.7), pw - 4, Math.max(2, ky * 0.08));
-    });
-  }
-  for (let i = 0; i < 520; i++) {
-    const x = r() * 360, rad = 0.25 + r() * 0.45, lift = r() * 0.4;
-    const tone = ['#6b8a6f', '#7a977a', '#5f7d64', '#87a283'][i % 4];
-    wrap(x, rad * 2, (px, pw) => {
-      g.fillStyle = tone;
-      g.beginPath();
-      g.ellipse(px + pw / 2, yOf(lift + rad * 0.8), pw / 2, rad * ky * 0.8, 0, 0, Math.PI * 2);
-      g.fill();
-      g.fillRect(px, yOf(lift + rad * 0.8), pw, Hh);
-    });
-  }
+    for (let i = 0; i < 520; i++) {
+      const x = r() * 360, rad = 0.25 + r() * 0.45, lift = r() * 0.4;
+      const tone = ['#7a9480', '#869f88', '#6f8a75', '#91a88f'][i % 4];
+      wrap(x, rad * 2, (px, pw) => {
+        c.fillStyle = tone;
+        c.beginPath();
+        c.ellipse(px + pw / 2, yOf(lift + rad * 0.8), pw / 2, rad * ky * 0.8, 0, 0, Math.PI * 2);
+        c.fill();
+        c.fillRect(px, yOf(lift + rad * 0.8), pw, H);
+      });
+    }
+  });
   hazeBase(g, W, Hh);
 }
 
@@ -2824,9 +3455,10 @@ function drawCampusSkyline(g, W, Hh) {
 function hazeBase(g, W, Hh) {
   g.save();
   g.globalCompositeOperation = 'source-atop';
-  const grad = g.createLinearGradient(0, Hh * 0.35, 0, Hh);
-  grad.addColorStop(0, 'rgba(232,239,242,0)');
-  grad.addColorStop(1, 'rgba(232,239,242,0.55)');
+  const grad = g.createLinearGradient(0, 0, 0, Hh);
+  grad.addColorStop(0, 'rgba(226,234,238,0.12)');
+  grad.addColorStop(0.55, 'rgba(226,234,238,0.3)');
+  grad.addColorStop(1, 'rgba(230,236,238,0.7)');
   g.fillStyle = grad;
   g.fillRect(0, 0, W, Hh);
   g.restore();

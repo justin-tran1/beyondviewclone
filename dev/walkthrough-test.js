@@ -1,6 +1,7 @@
 // Developer page and Playwright checks for src/walkthrough.js.
 // In a browser (dev/walkthrough-test.html): mounts a full-window Walkthrough on a furnished test suite,
-// or on a sample with ?sample=<id>, and exposes window.walk, window.store and window.testReady.
+// or on a sample with ?sample=<id>, at ?quality=high|balanced|fast (default high), and exposes
+// window.walk, window.store and window.testReady.
 // In Node: `node dev/walkthrough-test.js [--url=http://localhost:8080] [--shots=<dir>]` runs the checks
 // in Chromium (starting its own static server when --url is not given) and saves screenshots.
 
@@ -115,7 +116,8 @@ async function mountPage() {
 
   const store = new model.PlanStore(plan);
   const container = document.getElementById('walk');
-  const walk = new Walkthrough(container, store, { minimap: params.get('minimap') !== '0' });
+  const quality = ['high', 'balanced', 'fast'].includes(params.get('quality')) ? params.get('quality') : 'high';
+  const walk = new Walkthrough(container, store, { minimap: params.get('minimap') !== '0', quality });
   // The environment's PMREM passes already count as renderer frames; wait for one more.
   const setupFrames = walk.renderer.info.render.frame;
   walk.start();
@@ -133,6 +135,22 @@ async function mountPage() {
   walk.addEventListener('mode', (e) => {
     for (const b of modes.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.mode === e.detail.mode));
   });
+
+  // Quality: pressed is the level in use; an outline marks a level lowered automatically.
+  const qualityGroup = document.getElementById('quality');
+  const syncQuality = () => {
+    for (const b of qualityGroup.querySelectorAll('button')) {
+      b.setAttribute('aria-pressed', String(b.dataset.quality === walk.quality));
+      b.dataset.auto = String(b.dataset.quality === walk.quality && walk.quality !== walk.chosenQuality);
+    }
+  };
+  qualityGroup.addEventListener('click', (e) => {
+    const q = e.target.closest('button')?.dataset.quality;
+    if (q) walk.setQuality(q);
+    focusView(e);
+  });
+  walk.addEventListener('quality', syncQuality);
+  syncQuality();
 
   const views = document.getElementById('views');
   const renderViews = () => {
@@ -170,8 +188,16 @@ async function mountPage() {
   container.addEventListener('pointerdown', dismiss, { once: true });
   container.addEventListener('keydown', dismiss, { once: true });
 
-  const ready = () => (walk.renderer.info.render.frame > setupFrames ? (window.testReady = true) : requestAnimationFrame(ready));
-  ready();
+  // Ready once the first frame is drawn and the post-processing lookup textures have loaded (their
+  // arrival asks for one more frame).
+  const firstFrame = new Promise((resolve) => {
+    const poll = () => (walk.renderer.info.render.frame > setupFrames ? resolve() : requestAnimationFrame(poll));
+    poll();
+  });
+  await firstFrame;
+  await walk._postfx.ready;
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  window.testReady = true;
 }
 
 // ---- Node checks ----------------------------------------------------------------------------
@@ -774,6 +800,157 @@ async function runChecks() {
     const r = await page.evaluate(() => ({ base: window.walk._baseRatio, motion: window.walk._motionRatio, now: window.walk.renderer.getPixelRatio() }));
     assert(r.now === r.base, `idle pixel ratio ${r.now}, base ${r.base}`);
     return `base ${r.base}, motion ${r.motion}`;
+  });
+
+  await check('each quality level renders without errors', async () => {
+    await place(spots.aisle);
+    await idle();
+    const levels = {};
+    for (const q of ['high', 'balanced', 'fast']) {
+      const r = await page.evaluate(async (level) => {
+        const T = await import('three');
+        const w = window.walk, r = w.renderer, gl = r.getContext();
+        const events = [];
+        const on = (e) => events.push(e.detail);
+        w.addEventListener('quality', on);
+        w.setQuality(level);
+        w.removeEventListener('quality', on);
+        while (gl.getError() !== gl.NO_ERROR);
+        const f0 = r.info.render.frame;
+        w._render();
+        const frames = r.info.render.frame - f0;
+        const glError = gl.getError();
+        const calls = r.info.render.calls;
+        // A frame of one flat color means a pass broke; sample a grid of pixels.
+        const w0 = gl.drawingBufferWidth, h0 = gl.drawingBufferHeight, px = new Uint8Array(4);
+        const lum = [];
+        for (let i = 1; i < 8; i++) for (let j = 1; j < 6; j++) {
+          gl.readPixels(Math.floor((w0 * i) / 8), Math.floor((h0 * j) / 6), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          lum.push(0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2]);
+        }
+        // Cost of a frame, waiting for the GPU (relative between levels; software rendering is slow).
+        const t0 = performance.now();
+        for (let k = 0; k < 2; k++) {
+          w._render();
+          gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        }
+        const ms = (performance.now() - t0) / 2;
+        // The saved image is the post-processed one.
+        const blob = await w.screenshot();
+        const bmp = await createImageBitmap(blob);
+        const c = new OffscreenCanvas(64, 40);
+        const ctx = c.getContext('2d');
+        ctx.drawImage(bmp, 0, 0, 64, 40);
+        const shot = Array.from(ctx.getImageData(0, 0, 64, 40).data.filter((_, i) => i % 4 === 1));
+        const p = w._postfx.passes;
+        return {
+          quality: w.quality, chosen: w.chosenQuality, events, frames, glError, calls, ms: Math.round(ms), shot,
+          mean: lum.reduce((a, b) => a + b, 0) / lum.length, spread: Math.max(...lum) - Math.min(...lum),
+          agx: level === 'fast'
+            ? r.toneMapping === T.CustomToneMapping && T.ShaderChunk.tonemapping_pars_fragment.includes('InteriorGradeToneMapping')
+            : r.toneMapping === T.AgXToneMapping,
+          passes: p ? p.composer.passes.filter((x) => x.enabled).map((x) => x.constructor.name) : null,
+          aoScale: p ? p.ao.resolutionScale : null, aoSamples: p ? p.ao.gtaoMaterial.defines.SAMPLES : null,
+        };
+      }, q);
+      await idle();
+      await shot(`21-quality-${q}`);
+      levels[q] = r;
+      assert(r.quality === q && r.chosen === q, `${q}: quality ${r.quality}, chosen ${r.chosen}`);
+      assert(r.events.every((e) => e.quality === q && e.chosen === q && e.auto === false), `${q}: events ${JSON.stringify(r.events)}`);
+      assert(r.glError === 0, `${q}: GL error ${r.glError}`);
+      assert(r.agx, `${q}: renderer is not using the graded AgX tone mapping`);
+      assert(r.spread > 40 && r.mean > 60 && r.mean < 235, `${q}: frame looks blank (mean ${r.mean.toFixed(0)}, spread ${r.spread.toFixed(0)})`);
+    }
+    const { high, balanced, fast } = levels;
+    const passes = (l) => (l.passes || []).join(' ');
+    assert(passes(high) === 'RenderPass InteriorAOPass UnrealBloomPass ShaderPass OutputPass SMAAPass', `high passes: ${passes(high)}`);
+    assert(passes(balanced) === 'RenderPass InteriorAOPass ShaderPass OutputPass SMAAPass', `balanced passes: ${passes(balanced)}`);
+    assert(balanced.aoScale <= high.aoScale / 2 && balanced.aoSamples < high.aoSamples, `balanced AO scale ${balanced.aoScale}, samples ${balanced.aoSamples}`);
+    assert(fast.passes === null && fast.frames === 1, `fast drew ${fast.frames} renders through ${passes(fast)}`);
+    // Every level shares one tone curve, so they differ only by AO, bloom and edge quality.
+    const diff = high.shot.reduce((sum, v, i) => sum + Math.abs(v - fast.shot[i]), 0) / high.shot.length;
+    const tone = Math.abs(high.mean - fast.mean);
+    assert(diff > 1, `screenshot() at high matches fast (mean difference ${diff.toFixed(1)}), so it is not post-processed`);
+    assert(tone < 12, `high and fast differ in brightness by ${tone.toFixed(1)} levels`);
+    await page.evaluate(() => window.walk.setQuality('high'));
+    await idle();
+    return `high ${high.ms} ms (${high.calls} draws), balanced ${balanced.ms} ms (${balanced.calls}), fast ${fast.ms} ms (${fast.calls}); screenshots differ by ${diff.toFixed(1)}, brightness by ${tone.toFixed(1)}`;
+  });
+
+  await check('slow frames step the quality down, never above the chosen level', async () => {
+    const r = await page.evaluate(() => {
+      const w = window.walk, seen = [];
+      w.setQuality('high');
+      const on = (e) => seen.push(`${e.detail.quality}:${e.detail.auto}`);
+      w.addEventListener('quality', on);
+      for (let i = 0; i < 60; i++) w._governor(120);
+      const fromHigh = { quality: w.quality, chosen: w.chosenQuality, motion: w._motionRatio };
+      w.setQuality('balanced');
+      for (let i = 0; i < 60; i++) w._governor(120);
+      const fromBalanced = { quality: w.quality, chosen: w.chosenQuality };
+      for (let i = 0; i < 60; i++) w._governor(8);
+      const afterFast = w.quality;
+      w.removeEventListener('quality', on);
+      w.setQuality('high');
+      return { seen, fromHigh, fromBalanced, afterFast, base: w._baseRatio, motion: w._motionRatio };
+    });
+    assert(r.seen.join() === 'balanced:true,fast:true,balanced:false,fast:true', `quality events ${r.seen.join()}`);
+    assert(r.fromHigh.quality === 'fast' && r.fromHigh.chosen === 'high', `from high: ${JSON.stringify(r.fromHigh)}`);
+    assert(r.fromHigh.motion < r.base, `motion pixel ratio stayed at ${r.fromHigh.motion} once at fast`);
+    assert(r.fromBalanced.quality === 'fast' && r.fromBalanced.chosen === 'balanced', `from balanced: ${JSON.stringify(r.fromBalanced)}`);
+    assert(r.afterFast === 'fast', `fast frames raised the quality to ${r.afterFast}`);
+    assert(r.motion === r.base, `choosing a level left the motion pixel ratio at ${r.motion}`);
+    await idle();
+    return `high to balanced to fast, then motion ratio ${r.fromHigh.motion}; a fresh choice resets it`;
+  });
+
+  await check('renderContext and the environment capture', async () => {
+    const r = await page.evaluate(async () => {
+      const builder = await import('../src/builder3d.js');
+      const w = window.walk, c = w.renderContext, p = w.pose;
+      const out = {
+        renderer: c.renderer === w.renderer, scene: c.scene === w._scene, built: c.built === w._built,
+        camera: c.camera.isPerspectiveCamera && Math.abs(c.camera.position.x - p.x) < 1e-6 && Math.abs(c.camera.position.z - p.y) < 1e-6,
+        overlays: c.scene.children.filter((o) => o.userData.overlay).length,
+        capture: typeof builder.captureEnvironment === 'function',
+      };
+      const before = w._envCapture;
+      w.rebuild();
+      out.env = !!w._scene.environment;
+      out.usesCapture = out.capture ? w._envCapture !== before && w._scene.environment === w._envCapture?.texture : w._envCapture === null;
+      return out;
+    });
+    await idle();
+    assert(r.renderer && r.scene && r.built && r.camera, `renderContext ${JSON.stringify(r)}`);
+    assert(r.overlays === 2, `${r.overlays} overlay objects marked`);
+    assert(r.env && r.usesCapture, `environment ${JSON.stringify(r)}`);
+    return r.capture ? 'captureEnvironment result assigned and replaced on rebuild' : 'builder has no captureEnvironment yet; the room environment stays';
+  });
+
+  await check('resizing keeps the post-processing buffers in step with the canvas', async () => {
+    const size = page.viewportSize();
+    const measure = () => page.evaluate(() => {
+      const w = window.walk, p = w._postfx.passes, c = w.renderer.domElement;
+      return { canvas: [c.width, c.height], scene: [p.composer.renderTarget1.width, p.composer.renderTarget1.height], ao: [p.ao.width, p.ao.height], scale: p.ao.resolutionScale };
+    });
+    // Software rendering can hold back the resize observer for seconds, so wait for the new size.
+    const resizeTo = async (vp) => {
+      await page.setViewportSize(vp);
+      await page.waitForFunction(({ width, height }) => {
+        const w = window.walk;
+        return w._size.w === width && w._size.h === height && !w._raf;
+      }, vp, { timeout: 60000 });
+      await idle();
+      return measure();
+    };
+    const a = await resizeTo({ width: 640, height: 400 });
+    const b = await resizeTo(size);
+    for (const m of [a, b]) {
+      assert(m.scene[0] === m.canvas[0] && m.scene[1] === m.canvas[1], `scene buffer ${m.scene} for canvas ${m.canvas}`);
+      assert(Math.abs(m.ao[0] - Math.round(m.canvas[0] * m.scale)) <= 1, `AO buffer ${m.ao} at scale ${m.scale} for canvas ${m.canvas}`);
+    }
+    return `${a.canvas.join('x')} and back to ${b.canvas.join('x')}`;
   });
 
   await check('touch: tap walks, drag looks', async () => {

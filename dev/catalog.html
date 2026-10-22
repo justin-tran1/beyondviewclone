@@ -5,7 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Catalog Preview</title>
   <script type="importmap">
-    { "imports": { "three": "../assets/vendor/three/three.module.min.js", "three/addons/": "../assets/vendor/three/addons/" } }
+    {
+      "imports": {
+        "three": "../assets/vendor/three/three.module.min.js",
+        "three/addons/": "../assets/vendor/three/addons/",
+        "three/examples/jsm/": "../assets/vendor/three/addons/",
+        "three-mesh-bvh": "../assets/vendor/three-mesh-bvh/index.module.js",
+        "three-gpu-pathtracer": "../assets/vendor/three-gpu-pathtracer/index.module.js"
+      }
+    }
   </script>
   <style>
     body { margin: 0; font: 14px/1.4 system-ui, sans-serif; color: #435254; background: #f6f6f6; }
@@ -33,7 +41,7 @@
   <header>
     <h1>Catalog preview</h1>
     <nav id="nav"></nav>
-    <code>?category=lab|medical|office|retail|general&amp;view=front|top, or ?item=&lt;type&gt;&amp;w=&amp;d=&amp;h=</code>
+    <code>?category=lab|medical|office|retail|general&amp;view=front|top|room, or ?item=&lt;type&gt;&amp;w=&amp;d=&amp;h=&amp;color=&amp;view=room&amp;yaw=</code>
   </header>
   <div id="err"></div>
   <div id="wrap"><canvas id="stage"></canvas><div id="labels"></div></div>

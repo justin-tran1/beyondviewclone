@@ -2,6 +2,7 @@
 // warehouse equipment (pallet racking, pallets, forklift, workbench, bollards, floor markings).
 // Local frame: x = width, y = up, z = depth with the front facing +z (plan +y).
 import { registerItems } from './registry.js';
+import { tint, cushion, turned, bent, assembly, barPull } from './lab.js';
 
 const OUT = 1.25;       // plan outline weight in px
 const FINE = 0.75;      // plan detail weight in px
@@ -18,6 +19,7 @@ const GARMENTS = [
   '#b7c9c3', '#8b5e5e', '#f6f4ee', '#2f4f4a', '#c9b79c',
 ];
 const KRAFT = ['#b9895a', '#c49a6c', '#a87c50', '#caa477'];
+const LABELS = ['#efeee9', '#e7dcc8', '#30383b'];
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const repeats = (n, min = 1) => clamp(n, min, MAX_REPEAT);
@@ -34,27 +36,28 @@ function seq(seed) {
 
 // ---- Materials ----------------------------------------------------------------------
 
-/** The caller's color as a material, or the fallback when no color is set. */
-function finish(kit, color, fallback, roughness = 0.55) {
-  return isColor(color) ? kit.material(color, { roughness }) : fallback;
+/** The item's main finish in the caller's color, keeping the fallback's texture. */
+function finish(kit, color, fallback) {
+  return tint(kit, fallback, isColor(color) ? color : null);
 }
 
-/** A darker (f < 1) or lighter (f > 1) variant of a material, cached by the kit. */
+/** A darker (f < 1) or lighter (f > 1) variant of a finish. */
 function shade(kit, mat, f) {
-  const c = mat.color.clone().multiplyScalar(f);
-  return kit.material(`#${c.getHexString()}`, { roughness: mat.roughness, metalness: mat.metalness });
+  return tint(kit, mat, null, f);
 }
 
-const fabric = (kit, hex) => kit.material(hex, { roughness: 0.92 });
+/** Painted steel (powder coat) in a color. */
+const painted = (kit, hex, roughness = 0.4) => kit.paintMaterial(hex, { roughness });
+const fabric = (kit, hex) => tint(kit, kit.mat.fabricGrey, hex);
 const packaging = (kit, hex) => kit.material(hex, { roughness: 0.62 });
 const glow = (kit, hex, intensity = 1) => kit.material(hex, { roughness: 0.4, emissive: hex, emissiveIntensity: intensity });
 
 // ---- 3D helpers ---------------------------------------------------------------------
 
-/** kit.block with extents in any order. */
-function blk(kit, g, mat, x0, x1, y0, y1, z0, z1, shadows = true) {
+/** kit.block with extents in any order; bevel is 'auto', false or a radius in meters. */
+function blk(kit, g, mat, x0, x1, y0, y1, z0, z1, shadows = true, bevel = 'auto') {
   return kit.block(g, mat, Math.min(x0, x1), Math.max(x0, x1), Math.min(y0, y1), Math.max(y0, y1),
-    Math.min(z0, z1), Math.max(z0, z1), shadows);
+    Math.min(z0, z1), Math.max(z0, z1), shadows, { bevel });
 }
 
 /** Box of size (sx, sy, sz) centered at (x, y, z), then rotated. */
@@ -193,12 +196,11 @@ function shelfLevels(h, headroom) {
 }
 
 function shelfMats(kit, color) {
-  const frame = finish(kit, color, kit.material('#e3e6e5', { roughness: 0.42, metalness: 0.25 }), 0.45);
   return {
-    frame,
-    panel: shade(kit, frame, 0.9),
-    channel: kit.material('#56656a', { roughness: 0.45 }),
-    tag: kit.material('#fbfbf8', { roughness: 0.5 }),
+    frame: painted(kit, isColor(color) ? color : '#e2e4e1'),
+    panel: painted(kit, isColor(color) ? `#${new kit.THREE.Color(color).multiplyScalar(0.85).getHexString()}` : '#d2d5d2', 0.5),
+    channel: tint(kit, kit.mat.plastic, '#57646a'),
+    tag: kit.material('#f3f3ef', { roughness: 0.5 }),
   };
 }
 
@@ -216,7 +218,11 @@ function stockShelf(kit, g, rnd, { x0, x1, y, clear, zb, s, dep }) {
     }
     const ph = Math.min(0.34, clear * (0.42 + rnd() * 0.42));
     const back = 0.025 + rnd() * 0.04, front = 0.02 + rnd() * 0.015;
-    blk(kit, g, packaging(kit, pick(rnd, PRODUCTS)), x, x + pw, y, y + ph, zb + s * back, zb + s * (dep - front));
+    const face = zb + s * (dep - front);
+    blk(kit, g, packaging(kit, pick(rnd, PRODUCTS)), x, x + pw, y, y + ph, zb + s * back, face);
+    // Most packs carry a printed label panel on the face toward the shopper.
+    const tag = Math.floor(x * 997) % 4;
+    if (tag && pw > 0.06) blk(kit, g, packaging(kit, LABELS[tag - 1]), x + pw * 0.14, x + pw * 0.86, y + ph * 0.42, y + ph * 0.78, face, face + s * 0.0015, false, false);
     x += pw + (0.008 + rnd() * 0.012) * k;
   }
 }
@@ -236,13 +242,16 @@ function shelfFace(kit, g, m, { w, zb, s, depth, levels, h, seed }) {
     const e = SHELF.post / 2;
     blk(kit, g, m.frame, -w / 2 + e, w / 2 - e, y - SHELF.t, y, zb + s * 0.004, zb + s * (dep - 0.012));
     blk(kit, g, m.channel, -w / 2 + e, w / 2 - e, y - SHELF.t - 0.012, y + 0.018, zb + s * (dep - 0.012), zb + s * dep);
-    for (let b = 0; b < bays; b++) {
-      const x0 = -w / 2 + b * bw + (b === 0 ? e : 0.003);
-      const x1 = -w / 2 + (b + 1) * bw - (b === bays - 1 ? e : 0.003);
-      const tx = x0 + 0.08 + rnd() * 0.2;
-      blk(kit, g, m.tag, tx, tx + 0.05, y - SHELF.t - 0.004, y + 0.012, zb + s * dep, zb + s * (dep + 0.002), false);
-      stockShelf(kit, g, rnd, { x0, x1, y, clear: next - y, zb, s, dep: dep - 0.012 });
-    }
+    // Price tags and product facings merge into one mesh per color.
+    g.add(assembly(kit, null, (a) => {
+      for (let b = 0; b < bays; b++) {
+        const x0 = -w / 2 + b * bw + (b === 0 ? e : 0.003);
+        const x1 = -w / 2 + (b + 1) * bw - (b === bays - 1 ? e : 0.003);
+        const tx = x0 + 0.08 + rnd() * 0.2;
+        blk(kit, a, m.tag, tx, tx + 0.05, y - SHELF.t - 0.004, y + 0.012, zb + s * dep, zb + s * (dep + 0.002), false);
+        stockShelf(kit, a, rnd, { x0, x1, y, clear: next - y, zb, s, dep: dep - 0.012 });
+      }
+    }));
   });
 }
 
@@ -289,7 +298,7 @@ function buildWallShelving(kit, { w, d, h, color }) {
   const levels = shelfLevels(h - header, 0.26);
   blk(kit, g, m.panel, -w / 2 + SHELF.post / 2, w / 2 - SHELF.post / 2, SHELF.kick, h - header, z0 + 0.004, zb - 0.008);
   shelfPosts(kit, g, m, w, h - header - 0.012, z0, zb);
-  blk(kit, g, finish(kit, color, kit.material('#538184', { roughness: 0.5 }), 0.5), -w / 2, w / 2, h - header, h, z0, zb + 0.02);
+  blk(kit, g, finish(kit, color, tint(kit, kit.mat.laminate, '#557876')), -w / 2, w / 2, h - header, h, z0, zb + 0.02);
   blk(kit, g, m.channel, -w / 2, w / 2, h - header - 0.012, h - header, z0, zb + 0.022);
   shelfBase(kit, g, m, w, zb, zb + depth);
   shelfFace(kit, g, m, { w, zb, s: 1, depth, levels, h: h - header, seed: 7 });
@@ -328,7 +337,7 @@ function buildCheckout(kit, { w, d, color }) {
   const g = kit.group();
   const C = CHECKOUT;
   const white = kit.mat.casework;
-  const slat = finish(kit, color, kit.mat.oak, 0.5);
+  const slat = finish(kit, color, kit.mat.oak);
   const reveal = kit.material('#2f3538', { roughness: 0.85 });
   const under = C.top - C.topT;
   const zf = d / 2 - 0.045;
@@ -340,7 +349,7 @@ function buildCheckout(kit, { w, d, color }) {
   blk(kit, g, reveal, x0, x1, C.kick, under, zf, zf + 0.015);
   blk(kit, g, white, 0.24, 0.26, C.kick, under, z0, zf);
   blk(kit, g, white, x0 + 0.025, 0.24, 0.47, 0.49, z0 + 0.02, zf);
-  blk(kit, g, white, 0.26, x1 - 0.025, C.kick + 0.02, under, z0 + 0.03, zf);
+  blk(kit, g, white, 0.26, x1 - 0.025, C.kick + 0.02, under, z0 + 0.048, zf);
   // Customer face: vertical slats under a flush top.
   const n = Math.round((w - 0.04) / 0.075);
   const pitch = (w - 0.04) / n;
@@ -353,8 +362,8 @@ function buildCheckout(kit, { w, d, color }) {
   // Cashier side: three drawers on the pedestal and a cash drawer under the register.
   const fronts = [[C.kick + 0.025, 0.38], [0.385, 0.62], [0.625, under - 0.006]];
   for (const [y0, y1] of fronts) {
-    blk(kit, g, white, 0.265, x1 - 0.03, y0, y1, z0 + 0.012, z0 + 0.03);
-    blk(kit, g, kit.mat.chrome, 0.46, 0.66, y1 - 0.05, y1 - 0.038, z0, z0 + 0.012);
+    blk(kit, g, white, 0.265, x1 - 0.03, y0, y1, z0 + 0.03, z0 + 0.048);
+    barPull(kit, g, kit.mat.steel, 0.56, y1 - 0.045, z0 + 0.03, 0.2, { s: -1, reach: 0.022, r: 0.005 });
   }
   blk(kit, g, kit.mat.black, -0.5, 0.0, under - 0.13, under - 0.004, z0 + 0.012, z0 + 0.45);
   blk(kit, g, kit.mat.darkSteel, -0.32, -0.18, under - 0.08, under - 0.068, z0 + 0.002, z0 + 0.012);
@@ -366,7 +375,7 @@ function buildCheckout(kit, { w, d, color }) {
   kit.cyl(g, kit.mat.darkSteel, 0.065, 0.012, px, C.top, pz, { segments: 24 });
   rod(kit, g, kit.mat.darkSteel, 0.014, [px, C.top + 0.01, pz], [px, C.top + 0.075, pz + 0.015]);
   const tab = sub(kit, g, px, C.top + 0.1, pz + 0.01, { pitch: 0.5 });
-  blk(kit, tab, kit.mat.black, -0.13, 0.13, -0.09, 0.09, -0.006, 0.006);
+  cushion(kit, tab, kit.mat.black, -0.13, 0.13, -0.09, 0.09, -0.006, 0.006, { r: 0.006 });
   blk(kit, tab, kit.mat.screen, -0.118, 0.118, -0.078, 0.078, -0.008, -0.006, false);
   // Card reader on a small cradle facing the customer.
   const [rx, rz] = C.reader;
@@ -377,7 +386,7 @@ function buildCheckout(kit, { w, d, color }) {
   blk(kit, rd, kit.mat.darkSteel, -0.03, 0.03, -0.058, -0.012, 0.011, 0.013, false);
   // Receipt printer.
   const [qx, qz] = C.printer;
-  blk(kit, g, kit.mat.black, qx - 0.07, qx + 0.07, C.top, C.top + 0.13, qz - 0.09, qz + 0.09);
+  cushion(kit, g, kit.mat.black, qx - 0.07, qx + 0.07, C.top, C.top + 0.13, qz - 0.09, qz + 0.09, { r: 0.015, crown: 0.004 });
   blk(kit, g, kit.mat.white, qx - 0.04, qx + 0.04, C.top + 0.13, C.top + 0.134, qz - 0.088, qz - 0.06, false);
   // Two-tier impulse display on the customer side.
   const [ix0, ix1, iz0, iz1] = C.impulse;
@@ -389,7 +398,7 @@ function buildCheckout(kit, { w, d, color }) {
   for (let i = 0; i < 3; i++) {
     const x = ix0 + 0.02 + i * iw;
     for (const [y, za, zb] of [[C.top + 0.09, iz0 + 0.02, izm - 0.02], [C.top + 0.025, izm + 0.02, iz1 - 0.02]]) {
-      blk(kit, g, packaging(kit, pick(rnd, PRODUCTS)), x + 0.008, x + iw - 0.008, y, y + 0.05 + rnd() * 0.03, za, zb);
+      blk(kit, g, packaging(kit, pick(rnd, PRODUCTS)), x + 0.008, x + iw - 0.008, y, y + 0.05 + rnd() * 0.03, za, zb, true, 0.004);
     }
   }
   return g;
@@ -429,18 +438,19 @@ function tableStacks(w, d) {
 /** Stack of folded garments with the rounded fold toward the shopper (+z). */
 function foldedStack(kit, g, rnd, x, y, z, count, color) {
   const mat = fabric(kit, color);
-  const th = 0.03, r = th / 2 - 0.001;
-  for (let i = 0; i < count; i++) {
-    const f = sub(kit, g, x + (rnd() - 0.5) * 0.014, y + th * i, z + (rnd() - 0.5) * 0.012, { yaw: (rnd() - 0.5) * 0.05 });
-    blk(kit, f, mat, -0.165, 0.165, 0.001, th - 0.001, -0.13, 0.13 - r);
-    kit.cyl(f, mat, r, 0.326, 0, th / 2, 0.13 - r, { axis: 'x', segments: 10 });
-  }
+  const th = 0.03;
+  g.add(assembly(kit, null, (a) => {
+    for (let i = 0; i < count; i++) {
+      const f = sub(kit, a, x + (rnd() - 0.5) * 0.014, y + th * i, z + (rnd() - 0.5) * 0.012, { yaw: (rnd() - 0.5) * 0.05 });
+      cushion(kit, f, mat, -0.165, 0.165, 0.001, th - 0.001, -0.13, 0.13, { r: 0.012, crown: 0.003 });
+    }
+  }));
 }
 
 function buildDisplayTable(kit, { w, d, h, color }) {
   const g = kit.group();
   const T = TABLE;
-  const frame = finish(kit, color, kit.material('#30373a', { roughness: 0.45, metalness: 0.35 }), 0.45);
+  const frame = finish(kit, color, tint(kit, kit.mat.darkSteel, '#353b3e'));
   const under = T.top - T.topT;
   const lx = w / 2 - T.inset, lz = d / 2 - T.inset;
   blk(kit, g, kit.mat.oak, -w / 2, w / 2, under, T.top, -d / 2, d / 2);
@@ -466,7 +476,8 @@ function buildDisplayTable(kit, { w, d, h, color }) {
       foldedStack(kit, g, rnd, s.x, T.top, s.z, count - (rnd() < 0.4 ? 1 : 0), pick(rnd, GARMENTS));
     }
   }
-  const basket = kit.material('#b99c6b', { roughness: 0.95 });
+  // Woven seagrass baskets: the weave texture in a straw tone, with a darker braided rim.
+  const basket = tint(kit, kit.mat.fabricWheat, '#b59b70');
   const rim = shade(kit, basket, 0.78);
   const bw = Math.min(0.38, (2 * (lx - T.leg) - 0.1) / 3);
   const xs = [-(lx - T.leg) + 0.03 + bw / 2, 0, (lx - T.leg) - 0.03 - bw / 2];
@@ -475,8 +486,8 @@ function buildDisplayTable(kit, { w, d, h, color }) {
       foldedStack(kit, g, rnd, x, 0.185, 0, 4, '#2c4b63');
       return;
     }
-    blk(kit, g, basket, x - bw / 2, x + bw / 2, 0.185, 0.36, -0.15, 0.15);
-    blk(kit, g, rim, x - bw / 2 - 0.004, x + bw / 2 + 0.004, 0.33, 0.365, -0.154, 0.154);
+    cushion(kit, g, basket, x - bw / 2, x + bw / 2, 0.185, 0.36, -0.15, 0.15, { r: 0.03 });
+    cushion(kit, g, rim, x - bw / 2 - 0.004, x + bw / 2 + 0.004, 0.335, 0.365, -0.154, 0.154, { r: 0.014 });
   });
   return g;
 }
@@ -522,7 +533,7 @@ function caster(kit, g, x, z) {
 
 function buildClothingRack(kit, { w, d, h, color }) {
   const g = kit.group();
-  const frame = finish(kit, color, kit.material('#2b3033', { roughness: 0.4, metalness: 0.5 }), 0.4);
+  const frame = finish(kit, color, tint(kit, kit.mat.darkSteel, '#2e3336'));
   const railY = h - RACK.rail;
   const ux = w / 2 - RACK.ux;
   for (const s of [-1, 1]) {
@@ -533,16 +544,22 @@ function buildClothingRack(kit, { w, d, h, color }) {
   }
   blk(kit, g, frame, -ux + 0.02, ux - 0.02, 0.07, 0.088, -0.012, 0.012);
   kit.cyl(g, kit.mat.chrome, 0.013, 2 * ux, 0, railY, 0, { axis: 'x', segments: 16 });
-  for (const gm of garmentLayout(w)) {
-    const f = sub(kit, g, gm.x, railY, 0, { yaw: gm.yaw });
-    kit.cyl(f, kit.mat.chrome, 0.021, 0.005, 0, 0, 0, { axis: 'x', segments: 14 });
-    rod(kit, f, kit.mat.chrome, 0.003, [0, -0.02, 0], [0, -0.06, 0], { segments: 6 });
-    const mat = fabric(kit, gm.color);
-    const top = -0.055;
-    box(kit, f, mat, 0, top - 0.035, -gm.half * 0.45, gm.t * 0.9, 0.05, gm.half * 0.95, 0.32);
-    box(kit, f, mat, 0, top - 0.035, gm.half * 0.45, gm.t * 0.9, 0.05, gm.half * 0.95, -0.32);
-    blk(kit, f, mat, -gm.t / 2, gm.t / 2, top - gm.len, top - 0.05, -gm.half, gm.half);
-  }
+  // Garments on wood hangers: sloped shoulders over a soft body, merged into a mesh per color.
+  const hanger = kit.mat.oak;
+  g.add(assembly(kit, `rack|${w}|${d}|${h}`, (a) => {
+    for (const gm of garmentLayout(w)) {
+      const f = sub(kit, a, gm.x, railY, 0, { yaw: gm.yaw });
+      bent(kit, f, kit.mat.chrome, [[0, -0.045, 0], [0, -0.012, 0.012], [0, 0.014, 0], [0, -0.002, -0.014]], 0.0025, { segments: 8, radial: 5 });
+      kit.block(f, hanger, -0.006, 0.006, -0.06, -0.045, -gm.half * 0.92, gm.half * 0.92, true, { bevel: 0.004 });
+      const mat = fabric(kit, gm.color);
+      const top = -0.055;
+      for (const s of [-1, 1]) {
+        const sh = sub(kit, f, 0, top - 0.035, s * gm.half * 0.45, { pitch: s * 0.32 });
+        cushion(kit, sh, mat, -gm.t * 0.45, gm.t * 0.45, -0.025, 0.025, -gm.half * 0.475, gm.half * 0.475, { r: 0.012 });
+      }
+      cushion(kit, f, mat, -gm.t / 2, gm.t / 2, top - gm.len, top - 0.04, -gm.half, gm.half, { r: Math.min(0.014, gm.t * 0.4) });
+    }
+  }));
   return g;
 }
 
@@ -568,10 +585,10 @@ function drawClothingRack(ctx, o) {
 /** Faceless form dressed in a simple top and trousers; opts.color sets the top. */
 function buildMannequin(kit, { color }) {
   const g = kit.group();
-  const form = kit.material('#ebe8e1', { roughness: 0.42 });
-  const top = finish(kit, color, fabric(kit, '#80bbad'), 0.9);
-  const pants = fabric(kit, '#2c3b44');
-  const shoe = kit.material('#2b2f31', { roughness: 0.5 });
+  const form = kit.material('#e6e3dc', { roughness: 0.32 });
+  const top = finish(kit, color, fabric(kit, '#86ada4'));
+  const pants = fabric(kit, '#303d45');
+  const shoe = tint(kit, kit.mat.vinylBlue, '#2c2f31');
   const base = 0.014;
   kit.cyl(g, kit.mat.darkSteel, 0.19, base, 0, 0, -0.005, { segments: 32 });
   rod(kit, g, kit.mat.chrome, 0.009, [-0.075, base, -0.06], [-0.075, 0.36, -0.045]);
@@ -589,11 +606,11 @@ function buildMannequin(kit, { color }) {
   // Torso: a flattened lathe profile from hips to shoulders, capped top and bottom.
   const flat = 0.64;
   const profile = [[0.86, 0.15], [0.95, 0.165], [1.04, 0.142], [1.12, 0.126], [1.21, 0.146], [1.3, 0.165], [1.38, 0.17]];
-  for (let i = 0; i < profile.length - 1; i++) {
-    const [y0, r0] = profile[i], [y1, r1] = profile[i + 1];
-    const mat = y0 < 1.0 ? pants : top;
-    rod(kit, g, mat, r0, [0, y(y0), 0], [0, y(y1), 0], { rTop: r1, segments: 28 }).scale.z = flat;
-  }
+  // One smooth lathe per garment, split at the waistband so the shirt laps over the trousers.
+  const lower = profile.filter(([py]) => py <= 1.04).map(([py, r]) => [r, py - 0.86]);
+  const upper = profile.filter(([py]) => py >= 0.95).map(([py, r]) => [r + (py < 1.06 ? 0.004 : 0), py - 0.95]);
+  turned(kit, g, pants, lower, 0, y(0.86), 0, { segments: 32 }).scale.z = flat;
+  turned(kit, g, top, upper, 0, y(0.95), 0, { segments: 32 }).scale.z = flat;
   ellipsoid(kit, g, pants, 0, y(0.86), 0, 0.15, 0.07, 0.15 * flat, 24);
   ellipsoid(kit, g, top, 0, y(1.38), 0, 0.17, 0.065, 0.17 * flat, 24);
   rod(kit, g, form, 0.046, [0, y(1.4), 0], [0, y(1.58), 0.012], { rTop: 0.04, segments: 16 });
@@ -636,7 +653,7 @@ function rackLoad(kit, g, rnd, { cx, y0, pw, pd, loadH, wrap }) {
     const yb = y0 + 0.14 + l * lh;
     for (let i = 0; i < cols; i++) {
       const x0 = cx - lw / 2 + i * cw + 0.003, jz = (rnd() - 0.5) * 0.012;
-      blk(kit, g, packaging(kit, pick(rnd, KRAFT)), x0, x0 + cw - 0.006, yb, yb + lh - 0.005, -ld / 2 + jz, ld / 2 + jz);
+      blk(kit, g, carton(kit, pick(rnd, KRAFT)), x0, x0 + cw - 0.006, yb, yb + lh - 0.005, -ld / 2 + jz, ld / 2 + jz, true, 0.004);
     }
   }
   if (wrap) {
@@ -646,6 +663,8 @@ function rackLoad(kit, g, rnd, { cx, y0, pw, pd, loadH, wrap }) {
 }
 
 const stretchWrap = (kit) => kit.material('#eef4f4', { roughness: 0.15, transparent: true, opacity: 0.3, depthWrite: false });
+/** Corrugated board in a kraft tone. */
+const carton = (kit, hex) => tint(kit, kit.mat.cardboard, hex);
 
 function buildPallet(kit, { w, d, h, color }) {
   const g = kit.group();
@@ -678,23 +697,25 @@ function buildPallet(kit, { w, d, h, color }) {
   const cols = 3, rows = 2, layers = 4;
   const lh = (h - y0 - 0.005) / layers;
   const cw = lw / cols, cd = ld / rows;
-  const carton = isColor(color) ? [1, 0.92, 1.06].map((f) => `#${new kit.THREE.Color(color).multiplyScalar(f).getHexString()}`) : KRAFT;
-  const tape = kit.material('#d8b98a', { roughness: 0.3 });
-  const label = kit.material('#f7f6f2', { roughness: 0.6 });
-  for (let l = 0; l < layers; l++) {
-    const yb = y0 + l * lh;
-    for (let i = 0; i < cols; i++) {
-      for (let k = 0; k < rows; k++) {
-        const jx = (rnd() - 0.5) * 0.008, jz = (rnd() - 0.5) * 0.008;
-        const xa = -lw / 2 + i * cw + 0.003 + jx, xb = xa + cw - 0.006;
-        const za = -ld / 2 + k * cd + 0.003 + jz, zb = za + cd - 0.006;
-        blk(kit, g, packaging(kit, pick(rnd, carton)), xa, xb, yb, yb + lh - 0.004, za, zb);
-        const cx = (xa + xb) / 2;
-        if (k === rows - 1 && rnd() < 0.7) blk(kit, g, label, cx - 0.07, cx + 0.04, yb + lh * 0.4, yb + lh * 0.68, zb, zb + 0.002, false);
-        if (l === layers - 1) blk(kit, g, tape, xa, xb, yb + lh - 0.004, yb + lh - 0.002, (za + zb) / 2 - 0.024, (za + zb) / 2 + 0.024, false);
+  const tones = isColor(color) ? [1, 0.92, 1.06].map((f) => `#${new kit.THREE.Color(color).multiplyScalar(f).getHexString()}`) : KRAFT;
+  const tape = kit.material('#c9ad80', { roughness: 0.3 });
+  const label = kit.material('#efeee9', { roughness: 0.6 });
+  g.add(assembly(kit, null, (a) => {
+    for (let l = 0; l < layers; l++) {
+      const yb = y0 + l * lh;
+      for (let i = 0; i < cols; i++) {
+        for (let k = 0; k < rows; k++) {
+          const jx = (rnd() - 0.5) * 0.008, jz = (rnd() - 0.5) * 0.008;
+          const xa = -lw / 2 + i * cw + 0.003 + jx, xb = xa + cw - 0.006;
+          const za = -ld / 2 + k * cd + 0.003 + jz, zb = za + cd - 0.006;
+          blk(kit, a, carton(kit, pick(rnd, tones)), xa, xb, yb, yb + lh - 0.004, za, zb, true, 0.004);
+          const cx = (xa + xb) / 2;
+          if (k === rows - 1 && rnd() < 0.7) blk(kit, a, label, cx - 0.07, cx + 0.04, yb + lh * 0.4, yb + lh * 0.68, zb, zb + 0.002, false, false);
+          if (l === layers - 1) blk(kit, a, tape, xa, xb, yb + lh - 0.004, yb + lh - 0.002, (za + zb) / 2 - 0.024, (za + zb) / 2 + 0.024, false, false);
+        }
       }
     }
-  }
+  }));
   const wrap = stretchWrap(kit);
   blk(kit, g, wrap, -lw / 2 - 0.008, lw / 2 + 0.008, y0 - 0.01, h - 0.06, -ld / 2 - 0.008, ld / 2 + 0.008, false);
   return g;
@@ -759,7 +780,7 @@ function buildPalletRacking(kit, { w, d, h, color }) {
   const g = kit.group();
   const R = RACKING;
   const L = rackLayout(w, d, h);
-  const blue = finish(kit, color, kit.mat.rackBlue, 0.5);
+  const blue = finish(kit, color, kit.mat.rackBlue);
   const orange = kit.mat.safetyOrange;
   for (const x of L.frames) rackFrame(kit, g, blue, kit.mat.safetyYellow, { x, w, d, h });
   const rnd = seq(41);
@@ -773,12 +794,14 @@ function buildPalletRacking(kit, { w, d, h, color }) {
     for (let l = 0; l <= L.levels; l++) {
       const y0 = l * L.pitch + 0.001;
       const room = (l < L.levels ? (l + 1) * L.pitch - R.beamH : h) - y0 - 0.14 - 0.1;
-      for (let k = 0; k < L.per; k++) {
-        if (rnd() < 0.12) continue;
-        const loadH = Math.max(0.2, Math.min(1.05, room) * (0.72 + rnd() * 0.28));
-        const cx = xa + gap + L.pw / 2 + k * (L.pw + gap);
-        rackLoad(kit, g, rnd, { cx, y0, pw: L.pw, pd: L.pd, loadH, wrap: rnd() < 0.55 });
-      }
+      g.add(assembly(kit, null, (a) => {
+        for (let k = 0; k < L.per; k++) {
+          if (rnd() < 0.12) continue;
+          const loadH = Math.max(0.2, Math.min(1.05, room) * (0.72 + rnd() * 0.28));
+          const cx = xa + gap + L.pw / 2 + k * (L.pw + gap);
+          rackLoad(kit, a, rnd, { cx, y0, pw: L.pw, pd: L.pd, loadH, wrap: rnd() < 0.55 });
+        }
+      }));
     }
   }
   return g;
@@ -823,10 +846,11 @@ function wheel(kit, g, tire, hub, x, r, width, z) {
 function buildForklift(kit, { color }) {
   const g = kit.group();
   const L = LIFT;
-  const body = finish(kit, color, kit.mat.safetyYellow, 0.5);
-  const black = kit.material('#1f2326', { roughness: 0.55, metalness: 0.2 });
+  const body = finish(kit, color, kit.mat.safetyYellow);
+  const black = tint(kit, kit.mat.darkSteel, '#25292b');
   const steel = kit.mat.darkSteel;
-  const hub = kit.material('#c9ccc9', { roughness: 0.5, metalness: 0.4 });
+  const hub = tint(kit, kit.mat.steel, '#c4c7c6');
+  const seat = tint(kit, kit.mat.vinylBlue, '#2a2d2f');
   for (const s of [-1, 1]) {
     wheel(kit, g, kit.mat.rubber, hub, s * 0.5, 0.25, 0.2, 0.12);
     wheel(kit, g, kit.mat.rubber, hub, s * 0.45, 0.2, 0.15, -0.85);
@@ -850,11 +874,12 @@ function buildForklift(kit, { color }) {
   blk(kit, g, body, -0.36, 0.36, 0.6, 1.0, 0.22, 0.34);
   blk(kit, g, black, -0.37, 0.37, 1.0, 1.04, 0.2, 0.35);
   blk(kit, g, black, -0.2, 0.2, 0.915, 0.95, -0.5, -0.18);
-  box(kit, g, kit.mat.fabricCharcoal, 0, 0.985, -0.32, 0.46, 0.07, 0.4);
-  box(kit, g, kit.mat.fabricCharcoal, 0, 1.2, -0.56, 0.44, 0.4, 0.08, -0.12);
+  cushion(kit, g, seat, -0.23, 0.23, 0.95, 1.025, -0.52, -0.12, { r: 0.03, crown: 0.012 });
+  const back = sub(kit, g, 0, 1.0, -0.56, { pitch: -0.12 });
+  cushion(kit, back, seat, -0.22, 0.22, 0, 0.4, -0.04, 0.04, { r: 0.035, crown: 0.012, axis: 'z' });
   // Steering and hydraulic levers.
   rod(kit, g, black, 0.022, [-0.05, 1.02, 0.25], [-0.05, 1.16, 0.1]);
-  const sw = kit.torus(g, black, 0.14, 0.014, -0.05, 1.17, 0.09, { axis: 'y' });
+  const sw = kit.torus(g, kit.mat.black, 0.14, 0.016, -0.05, 1.17, 0.09, { axis: 'y' });
   sw.rotation.x = Math.PI / 2 - 0.55;
   for (let i = 0; i < 3; i++) {
     const x = 0.17 + i * 0.05;
@@ -942,7 +967,7 @@ const BENCH = { top: 0.9, topT: 0.045, leg: 0.05, peg: 0.02 };
 function buildWorkbench(kit, { w, d, h, color }) {
   const g = kit.group();
   const B = BENCH;
-  const frame = finish(kit, color, kit.material('#435254', { roughness: 0.45, metalness: 0.35 }), 0.45);
+  const frame = finish(kit, color, tint(kit, kit.mat.darkSteel, '#46514f'));
   const under = B.top - B.topT;
   const lx = w / 2 - 0.03, zf = d / 2 - 0.03, zb = -d / 2 + B.peg + 0.004;
   for (const sx of [-1, 1]) {
@@ -956,21 +981,15 @@ function buildWorkbench(kit, { w, d, h, color }) {
   blk(kit, g, frame, -lx + B.leg, lx - B.leg, under - 0.08, under, zb + 0.005, zb + 0.025);
   blk(kit, g, frame, -lx + B.leg, lx - B.leg, 0.15, 0.17, zb + 0.01, zf - 0.01);
   blk(kit, g, frame, -lx + B.leg, lx - B.leg, 0.17, 0.2, zf - 0.02, zf - 0.01);
-  // Butcher block top in alternating strips.
-  const oak = kit.mat.oak;
-  const strip = [oak, shade(kit, oak, 0.9), shade(kit, oak, 1.06)];
-  const n = 9;
+  // Butcher block top: glued flush, so one slab whose grain runs along the bench.
   const z0 = -d / 2 + B.peg + 0.006;
-  for (let i = 0; i < n; i++) {
-    const za = z0 + ((d / 2 - z0) * i) / n, zb2 = z0 + ((d / 2 - z0) * (i + 1)) / n;
-    blk(kit, g, strip[(i * 2) % 3], -w / 2, w / 2, under, B.top, za, zb2);
-  }
+  blk(kit, g, kit.mat.oak, -w / 2, w / 2, under, B.top, z0, d / 2, true, 0.006);
   // Drawer set into the front apron.
   blk(kit, g, shade(kit, frame, 0.8), 0.04, 0.66, under - 0.15, under, -0.2, zf - 0.025);
   blk(kit, g, frame, 0.045, 0.655, under - 0.145, under - 0.005, zf - 0.025, zf - 0.006);
   blk(kit, g, kit.mat.chrome, 0.27, 0.43, under - 0.085, under - 0.07, zf - 0.006, zf + 0.008);
   // Pegboard with a top shelf, task light and tools.
-  const peg = kit.material('#d5dadb', { roughness: 0.7 });
+  const peg = painted(kit, '#d6d8d4', 0.6);
   blk(kit, g, peg, -lx + B.leg, lx - B.leg, B.top, h - 0.05, -d / 2 + 0.002, -d / 2 + B.peg);
   blk(kit, g, frame, -lx, lx, h - 0.045, h - 0.02, -d / 2, -d / 2 + 0.2);
   blk(kit, g, frame, -lx, lx, h - 0.065, h - 0.02, -d / 2 + 0.2, -d / 2 + 0.22);
@@ -983,8 +1002,9 @@ function buildWorkbench(kit, { w, d, h, color }) {
   blk(kit, g, vise, vx - 0.06, vx + 0.06, B.top + 0.05, B.top + 0.14, zf - 0.17, zf - 0.11);
   blk(kit, g, vise, vx - 0.06, vx + 0.06, B.top + 0.05, B.top + 0.14, zf - 0.08, zf - 0.02);
   blk(kit, g, kit.mat.darkSteel, vx - 0.06, vx + 0.06, B.top + 0.12, B.top + 0.14, zf - 0.11, zf - 0.08);
-  kit.cyl(g, kit.mat.chrome, 0.012, 0.05, vx, B.top + 0.08, zf + 0.0, { axis: 'z' });
-  kit.cyl(g, kit.mat.chrome, 0.007, 0.16, vx, B.top + 0.08, d / 2 - 0.012, { axis: 'x' });
+  kit.cyl(g, kit.mat.chrome, 0.012, 0.05, vx, B.top + 0.08, zf + 0.0, { axis: 'z', segments: 14 });
+  kit.cyl(g, kit.mat.chrome, 0.007, 0.16, vx, B.top + 0.08, d / 2 - 0.012, { axis: 'x', segments: 10 });
+  for (const s of [-1, 1]) kit.sphere(g, kit.mat.black, 0.012, vx + s * 0.08, B.top + 0.08, d / 2 - 0.012, { segments: 10 });
   return g;
 }
 
@@ -1050,7 +1070,7 @@ function drawWorkbench(ctx, o) {
 
 function buildBollard(kit, { w, d, h, color }) {
   const g = kit.group();
-  const paint = finish(kit, color, kit.mat.safetyYellow, 0.45);
+  const paint = finish(kit, color, kit.mat.safetyYellow);
   const r = Math.min(w, d) * 0.42;
   const plate = 0.012;
   blk(kit, g, kit.mat.darkSteel, -w / 2, w / 2, 0, plate, -d / 2, d / 2);
@@ -1058,10 +1078,11 @@ function buildBollard(kit, { w, d, h, color }) {
     for (const sz of [-1, 1]) kit.cyl(g, kit.mat.steel, 0.009, 0.012, sx * (w / 2 - 0.022), plate, sz * (d / 2 - 0.022), { segments: 8 });
   }
   const cap = r * 0.7;
-  kit.cyl(g, paint, r, h - plate - cap, 0, plate, 0, { segments: 28 });
-  kit.sphere(g, paint, r, 0, h - cap, 0, { segments: 28, scaleY: 0.7 });
+  // Concrete filled steel pipe in a powder coated sleeve with a domed cap and reflective bands.
+  const top = h - plate;
+  turned(kit, g, paint, [[r + 0.004, 0], [r, 0.008], [r, top - cap], [r * 0.97, top - cap * 0.6], [r * 0.85, top - cap * 0.28], [r * 0.55, top - cap * 0.06], [0, top]], 0, plate, 0, { segments: 36 });
   const band = kit.material('#23282b', { roughness: 0.35 });
-  for (const y of [h * 0.72, h * 0.82]) kit.cyl(g, band, r + 0.002, 0.045, 0, y, 0, { segments: 28 });
+  for (const y of [h * 0.72, h * 0.82]) kit.cyl(g, band, r + 0.002, 0.045, 0, y, 0, { segments: 36, bevel: false });
   return g;
 }
 
@@ -1082,7 +1103,7 @@ const ZONE = { tape: 0.05, corner: 0.3, plan: '#e8d77a' };
 
 function buildFloorZone(kit, { w, d, color }) {
   const g = kit.group();
-  const tape = finish(kit, color, kit.material('#e9c23a', { roughness: 0.4 }), 0.4);
+  const tape = isColor(color) ? kit.material(color, { roughness: 0.4 }) : kit.material('#dcb83d', { roughness: 0.4 });
   const mark = kit.material('#23282b', { roughness: 0.45 });
   const t = Math.min(ZONE.tape, w / 6, d / 6);
   const c = Math.min(ZONE.corner, w / 4, d / 4);

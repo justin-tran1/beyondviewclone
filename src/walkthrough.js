@@ -10,8 +10,11 @@ import {
 } from './geometry.js';
 import { createKit } from './kit3d.js';
 import { getItem, itemDims } from './catalog/registry.js';
-import { buildPlanScene, setupEnvironment } from './builder3d.js';
+import * as builder from './builder3d.js';
+import { createPostFX, QUALITIES } from './postfx.js';
 import { renderPlan, fitView, planBounds, toPlan } from './plan-render.js';
+
+const { buildPlanScene, setupEnvironment } = builder;
 
 const EYE = DEFAULTS.eyeHeight;
 const RADIUS = 0.25;
@@ -28,7 +31,11 @@ const REBUILD_DELAY = 300;
 const SLOW_BUILD = 120;
 const POSE_INTERVAL = 100;
 const SLOW_FRAME = 40;
+const SLOW_QUALITY_FRAMES = 8; // sustained slow frames before the quality steps down
 const MIN_RATIO = 0.5;
+// AgX keeps highlights from clipping and shadows from crushing. Calibrated so lit walls and floors
+// read as bright as they did with ACES at exposure 1, with the post grade adding the contrast back.
+const EXPOSURE = 1.65;
 const MAX_DT = 0.25;
 const TRANSITION = 1.1;
 const OVERVIEW_ELEVATION = 52;
@@ -361,6 +368,7 @@ function ringMesh() {
   for (const m of group.children) m.renderOrder = 3;
   group.visible = false;
   group.userData.mats = [ringMat, discMat];
+  group.userData.overlay = true; // UI, not part of the space: kept out of captures and photos
   return group;
 }
 
@@ -393,6 +401,7 @@ function walkerFigure() {
   torso.renderOrder = head.renderOrder = 11;
   group.add(wedge, base, torso, head);
   group.visible = false;
+  group.userData.overlay = true;
   return group;
 }
 
@@ -422,6 +431,13 @@ function fitDistance(cam, target, dir, box, margin = { x: 0.88, y: 0.8 }) {
   return hi;
 }
 
+/** World box AO is limited to: the plan bounds and the ceiling height, plus a margin. */
+function aoBounds(b, top) {
+  if (![b?.minX, b?.minY, b?.maxX, b?.maxY].every(Number.isFinite)) return null;
+  const m = 1;
+  return new THREE.Box3(new THREE.Vector3(b.minX - m, -m, b.minY - m), new THREE.Vector3(b.maxX + m, top + m, b.maxY + m));
+}
+
 function disposeTree(obj) {
   obj.traverse((o) => {
     o.geometry?.dispose();
@@ -438,8 +454,12 @@ function styled(tag, style) {
 // ---- Walkthrough ------------------------------------------------------------------------
 
 export class Walkthrough extends EventTarget {
-  constructor(container, store, { minimap = true } = {}) {
+  constructor(container, store, { minimap = true, quality = 'high' } = {}) {
     super();
+    if (!QUALITIES.includes(quality)) throw new Error(`Unknown walkthrough quality "${quality}"`);
+    this._chosenQuality = quality;
+    this._quality = quality;
+    this._envCapture = null;
     this.container = container;
     this.store = store;
     this._mode = 'walk';
@@ -483,7 +503,7 @@ export class Walkthrough extends EventTarget {
     this._world = collisionWorld([], []);
     this._occluders = new Grid();
     this._ringHit = false;
-    this._perf = { avg: 0, n: 0 };
+    this._perf = { avg: 0, n: 0, skip: 0 };
     this._restore = {};
 
     this._setupDom();
@@ -504,6 +524,31 @@ export class Walkthrough extends EventTarget {
   }
 
   get mode() { return this._mode; }
+
+  /** The rendering quality in use: the chosen level, or lower while frames are too slow. */
+  get quality() { return this._quality; }
+
+  /** The level last set with setQuality (or the constructor); automatic changes never go above it. */
+  get chosenQuality() { return this._chosenQuality; }
+
+  /**
+   * 'high' (ambient occlusion, bloom, color grade, SMAA), 'balanced' (cheaper AO, no bloom) or
+   * 'fast' (direct rendering). Emits 'quality' {quality, chosen, auto}.
+   */
+  setQuality(quality) {
+    if (!QUALITIES.includes(quality)) throw new Error(`Unknown walkthrough quality "${quality}"`);
+    const chosenChanged = quality !== this._chosenQuality;
+    this._chosenQuality = quality;
+    // A deliberate choice starts the automatic step-down over, from full motion resolution.
+    this._motionRatio = this._baseRatio;
+    if (quality !== this._quality || chosenChanged) this._applyQuality(quality, false);
+  }
+
+  /** What another renderer needs to draw the current view (the photo renderer, for example). */
+  get renderContext() {
+    this._syncWalkCamera();
+    return { renderer: this._renderer, scene: this._scene, camera: this._activeCamera(), built: this._built };
+  }
 
   start() {
     if (this._running) return;
@@ -547,6 +592,9 @@ export class Walkthrough extends EventTarget {
     this._world = collisionWorld(built.colliders, built.obstacles, built.bounds);
     this._occluders = itemOccluders(plan);
     this._ceilTop = Math.max(plan.settings.wallHeight, ...plan.rooms.map((r) => r.height || 0)) + 1.2;
+    this._renderer.shadowMap.needsUpdate = true;
+    this._captureEnvironment(built);
+    this._postfx.setSceneBounds(aoBounds(built.bounds, this._ceilTop));
     const far = Math.max(600, (built.root.userData.horizon || 1000) * 1.3);
     for (const cam of [this._camera, this._orbitCam, this._tweenCam]) {
       cam.far = far;
@@ -627,17 +675,19 @@ export class Walkthrough extends EventTarget {
     return true;
   }
 
-  /** PNG of the current view, rendered fresh at full resolution. */
+  /** PNG of the current view as shown, post-processing included, rendered fresh at full resolution. */
   screenshot() {
-    return new Promise((resolve, reject) => {
-      if (!this._built) {
-        reject(new Error('This plan could not be shown in 3D, so there is no 3D view to save.'));
-        return;
-      }
-      if (!this._applySize()) {
-        reject(new Error('The 3D view is not visible, so there is nothing to capture.'));
-        return;
-      }
+    const check = () => {
+      if (!this._built) throw new Error('This plan could not be shown in 3D, so there is no 3D view to save.');
+      if (this._disposed || !this._applySize()) throw new Error('The 3D view is not visible, so there is nothing to capture.');
+    };
+    try {
+      check();
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    return this._postfx.ready.then(() => new Promise((resolve, reject) => {
+      check();
       const renderer = this._renderer;
       if (renderer.getPixelRatio() !== this._baseRatio) {
         renderer.setPixelRatio(this._baseRatio);
@@ -649,7 +699,7 @@ export class Walkthrough extends EventTarget {
       this._canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not capture the 3D view.'))), 'image/png');
       this._ring.visible = ring;
       this._invalidate();
-    });
+    }));
   }
 
   resize() {
@@ -680,6 +730,12 @@ export class Walkthrough extends EventTarget {
     disposeTree(this._ring);
     disposeTree(this._figure);
     this._kit.dispose();
+    this._postfx.dispose();
+    if (this._envCapture) {
+      if (this._scene.environment === this._envCapture.texture) this._scene.environment = null;
+      this._envCapture.dispose?.();
+      this._envCapture = null;
+    }
     this._env.dispose();
     this._renderer.dispose();
     this._renderer.forceContextLoss();
@@ -722,8 +778,10 @@ export class Walkthrough extends EventTarget {
     this._motionRatio = this._baseRatio;
     renderer.setPixelRatio(this._baseRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1;
+    // AgX, applied once: by OutputPass after the grade in 'high' and 'balanced', and in 'fast' by
+    // the materials, with the grade folded in (postfx.js switches renderer.toneMapping to match).
+    renderer.toneMapping = THREE.AgXToneMapping;
+    renderer.toneMappingExposure = EXPOSURE;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.shadowMap.autoUpdate = false;
@@ -749,6 +807,10 @@ export class Walkthrough extends EventTarget {
     this._ring = ringMesh();
     this._figure = walkerFigure();
     this._scene.add(this._ring, this._figure);
+    this._postfx = createPostFX(this._renderer, this._scene, this._camera, {
+      quality: this._quality,
+      onReady: () => this._invalidate(),
+    });
     this._raycaster = new THREE.Raycaster();
     this._ndc = new THREE.Vector2();
 
@@ -865,6 +927,34 @@ export class Walkthrough extends EventTarget {
       b.replaceChildren();
     }
     b.style.opacity = on ? '1' : '0';
+  }
+
+  /**
+   * Reflections and ambient tint from the built interior, when builder3d.js offers a capture.
+   * Until one succeeds the current environment stays.
+   */
+  _captureEnvironment(built) {
+    const capture = builder.captureEnvironment;
+    if (typeof capture !== 'function') return;
+    const shown = [this._ring, this._figure].filter((o) => o.visible);
+    for (const o of shown) o.visible = false;
+    let next = null;
+    try {
+      next = capture(this._renderer, this._scene, built);
+    } catch (err) {
+      console.warn('Could not capture the interior for reflections; keeping the previous environment.', err);
+    } finally {
+      for (const o of shown) o.visible = true;
+      this._renderer.setRenderTarget(null);
+    }
+    if (!next?.texture) {
+      next?.dispose?.();
+      return;
+    }
+    const prev = this._envCapture;
+    this._envCapture = next;
+    this._scene.environment = next.texture;
+    prev?.dispose?.();
   }
 
   _disposeBuilt() {
@@ -999,17 +1089,40 @@ export class Walkthrough extends EventTarget {
     if (active || this._again) this._kick();
   }
 
-  /** Lowers the pixel ratio used while moving when frames are slow. Idle frames stay at full resolution. */
+  /**
+   * When moving stays slow, first steps the quality down one level at a time (never above the
+   * chosen level), and once at 'fast' lowers the pixel ratio used while moving. Idle frames keep
+   * the full pixel ratio.
+   */
   _governor(frameMs) {
     if (!frameMs || frameMs > 5000) return;
     const g = this._perf;
-    const ms = Math.min(frameMs, 1000);
+    // Skip the frames right after a quality change: they include compiling the new shaders.
+    if (g.skip > 0) {
+      g.skip--;
+      return;
+    }
+    const ms = Math.min(frameMs, 250);
     g.avg = g.n ? g.avg * 0.8 + ms * 0.2 : ms;
     g.n++;
-    if (g.n >= 5 && g.avg > SLOW_FRAME && this._motionRatio > MIN_RATIO) {
+    if (g.avg <= SLOW_FRAME) return;
+    const lower = QUALITIES[QUALITIES.indexOf(this._quality) + 1];
+    if (lower) {
+      if (g.n >= SLOW_QUALITY_FRAMES) this._applyQuality(lower, true);
+    } else if (g.n >= 5 && this._motionRatio > MIN_RATIO) {
       this._motionRatio = Math.max(MIN_RATIO, Math.round(this._motionRatio * 80) / 100);
       g.n = 0;
     }
+  }
+
+  _applyQuality(quality, auto) {
+    const changed = quality !== this._quality;
+    this._quality = quality;
+    this._postfx.setQuality(quality);
+    this._perf.n = 0;
+    this._perf.skip = changed ? 2 : 0;
+    this.dispatchEvent(new CustomEvent('quality', { detail: { quality, chosen: this._chosenQuality, auto } }));
+    this._invalidate();
   }
 
   _update(dt) {
@@ -1029,7 +1142,7 @@ export class Walkthrough extends EventTarget {
 
   _render() {
     this._syncWalkCamera();
-    this._renderer.render(this._scene, this._activeCamera());
+    this._postfx.render(this._activeCamera());
     this._dirty = false;
   }
 
@@ -1064,6 +1177,7 @@ export class Walkthrough extends EventTarget {
     if (s.w === w && s.h === h && s.ratio === ratio) return true;
     this._size = { w, h, ratio };
     this._renderer.setSize(w, h, false);
+    this._postfx.setSize(w, h, ratio);
     for (const cam of [this._camera, this._orbitCam, this._tweenCam]) {
       cam.aspect = w / h;
       cam.updateProjectionMatrix();

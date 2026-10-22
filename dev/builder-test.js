@@ -2,11 +2,13 @@
 // renders it from eye height or from above. Open /dev/builder-test.html?view=1 (1 to 10, overview,
 // outside or stress); add &plan=shapes|items|steps or &sample=<sample id>, &exterior=city|campus|none,
 // &quality=low, &ceiling=tile|drywall|open, or &eye=x,y,yaw,pitch[,height] for any view. &checks=1 runs
-// the builder regression checks and lists the results over the view.
+// the builder regression checks and lists the results over the view. Rendering matches the walkthrough:
+// AgX at its exposure, the interior captured for reflections, and post-processing at &fx=high|balanced|fast.
 import * as THREE from 'three';
 import { createKit } from '../src/kit3d.js';
 import { createPlan, normalizePlan, addWall, addOpening, addRoom, addItem, DEFAULTS } from '../src/model.js';
-import { buildPlanScene, setupEnvironment } from '../src/builder3d.js';
+import { buildPlanScene, setupEnvironment, captureEnvironment } from '../src/builder3d.js';
+import { createPostFX } from '../src/postfx.js';
 import { getItem, hasItem, listItems, registerItems } from '../src/catalog/registry.js';
 
 const params = new URLSearchParams(location.search);
@@ -392,16 +394,19 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDraw
 renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = Number(params.get('exposure') || 1);
+// As in src/walkthrough.js: AgX at 1.65, applied once by the post-processing chain.
+renderer.toneMapping = THREE.AgXToneMapping;
+renderer.toneMappingExposure = Number(params.get('exposure') || 1.65);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#e8eff2');
 const env = setupEnvironment(renderer, scene);
 const kit = createKit();
 const camera = new THREE.PerspectiveCamera(60, canvas.clientWidth / canvas.clientHeight, 0.05, 2000);
+const fxLevel = ['high', 'balanced', 'fast'].includes(params.get('fx')) ? params.get('fx') : 'high';
+const fx = createPostFX(renderer, scene, camera, { quality: fxLevel });
+fx.setSize(canvas.clientWidth, canvas.clientHeight, renderer.getPixelRatio());
 
 const PLANS = { shapes: shapesPlan, items: itemsPlan, steps: stepsPlan, suite: suitePlan };
 const plan = view === 'stress' ? stressPlan() : sample || (PLANS[planName] || suitePlan)();
@@ -410,6 +415,10 @@ const built = buildPlanScene(plan, { kit, quality });
 const buildMs = performance.now() - t0;
 scene.add(built.root);
 env.fit(built.bounds);
+const t1 = performance.now();
+const capture = params.get('capture') === '0' ? null : captureEnvironment(renderer, scene, built);
+const captureMs = performance.now() - t1;
+if (capture) scene.environment = capture.texture;
 Object.assign(window, { built, testPlan: plan, testQuality: quality });
 
 const b = built.bounds;
@@ -439,11 +448,21 @@ if (view === 'overview' || view === 'stress') {
 }
 camera.updateProjectionMatrix();
 
+// Draw calls and triangles of the scene alone (one pass into a small target), then the full frame.
+const probeTarget = new THREE.WebGLRenderTarget(64, 40, { type: THREE.HalfFloatType });
+renderer.setRenderTarget(probeTarget);
 renderer.render(scene, camera);
-renderer.render(scene, camera);
-const info = renderer.info.render;
+const info = { ...renderer.info.render };
+renderer.setRenderTarget(null);
+probeTarget.dispose();
+await fx.ready;
+const f0 = performance.now();
+fx.render(camera);
+renderer.getContext().finish();
+const frameMs = performance.now() - f0;
 const stats = {
-  catalog, quality, buildMs: Math.round(buildMs), calls: info.calls, triangles: info.triangles,
+  catalog, quality, fx: fxLevel, buildMs: Math.round(buildMs), captureMs: Math.round(captureMs), frameMs: Math.round(frameMs),
+  calls: info.calls, triangles: info.triangles, lights: built.lights?.length ?? 0,
   walls: plan.walls.length, items: plan.items.length, colliders: built.colliders.length, obstacles: built.obstacles.length,
 };
 if (view === 'stress') {
@@ -459,12 +478,12 @@ if (view === 'stress') {
   camera.position.set(cx + span * 0.22, span * 1.05, cz + span * 0.82);
   camera.lookAt(cx, 0, cz + span * 0.04);
   camera.updateProjectionMatrix();
-  renderer.render(scene, camera);
+  fx.render(camera);
 }
 window.testStats = stats;
-window.rerender = () => renderer.render(scene, camera);
-window.testEnv = { THREE, renderer, scene, camera, kit, env, buildPlanScene };
-document.getElementById('stats').textContent = `${stats.buildMs} ms build · ${stats.calls} draw calls · ${(stats.triangles / 1000).toFixed(0)}k triangles · ${catalog}`;
+window.rerender = () => fx.render(camera);
+window.testEnv = { THREE, renderer, scene, camera, kit, env, fx, capture, buildPlanScene, captureEnvironment };
+document.getElementById('stats').textContent = `${stats.buildMs} ms build · ${stats.captureMs} ms capture · ${stats.calls} draw calls · ${(stats.triangles / 1000).toFixed(0)}k triangles · ${stats.lights} window lights · ${catalog}`;
 console.log('builder-test', JSON.stringify(stats));
 if (params.has('checks')) showChecks(await runChecks());
 window.testReady = true;
@@ -534,7 +553,7 @@ async function runChecks() {
     const b = build(plan);
     const h = hits(b.root, [5.6, 1.6, 3], [0, 0, -1]).find((x) => x.object.parent.name !== 'shading');
     b.dispose();
-    return [h?.object.material === kit.glass, `first hit behind the door: ${h ? h.object.material.name || h.object.material.type : 'nothing'}`];
+    return [h?.object.material.userData.kitFamily === 'glass', `first hit behind the door: ${h ? h.object.material.name || h.object.material.type : 'nothing'}`];
   });
 
   check('L-shaped rooms get ceiling lights', () => {
@@ -546,7 +565,7 @@ async function runChecks() {
     const b = build(plan);
     const centers = [];
     b.ceilings[0].traverse((o) => {
-      if (!o.isMesh || o.material !== kit.mat.led) return;
+      if (!o.isMesh || !(o.material.emissiveIntensity > 2)) return;
       const a = o.geometry.attributes.position;
       for (let i = 0; i < a.count; i++) if (!centers.some((c) => Math.hypot(c.x - a.getX(i), c.y - a.getZ(i)) < 0.8)) centers.push(P(a.getX(i), a.getZ(i)));
     });
@@ -599,8 +618,8 @@ async function runChecks() {
   });
   check('Raised ceilings meet painted walls', () => {
     const h = hits(bs.root, [6, 3.15, 9], [0, 0, 1])[0];
-    const color = h?.object.material.color?.getHexString();
-    return [color === 'f3f1ec', `wall face between the 3.0 m wall top and the 3.3 m ceiling: #${color}`];
+    const m = h?.object.material;
+    return [m === kit.paintMaterial('#efece6'), `wall face between the 3.0 m wall top and the 3.3 m ceiling: ${m ? m.name || m.type : 'nothing'}`];
   });
   bs.dispose();
 
@@ -611,7 +630,7 @@ async function runChecks() {
     const b = build(plan);
     let near = { round: 0, none: 0 };
     b.root.traverse((o) => {
-      if (!o.isMesh || !o.material.alphaMap || o.material.opacity < 0.4) return;
+      if (!o.isMesh || o.material.name !== 'shade-contact') return;
       const a = o.geometry.attributes.position;
       for (let i = 0; i < a.count; i++) {
         if (Math.hypot(a.getX(i) - 2, a.getZ(i) - 2) < 1.2) near.round = Math.max(near.round, Math.hypot(a.getX(i) - 2, a.getZ(i) - 2));
@@ -636,12 +655,80 @@ async function runChecks() {
     return [/km/.test(reason) && ms < 3000, `100 km plan: "${reason}"; desk 9 km away: ${Math.round(ms)} ms`];
   });
 
+  // Lighting: the suite is a 20 x 14 m shell with windows on every side.
+  const suite = buildPlanScene(suitePlan(), { kit });
+  check('Window daylight shines into the rooms, within its budget', () => {
+    const inside = suite.lights.filter((l) => {
+      const p = new THREE.Vector3(0, 0, -1).applyQuaternion(l.quaternion).add(l.position);
+      return p.x > 0 && p.x < 20 && p.z > 0 && p.z < 14;
+    }).length;
+    const overlay = suite.root.getObjectByName('daylight').userData.overlay === true;
+    return [suite.lights.length > 0 && suite.lights.length <= 10 && inside === suite.lights.length && overlay,
+      `${inside} of ${suite.lights.length} window lights face in; flagged as a real-time overlay: ${overlay}`];
+  });
+  check('Window daylight follows the viewer', () => {
+    // The east facade's 3 m window sits at y = 3; after a render from beside it, a light covers it.
+    const s2 = new THREE.Scene();
+    const e2 = setupEnvironment(renderer, s2);
+    s2.add(suite.root);
+    const cam = new THREE.PerspectiveCamera(60, 1.6, 0.05, 2000);
+    cam.position.set(18.5, 1.6, 3);
+    cam.updateMatrixWorld();
+    s2.onBeforeRender(renderer, s2, cam, null);
+    const lit = suite.lights.some((l) => Math.abs(l.position.x - 20) < 0.3 && Math.abs(l.position.z - 3) < 0.2 && Math.abs(l.width - 2.9) < 0.15);
+    s2.remove(suite.root);
+    e2.dispose();
+    return [lit, lit ? 'the window beside the viewer has a light' : 'no light on the window beside the viewer'];
+  });
+  check('Environment capture leaves the scene as it was', () => {
+    const before = scene.environment;
+    const levels = [];
+    scene.traverse((o) => { if (o.isLight) levels.push([o, o.intensity]); });
+    const cap = captureEnvironment(renderer, scene, built);
+    const restored = levels.every(([o, v]) => o.intensity === v);
+    const ok = cap.texture?.mapping === THREE.CubeUVReflectionMapping && scene.environment === before && restored;
+    cap.dispose();
+    return [ok, `PMREM texture: ${cap.texture?.mapping === THREE.CubeUVReflectionMapping}, environment untouched: ${scene.environment === before}, light levels restored: ${restored}`];
+  });
+  check('Rounded trims face outward', () => {
+    let bad = 0, total = 0;
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3(), f = new THREE.Vector3();
+    suite.root.traverse((o) => {
+      if (!o.isMesh || o.material !== kit.material('#b9bdbf', { roughness: 0.34, metalness: 0.65 })) return;
+      const p = o.geometry.attributes.position, nr = o.geometry.attributes.normal, idx = o.geometry.index.array;
+      for (let i = 0; i < idx.length; i += 3) {
+        a.fromBufferAttribute(p, idx[i]);
+        b.fromBufferAttribute(p, idx[i + 1]);
+        c.fromBufferAttribute(p, idx[i + 2]);
+        f.subVectors(b, a).cross(c.clone().sub(a));
+        if (f.lengthSq() < 1e-14) continue;
+        n.fromBufferAttribute(nr, idx[i]).add(b.fromBufferAttribute(nr, idx[i + 1])).add(c.fromBufferAttribute(nr, idx[i + 2]));
+        total++;
+        if (f.dot(n) <= 0) bad++;
+      }
+    });
+    return [total > 0 && bad === 0, `${bad} of ${total} aluminum frame triangles wound inward`];
+  });
+  check('The sky keeps the gradient photos read', () => {
+    const sky = suite.root.getObjectByName('sky');
+    const pos = sky?.geometry.attributes.position, col = sky?.geometry.attributes.color;
+    if (!col) return [false, 'no sky dome with vertex colors'];
+    let top = 0, low = 0;
+    for (let i = 0; i < pos.count; i++) {
+      if (pos.getY(i) > pos.getY(top)) top = i;
+      if (pos.getY(i) >= 0 && pos.getY(i) < pos.getY(low)) low = i;
+    }
+    const bluer = col.getZ(top) - col.getX(top) > col.getZ(low) - col.getX(low);
+    return [bluer && col.getX(low) < 1, `zenith bluer than the horizon: ${bluer}; horizon kept in display range: ${col.getX(low) < 1}`];
+  });
+  suite.dispose();
+
   const medical = await (await import('../src/samples/index.js')).SAMPLES.find((x) => x.id === 'medical-office').build();
   check('Collinear wall shading does not double up', () => {
     const b = buildPlanScene(medical, { kit });
     let overlaps = 0;
     b.root.traverse((o) => {
-      if (!o.isMesh || !o.material.alphaMap || o.material.opacity >= 0.4) return;
+      if (!o.isMesh || !/^shade-(floor|wall|ceiling)$/.test(o.material.name)) return;
       const a = o.geometry.attributes.position, lines = new Map();
       for (let i = 0; i + 3 < a.count; i += 4) {
         const dx = a.getX(i + 1) - a.getX(i), dz = a.getZ(i + 1) - a.getZ(i), L = Math.hypot(dx, dz);

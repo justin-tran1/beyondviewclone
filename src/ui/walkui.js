@@ -1,12 +1,23 @@
-// Overlays on the 3D view: Walk and Overview toggle, controls hint and the saved viewpoints strip.
+// Overlays on the 3D view: Walk and Overview toggle, rendering quality menu, controls hint and the
+// saved viewpoints strip.
 import { normDeg } from '../geometry.js';
 import { h, iconEl } from './dom.js';
 import { setPref } from './storage.js';
+import { attachMenu } from './widgets.js';
 
 const HINTS = {
   walk: [[['Drag'], 'look around'], [['W', 'A', 'S', 'D'], 'move'], [['Click'], 'walk to a spot']],
   overview: [[['Drag'], 'orbit'], [['Right drag'], 'pan'], [['Scroll'], 'zoom'], [['Double-click'], 'walk there']],
 };
+/** Walkthrough quality levels as people see them, best first. */
+const QUALITY = [
+  { id: 'high', label: 'Realistic', description: 'Soft shadows, window glow and smooth edges' },
+  { id: 'balanced', label: 'Balanced', description: 'Lighter shading for smoother movement' },
+  { id: 'fast', label: 'Fast', description: 'Plain shading for older computers' },
+];
+const QUALITY_TIP = 'Rendering quality';
+const QUALITY_AUTO_TIP = 'Lowered automatically to keep movement smooth';
+
 export const WALK_STATUS = {
   walk: 'Drag to look around. W, A, S, D or the arrow keys move, Q and E turn, Shift walks faster. Click the floor to walk there. 1 to 9 jump to saved views.',
   overview: 'Drag to orbit, right drag to pan and scroll to zoom. Double-click the floor to walk there.',
@@ -31,6 +42,56 @@ export function createWalkUI(pane, { store, prefs, onSaveView, onModeChange }) {
   }, iconEl(m === 'walk' ? 'person' : 'overview'), h('span', { class: 'btn-label', text: m === 'walk' ? 'Walk' : 'Overview' })));
   const modeToggle = h('div', { class: 'segmented segmented-float walk-modes', attrs: { role: 'group', 'aria-label': '3D view mode' } }, modeButtons);
 
+  // Rendering quality: the label shows the level in use, which the walkthrough may lower on its own
+  // while frames are slow. Only a level picked here is remembered.
+  const qualityLabel = h('span', { class: 'btn-label', text: (QUALITY.find((q) => q.id === prefs.walkQuality) || QUALITY[0]).label });
+  const qualityBtn = h('button', { type: 'button', class: 'seg', dataset: { tip: QUALITY_TIP } },
+    iconEl('settings'), qualityLabel, iconEl('chevron-down', 'icon icon-chevron'));
+  qualityBtn.lastChild.style.cssText = 'width: 14px; height: 14px; margin-left: -3px; opacity: 0.7;';
+  const qualityControl = h('div', { class: 'segmented segmented-float walk-quality' }, qualityBtn);
+  let qualityByPointer = false;
+  const qualityMenu = attachMenu(qualityBtn, () => {
+    qualityByPointer = false;
+    queueMicrotask(markQualityMenu);
+    const lowered = walk && walk.quality !== walk.chosenQuality;
+    return [{
+      group: lowered ? QUALITY_AUTO_TIP : QUALITY_TIP,
+      items: QUALITY.map((q) => ({
+        label: q.label, description: q.description, icon: 'check',
+        onSelect: () => {
+          setPref(prefs, 'walkQuality', q.id);
+          walk?.setQuality(q.id);
+          if (qualityByPointer) focusView();
+        },
+      })),
+    }];
+  }, { align: 'start' });
+
+  /** The menu widget has no radio items: mark the level in use and show its check only. */
+  function markQualityMenu() {
+    const menu = qualityMenu.isOpen && document.getElementById(qualityBtn.getAttribute('aria-controls'));
+    if (!menu) return;
+    menu.addEventListener('pointerdown', () => { qualityByPointer = true; });
+    const items = [...menu.querySelectorAll('.menu-item')];
+    items.forEach((el, i) => {
+      const on = QUALITY[i]?.id === walk?.quality;
+      el.setAttribute('role', 'menuitemradio');
+      el.setAttribute('aria-checked', String(on));
+      const check = el.querySelector('.icon');
+      if (check) check.style.visibility = on ? 'visible' : 'hidden';
+      if (on) el.focus();
+    });
+  }
+
+  function syncQuality() {
+    if (!walk) return;
+    const level = QUALITY.find((q) => q.id === walk.quality) || QUALITY[0];
+    const lowered = walk.quality !== walk.chosenQuality;
+    qualityLabel.textContent = level.label;
+    qualityBtn.dataset.tip = lowered ? QUALITY_AUTO_TIP : QUALITY_TIP;
+    qualityBtn.setAttribute('aria-label', `${QUALITY_TIP}: ${level.label}${lowered ? ', lowered automatically' : ''}`);
+  }
+
   const hintBody = h('div', { class: 'walk-hint-body' });
   const hint = h('div', { class: 'walk-hint', hidden: !!prefs.hideWalkHint },
     hintBody,
@@ -48,7 +109,8 @@ export function createWalkUI(pane, { store, prefs, onSaveView, onModeChange }) {
   const strip = h('div', { class: 'views-strip' }, h('span', { class: 'views-label', text: 'Views' }), viewList, saveBtn);
 
   const loading = h('div', { class: 'walk-loading', hidden: true }, h('span', { class: 'spinner', attrs: { 'aria-hidden': 'true' } }), h('span', { text: 'Loading the 3D view' }));
-  const top = h('div', { class: 'walk-top' }, modeToggle, hint);
+  const controls = h('div', { style: { display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px', minWidth: '0' } }, modeToggle, qualityControl);
+  const top = h('div', { class: 'walk-top' }, controls, hint);
   pane.append(top, strip, loading);
 
   function renderHint(mode) {
@@ -128,6 +190,14 @@ export function createWalkUI(pane, { store, prefs, onSaveView, onModeChange }) {
       });
       // Poses on the way to a view are not a reason to drop its highlight.
       w.addEventListener('pose', (e) => { if (activeId && !arriving) syncActive(e.detail); });
+      if (typeof w.setQuality === 'function') {
+        const saved = QUALITY.find((q) => q.id === prefs.walkQuality);
+        if (saved && saved.id !== w.chosenQuality) w.setQuality(saved.id);
+        w.addEventListener('quality', syncQuality);
+        syncQuality();
+      } else {
+        qualityControl.hidden = true;
+      }
       syncMode(w.mode);
     },
     setLoading(on) { loading.hidden = !on; },

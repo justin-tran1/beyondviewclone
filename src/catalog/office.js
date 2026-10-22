@@ -2,6 +2,7 @@
 // media, plus building elements, greenery, printers and restroom fixtures.
 // Local frame: x = width, y = up, z = depth with the front facing +z (plan +y).
 import { registerItems } from './registry.js';
+import { tint, cushion, turned, slabTop, bent, leaves, assembly, barPull, roundSeat } from './lab.js';
 
 const OUT = 1.25;       // plan outline weight in px
 const FINE = 0.75;      // plan detail weight in px
@@ -29,7 +30,9 @@ function seq(seed) {
 
 // ---- Materials ----------------------------------------------------------------------
 
+/** Physically based finishes: textured kit presets wherever a surface is large enough to read. */
 function mats(kit) {
+  const steel = kit.mat.steel;
   return {
     oak: kit.mat.oak,
     walnut: kit.mat.walnut,
@@ -38,38 +41,43 @@ function mats(kit) {
     laminate: kit.mat.laminate,
     quartz: kit.mat.quartz,
     black: kit.mat.black,
+    plastic: kit.mat.plastic,
     rubber: kit.mat.rubber,
     chrome: kit.mat.chrome,
-    steel: kit.mat.steel,
+    steel,
     screen: kit.mat.screen,
     fabric: kit.mat.fabricCharcoal,
+    grey: kit.mat.fabricGrey,
     sage: kit.mat.fabricSage,
     celadon: kit.mat.fabricCeladon,
     wheat: kit.mat.fabricWheat,
     green: kit.mat.fabricGreen,
     accent: kit.mat.accentGreen,
-    frame: kit.material('#30373a', { roughness: 0.42, metalness: 0.35 }),
-    frameLight: kit.material('#e6e8e6', { roughness: 0.4, metalness: 0.15 }),
-    alu: kit.material('#b4bbbf', { roughness: 0.32, metalness: 0.75 }),
-    reveal: kit.material('#3a4043', { roughness: 0.9 }),
-    leather: kit.material('#2b3033', { roughness: 0.55 }),
-    sagePaint: kit.material('#538184', { roughness: 0.5 }),
-    porcelain: kit.material('#f7f7f5', { roughness: 0.15 }),
-    mirror: kit.material('#dfe6e9', { roughness: 0.04, metalness: 1 }),
+    // Graphite powder coat on steel frames, white powder coat on pedestals and files.
+    frame: tint(kit, kit.mat.darkSteel, '#3b4043'),
+    frameLight: kit.paintMaterial('#e4e5e1', { roughness: 0.38 }),
+    alu: tint(kit, steel, '#cfd2d3'),
+    reveal: kit.mat.rubber,
+    shadow: kit.material('#2a2e30', { roughness: 0.9 }),
+    leather: tint(kit, kit.mat.vinylBlue, '#2e3133'),
+    sagePaint: tint(kit, kit.mat.laminate, '#5f807d'),
+    felt: tint(kit, kit.mat.fabricSage, '#5c7f79'),
+    porcelain: kit.material('#efeeea', { roughness: 0.07 }),
+    // A mirror reflects the room at full strength (the captured environment is dimmed for diffuse use).
+    mirror: kit.material('#dfe6e9', { roughness: 0.03, metalness: 1, envMapIntensity: 1 }),
     panelLight: kit.material('#ffffff', { roughness: 0.6, emissive: '#fff4e2', emissiveIntensity: 0.9 }),
-    paper: kit.material('#f4f4f0', { roughness: 0.8 }),
+    paper: kit.material('#efeee9', { roughness: 0.85 }),
   };
 }
 
-/** The caller's color as a material, or the fallback when no color is set. */
-function finish(kit, color, fallback, roughness = 0.6) {
-  return isColor(color) ? kit.material(color, { roughness }) : fallback;
+/** The item's main finish in the caller's color, keeping the fallback's texture. */
+function finish(kit, color, fallback) {
+  return tint(kit, fallback, color);
 }
 
-/** A slightly darker variant of mat, for laminate edges and cushion piping. */
+/** A darker (f < 1) or lighter variant of a finish, for edge bands and piping. */
 function shade(kit, mat, f = 0.82) {
-  const c = mat.color.clone().multiplyScalar(f);
-  return kit.material(`#${c.getHexString()}`, { roughness: mat.roughness, metalness: mat.metalness });
+  return tint(kit, mat, null, f);
 }
 
 // ---- 3D helpers ---------------------------------------------------------------------
@@ -108,138 +116,165 @@ function sub(kit, g, x, y, z, { yaw = 0, pitch = 0, roll = 0 } = {}) {
   return f;
 }
 
-/** Cylinder between two points [x, y, z]. */
-function rod(kit, g, mat, r, a, b, { segments = 10, over = 0 } = {}) {
-  const T = kit.THREE;
-  const dir = new T.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
-  const mesh = kit.cyl(g, mat, r, dir.length() + over, 0, 0, 0, { segments });
-  mesh.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
-  mesh.quaternion.setFromUnitVectors(new T.Vector3(0, 1, 0), dir.normalize());
-  return mesh;
-}
-
-/** Slab with rounded vertical corners of radius r. */
+/** Slab with rounded vertical corners of radius r and eased edges. */
 function roundedSlab(kit, g, mat, x0, x1, y0, y1, z0, z1, r) {
-  r = Math.min(r, (x1 - x0) / 2, (z1 - z0) / 2);
-  kit.block(g, mat, x0 + r, x1 - r, y0, y1, z0, z1);
-  kit.block(g, mat, x0, x1, y0, y1, z0 + r, z1 - r);
-  for (const x of [x0 + r, x1 - r]) for (const z of [z0 + r, z1 - r]) kit.cyl(g, mat, r, y1 - y0, x, y0, z, { segments: 12 });
+  return slabTop(kit, g, mat, x0, x1, y0, y1, z0, z1, { corner: r, edge: 0.005 });
 }
 
-/** Worksurface with a darker edge band, top face at y = top. */
+/** Worksurface with eased edges, top face at y = top. */
 function worksurface(kit, g, mat, x0, x1, z0, z1, top, t = TOP_T) {
-  kit.block(g, mat, x0, x1, top - 0.004, top, z0, z1);
-  kit.block(g, shade(kit, mat, 0.86), x0 + 0.0015, x1 - 0.0015, top - t, top - 0.004, z0 + 0.0015, z1 - 0.0015);
+  kit.block(g, mat, x0, x1, top - t, top, z0, z1);
 }
 
-/** Closed sled leg at x spanning z0..z1, under a top whose underside is at y = under. */
-function sledLeg(kit, g, mat, x, z0, z1, under) {
-  const a = x - 0.02, b = x + 0.02, t = 0.03;
-  kit.block(g, mat, a, b, 0, t, z0, z1);
+/** Closed sled leg of 40 x 30 mm tube at x spanning z0..z1, on two glides, under a top at y = under. */
+function sledLeg(kit, g, m, mat, x, z0, z1, under) {
+  const a = x - 0.02, b = x + 0.02, t = 0.03, gl = 0.006;
+  kit.block(g, mat, a, b, gl, gl + t, z0, z1);
   kit.block(g, mat, a, b, under - t, under, z0, z1);
-  kit.block(g, mat, a, b, t, under - t, z0, z0 + 0.05);
-  kit.block(g, mat, a, b, t, under - t, z1 - 0.05, z1);
+  kit.block(g, mat, a, b, gl + t, under - t, z0, z0 + 0.05);
+  kit.block(g, mat, a, b, gl + t, under - t, z1 - 0.05, z1);
+  for (const z of [z0 + 0.03, z1 - 0.03]) kit.block(g, m.black, a + 0.004, b - 0.004, 0, gl, z - 0.02, z + 0.02, true, { bevel: false });
 }
 
-/** Front panel with a horizontal bar pull, on the face at z (front facing +z). */
+/** Front panel with an arched bar pull, on the face at z (front facing +z). */
 function drawerFront(kit, g, m, mat, x0, x1, y0, y1, z, pull = 0.16) {
   kit.block(g, mat, x0 + GAP, x1 - GAP, y0 + GAP, y1 - GAP, z, z + 0.018);
-  if (pull > 0) {
-    const cx = (x0 + x1) / 2, py = y1 - Math.min(0.05, (y1 - y0) / 2);
-    kit.block(g, m.alu, cx - pull / 2, cx + pull / 2, py - 0.007, py + 0.007, z + 0.018, z + 0.03);
-  }
+  if (pull > 0) barPull(kit, g, m.alu, (x0 + x1) / 2, y1 - Math.min(0.05, (y1 - y0) / 2), z + 0.018, pull);
 }
 
 /** Mobile pedestal (box, box, file) between x0..x1 and z0..z1, fronts facing +z, top at y1. */
 function pedestal(kit, g, m, x0, x1, z0, z1, y1, mat = m.frameLight) {
   const zf = z1 - 0.03;
-  kit.block(g, m.reveal, x0 + 0.03, x1 - 0.03, 0, 0.04, z0 + 0.03, zf - 0.03);
+  kit.block(g, m.shadow, x0 + 0.03, x1 - 0.03, 0.012, 0.04, z0 + 0.03, zf - 0.03);
+  for (const x of [x0 + 0.05, x1 - 0.05]) for (const z of [z0 + 0.06, zf - 0.06]) kit.cyl(g, m.rubber, 0.02, 0.016, x, 0.02, z, { axis: 'x', segments: 12 });
   kit.block(g, mat, x0, x1, 0.04, y1, z0, zf);
   const ys = [y1, y1 - 0.13, y1 - 0.26, 0.04];
   for (let i = 0; i < 3; i++) drawerFront(kit, g, m, mat, x0, x1, ys[i + 1], ys[i], zf, 0.14);
 }
 
-/** Monitor head with its screen facing local +z: housing and lit panel, bottom edge at y = 0. */
+/** Monitor head with its screen facing local +z: thin bezel, lit panel and a rear housing; bottom edge at y = 0. */
 function monitorHead(kit, f, m, mw) {
   const mh = mw * 0.58;
-  kit.block(f, m.black, -mw / 2, mw / 2, 0, mh, -0.03, -0.008);
-  kit.block(f, m.screen, -mw / 2 + 0.008, mw / 2 - 0.008, 0.018, mh - 0.008, -0.008, -0.005, false);
+  kit.block(f, m.black, -mw / 2, mw / 2, 0, mh, -0.016, -0.006);
+  kit.block(f, m.screen, -mw / 2 + 0.006, mw / 2 - 0.006, 0.02, mh - 0.006, -0.006, -0.004, false);
+  cushion(kit, f, m.black, -mw * 0.3, mw * 0.3, mh * 0.18, mh * 0.82, -0.045, -0.014, { r: 0.012, crown: 0.008, axis: 'y' });
 }
 
 /** Single monitor on a desk stand at (x, z), its base on the surface at y = top. */
 function deskMonitor(kit, g, m, x, top, z, yaw = 0, mw = 0.58) {
   const f = sub(kit, g, x, top, z, { yaw });
-  kit.block(f, m.frame, -0.11, 0.11, 0, 0.012, -0.1, 0.04);
-  kit.block(f, m.frame, -0.025, 0.025, 0.012, 0.28, -0.07, -0.045);
+  slabTop(kit, f, m.alu, -0.11, 0.11, 0, 0.01, -0.11, 0.04, { corner: 0.03, edge: 0.003 });
+  kit.block(f, m.alu, -0.025, 0.025, 0.01, 0.3, -0.07, -0.043);
   monitorHead(kit, sub(kit, f, 0, 0.1, 0), m, mw);
 }
 
 /** Two monitors on a shared arm clamped to the surface at (cx, z); screens face +z. */
 function dualMonitors(kit, g, m, cx, top, z, mw = 0.56) {
-  kit.block(g, m.frame, cx - 0.05, cx + 0.05, top, top + 0.012, z - 0.08, z + 0.02);
-  kit.cyl(g, m.frame, 0.017, 0.32, cx, top, z - 0.03, { segments: 12 });
-  kit.block(g, m.frame, cx - mw + 0.1, cx + mw - 0.1, top + 0.26, top + 0.29, z - 0.04, z - 0.02);
+  kit.block(g, m.frame, cx - 0.04, cx + 0.04, top, top + 0.012, z - 0.08, z + 0.02);
+  kit.cyl(g, m.frame, 0.017, 0.33, cx, top, z - 0.03, { segments: 14 });
+  for (const s of [-1, 1]) bent(kit, g, m.frame, [[cx, top + 0.3, z - 0.03], [cx + s * mw * 0.25, top + 0.3, z - 0.05], [cx + s * mw * 0.42, top + 0.29, z - 0.045]], 0.012, { segments: 10, radial: 8 });
   for (const s of [-1, 1]) monitorHead(kit, sub(kit, g, cx + s * (mw / 2 + 0.012), top + 0.1, z + 0.005, { yaw: -s * 0.14 }), m, mw);
 }
 
+/** Low profile keyboard (keys as a darker field) and a rounded mouse, on the surface at y = top. */
 function keyboard(kit, g, m, x, top, z, yaw = 0, mouse = true) {
   const f = sub(kit, g, x, top, z, { yaw });
-  kit.block(f, m.frameLight, -0.21, 0.21, 0, 0.014, -0.065, 0.065);
-  if (mouse) kit.block(f, m.frameLight, 0.29, 0.35, 0, 0.022, -0.04, 0.03);
+  cushion(kit, f, m.plastic, -0.21, 0.21, 0, 0.012, -0.065, 0.065, { r: 0.004 });
+  kit.block(f, m.black, -0.195, 0.195, 0.012, 0.016, -0.055, 0.05, false, { bevel: false });
+  if (mouse) cushion(kit, f, m.plastic, 0.29, 0.35, 0, 0.022, -0.045, 0.03, { r: 0.01, crown: 0.008 });
 }
 
 const CHAIR = { seat: 0.47 };
 
 /**
- * Swivel chair centered at (x, z), facing local +z turned by yaw. back is the backrest height;
- * lite drops small parts for rooms that seat many people.
+ * Swivel chair centered at (x, z), facing local +z turned by yaw: a five-star base on twin-wheel
+ * casters (or glides), a gas lift, a crowned seat and back on black shells, and T arms with soft
+ * pads. back is the backrest height; lite drops the arms for rooms that seat many people. The
+ * chair is one merged assembly per variant, so a table of twelve stays light.
  */
-function swivelChair(kit, g, m, x, z, yaw, { fabric = m.fabric, back = 0.47, casters = true, base = m.frame, lite = false } = {}) {
-  const c = sub(kit, g, x, 0, z, { yaw });
-  const legY = casters ? 0.057 : 0.004;
-  kit.cyl(c, base, 0.045, 0.055, 0, legY, 0, { segments: 14 });
-  for (let i = 0; i < 5; i++) {
-    const leg = sub(kit, c, 0, 0, 0, { yaw: (i * TAU) / 5 + Math.PI / 2 });
-    kit.block(leg, base, 0.03, 0.29, legY, legY + 0.03, -0.017, 0.017);
-    if (casters) kit.cyl(leg, m.rubber, 0.027, 0.028, 0.282, 0.028, 0, { axis: 'z', segments: 12 });
-  }
-  kit.cyl(c, m.black, 0.027, 0.37 - legY - 0.05, 0, legY + 0.05, 0, { segments: 12 });
-  if (!lite) kit.block(c, m.black, -0.11, 0.11, 0.36, 0.41, -0.13, 0.1);
-  kit.block(c, fabric, -0.25, 0.25, 0.4, CHAIR.seat, -0.24, 0.215);
-  if (!lite) kit.cyl(c, fabric, 0.035, 0.5, 0, CHAIR.seat - 0.035, 0.215, { axis: 'x', segments: 12 });
-  kit.block(c, m.black, -0.035, 0.035, 0.38, 0.62, -0.272, -0.24);
-  const b = sub(kit, c, 0, 0.55, -0.245, { pitch: -0.1 });
-  if (lite) {
-    kit.block(b, fabric, -0.235, 0.235, 0, back, -0.03, 0.012);
-  } else {
-    archPanel(kit, b, m.black, -0.235, 0.235, 0, back, -0.03, -0.01, 0.09);
-    archPanel(kit, b, fabric, -0.215, 0.215, 0.02, back - 0.02, -0.01, 0.012, 0.075);
-  }
-  for (const s of [-1, 1]) {
-    kit.block(c, m.black, s * 0.265 - 0.012, s * 0.265 + 0.012, 0.42, 0.64, -0.08, -0.045);
-    kit.block(c, m.black, s * 0.265 - 0.028, s * 0.265 + 0.028, 0.64, 0.665, -0.17, 0.09);
-  }
+function swivelChair(kit, g, m, x, z, yaw, { fabric = m.fabric, back = 0.47, casters = true, base = m.black, lite = false } = {}) {
+  const key = `swivel|${fabric.uuid}|${base.uuid}|${back}|${casters}|${lite}`;
+  const c = assembly(kit, key, (a) => {
+    const legY = casters ? 0.06 : 0.014;
+    kit.cyl(a, base, 0.052, 0.06, 0, legY - 0.006, 0, { rTop: 0.04, segments: 18 });
+    for (let i = 0; i < 5; i++) {
+      const leg = sub(kit, a, 0, 0, 0, { yaw: (i * TAU) / 5 + Math.PI / 2 });
+      const tilt = sub(kit, leg, 0, legY + 0.014, 0, { roll: -0.04 });
+      cushion(kit, tilt, base, 0.03, 0.3, -0.014, 0.016, -0.018, 0.018, { r: 0.011 });
+      if (casters) {
+        kit.block(leg, base, 0.27, 0.3, 0.05, legY + 0.002, -0.013, 0.013);
+        for (const s of [-1, 1]) kit.cyl(leg, m.rubber, 0.029, 0.014, 0.276, 0.029, s * 0.01, { axis: 'z', segments: 14 });
+      } else {
+        kit.cyl(leg, m.rubber, 0.017, 0.01, 0.285, 0, 0, { segments: 12 });
+      }
+    }
+    kit.cyl(a, m.chrome, 0.014, 0.12, 0, legY + 0.04, 0, { segments: 12 });
+    kit.cyl(a, m.black, 0.026, 0.2, 0, legY + 0.15, 0, { segments: 14 });
+    kit.block(a, m.black, -0.1, 0.1, 0.355, 0.395, -0.12, 0.09);
+    cushion(kit, a, m.black, -0.235, 0.235, 0.385, 0.41, -0.235, 0.205, { r: 0.01 });
+    cushion(kit, a, fabric, -0.25, 0.25, 0.402, CHAIR.seat + 0.012, -0.24, 0.225, { r: 0.034, crown: 0.012 });
+    kit.block(a, m.black, -0.035, 0.035, 0.37, 0.63, -0.275, -0.24);
+    const b = sub(kit, a, 0, 0.55, -0.245, { pitch: -0.1 });
+    cushion(kit, b, m.black, -0.235, 0.235, 0, back, -0.036, -0.012, { r: 0.012 });
+    cushion(kit, b, fabric, -0.222, 0.222, 0.012, back - 0.012, -0.016, 0.034, { r: 0.028, crown: 0.012, axis: 'z' });
+    if (lite) return;
+    for (const s of [-1, 1]) {
+      kit.block(a, m.black, s * 0.262 - 0.012, s * 0.262 + 0.012, 0.4, 0.645, -0.085, -0.05);
+      bent(kit, a, m.black, [[s * 0.2, 0.41, -0.068], [s * 0.255, 0.405, -0.068], [s * 0.262, 0.42, -0.068]], 0.012, { segments: 6, radial: 8 });
+      cushion(kit, a, m.black, s * 0.262 - 0.03, s * 0.262 + 0.03, 0.638, 0.668, -0.17, 0.085, { r: 0.012 });
+    }
+  });
+  c.position.set(x, 0, z);
+  c.rotation.y = yaw;
+  g.add(c);
   return c;
 }
 
-/** Upright panel in the x-y plane whose top corners are rounded with radius r. */
-function archPanel(kit, g, mat, x0, x1, y0, y1, z0, z1, r) {
-  kit.block(g, mat, x0, x1, y0, y1 - r, z0, z1);
-  kit.block(g, mat, x0 + r, x1 - r, y1 - r, y1, z0, z1);
-  for (const x of [x0 + r, x1 - r]) kit.cyl(g, mat, r, z1 - z0, x, y1 - r, (z0 + z1) / 2, { axis: 'z', segments: 14 });
+/**
+ * Bent panel `width` wide and `height` tall, `thick` through, curved on a radius about a center in
+ * front of it (+z), its middle at (0, y0, z) with the back face there. Edges eased; UVs in meters.
+ */
+function curvedPanel(kit, g, mat, width, height, thick, radius, y0, z) {
+  const T = kit.THREE, e = 0.003;
+  const a = width / 2 / radius;
+  const s = new T.Shape();
+  // Plan outline (shape y is -z): outer arc, then the inner arc back.
+  const at = (r, t) => [r * Math.sin(t), -(radius - r * Math.cos(t))];
+  const n = 16;
+  for (let i = 0; i <= n; i++) {
+    const [x, y] = at(radius - e, -a + (2 * a * i) / n);
+    if (i) s.lineTo(x, y);
+    else s.moveTo(x, y);
+  }
+  for (let i = n; i >= 0; i--) s.lineTo(...at(radius - thick + e, -a + (2 * a * i) / n));
+  s.closePath();
+  const geo = new T.ExtrudeGeometry(s, { depth: height - 2 * e, bevelEnabled: true, bevelThickness: e, bevelSize: e, bevelSegments: 2, curveSegments: 1 });
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, y0 + e, z);
+  geo.computeBoundingSphere();
+  const mesh = new T.Mesh(geo, mat);
+  mesh.castShadow = mesh.receiveShadow = true;
+  g.add(mesh);
+  return mesh;
 }
 
-/** Four-leg side chair centered at (x, z), facing local +z turned by yaw. */
+/** Four-leg side chair centered at (x, z), facing local +z turned by yaw: tapered legs, a padded seat and a curved back. */
 function sideChair(kit, g, m, x, z, yaw, { fabric = m.sage, wood = m.oak } = {}) {
-  const c = sub(kit, g, x, 0, z, { yaw });
-  for (const lx of [-0.19, 0.19]) {
-    for (const lz of [-0.18, 0.18]) kit.cyl(c, wood, 0.016, 0.4, lx, 0, lz, { rTop: 0.021, segments: 10 });
-  }
-  kit.block(c, wood, -0.22, 0.22, 0.38, 0.41, -0.2, 0.21);
-  kit.block(c, fabric, -0.225, 0.225, 0.41, 0.46, -0.2, 0.225);
-  const b = sub(kit, c, 0, 0.41, -0.2, { pitch: -0.14 });
-  for (const lx of [-0.19, 0.19]) kit.block(b, wood, lx - 0.016, lx + 0.016, 0, 0.3, -0.03, 0);
-  kit.block(b, wood, -0.225, 0.225, 0.16, 0.42, -0.045, -0.012);
+  const c = assembly(kit, `side|${fabric.uuid}|${wood.uuid}`, (a) => {
+    for (const lx of [-0.19, 0.19]) {
+      for (const lz of [-0.18, 0.18]) kit.cyl(a, wood, 0.014, 0.39, lx, 0.006, lz, { rTop: 0.02, segments: 12 });
+      for (const lz of [-0.18, 0.18]) kit.cyl(a, m.black, 0.013, 0.006, lx, 0, lz, { segments: 10 });
+    }
+    cushion(kit, a, wood, -0.215, 0.215, 0.37, 0.4, -0.2, 0.205, { r: 0.008 });
+    cushion(kit, a, fabric, -0.225, 0.225, 0.398, 0.462, -0.205, 0.225, { r: 0.026, crown: 0.01 });
+    const b = sub(kit, a, 0, 0.4, -0.2, { pitch: -0.14 });
+    for (const lx of [-0.19, 0.19]) kit.block(b, wood, lx - 0.015, lx + 0.015, 0, 0.3, -0.03, 0);
+    // The back rail is bent ply that bows around the sitter.
+    curvedPanel(kit, b, wood, 0.46, 0.26, 0.016, 0.55, 0.16, -0.036);
+  });
+  c.position.set(x, 0, z);
+  c.rotation.y = yaw;
+  g.add(c);
   return c;
 }
 
@@ -397,7 +432,7 @@ function deskUnit(kit, g, m, { x0, x1, z0, z1, top, surface, ped = false, modest
   worksurface(kit, g, surface, x0, x1, z0, z1, top);
   const under = top - TOP_T;
   const legs = [x0 + 0.06, x1 - 0.06];
-  for (const x of legs) sledLeg(kit, g, m.frame, x, z0 + 0.04, z1 - 0.04, under);
+  for (const x of legs) sledLeg(kit, g, m, m.frame, x, z0 + 0.04, z1 - 0.04, under);
   kit.block(g, m.frame, legs[0] + 0.02, legs[1] - 0.02, under - 0.06, under, z0 + 0.06, z0 + 0.1);
   if (modesty) kit.block(g, m.frame, legs[0] + 0.02, legs[1] - 0.02, under - 0.38, under - 0.06, z0 + 0.075, z0 + 0.085);
   const pd = Math.min(0.55, z1 - z0 - 0.2);
@@ -418,7 +453,7 @@ function drawDeskTop(ctx, o, x0, y0, x1, y1, ped) {
 function buildDesk(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  deskUnit(kit, g, m, { x0: -w / 2, x1: w / 2, z0: -d / 2, z1: d / 2, top: h, surface: finish(kit, color, m.oak, 0.5), ped: true });
+  deskUnit(kit, g, m, { x0: -w / 2, x1: w / 2, z0: -d / 2, z1: d / 2, top: h, surface: finish(kit, color, m.oak), ped: true });
   return g;
 }
 
@@ -428,27 +463,42 @@ function drawDesk(ctx, o) {
 
 // ---- Workstation --------------------------------------------------------------------
 
-const WS = { deskD: 0.76, top: 0.74, chairZ: 0.32, chairYaw: Math.PI - 0.18 };
+const WS = { deskD: 0.76, top: 0.74, chairZ: 0.3, chairYaw: Math.PI - 0.18 };
 
 function buildWorkstation(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
   const z0 = -d / 2, z1 = z0 + WS.deskD;
   deskUnit(kit, g, m, { x0: -w / 2, x1: w / 2, z0, z1, top: WS.top, surface: m.oak, ped: true });
-  privacyScreen(kit, g, m, finish(kit, color, m.sage, 0.95), -w / 2 + 0.01, w / 2 - 0.01, z0 + 0.004, WS.top, h);
+  privacyScreen(kit, g, m, finish(kit, color, m.sage), -w / 2 + 0.01, w / 2 - 0.01, z0 + 0.004, WS.top, h);
   dualMonitors(kit, g, m, 0, WS.top, z0 + 0.2);
   keyboard(kit, g, m, -0.03, WS.top, z0 + 0.5);
-  kit.cyl(g, m.white, 0.04, 0.095, -0.55, WS.top, z0 + 0.42, { segments: 16 });
-  kit.block(g, m.green, 0.45, 0.66, WS.top, WS.top + 0.012, z0 + 0.3, z0 + 0.58);
+  mug(kit, g, m, -0.55, WS.top, z0 + 0.42);
+  cushion(kit, g, m.felt, 0.45, 0.66, WS.top, WS.top + 0.004, z0 + 0.3, z0 + 0.58, { r: 0.002 });
+  notebook(kit, g, m, 0.555, WS.top + 0.004, z0 + 0.44, 0.12);
   swivelChair(kit, g, m, 0.04, WS.chairZ, WS.chairYaw);
   return g;
 }
 
 /** Desk-mounted fabric screen along x0..x1, back face at z, from the surface at top up to h. */
 function privacyScreen(kit, g, m, fabric, x0, x1, z, top, h) {
-  kit.block(g, fabric, x0, x1, top + 0.03, h - 0.012, z, z + 0.026);
-  kit.block(g, m.alu, x0, x1, h - 0.012, h, z - 0.002, z + 0.028);
+  cushion(kit, g, fabric, x0, x1, top + 0.03, h - 0.01, z, z + 0.026, { r: 0.01 });
+  kit.block(g, m.alu, x0, x1, h - 0.014, h, z - 0.002, z + 0.028);
   for (const x of [x0 + 0.18, x1 - 0.18]) kit.block(g, m.alu, x - 0.02, x + 0.02, top, top + 0.06, z - 0.002, z + 0.045);
+}
+
+/** Ceramic mug standing on the surface at y. */
+function mug(kit, g, m, x, y, z) {
+  turned(kit, g, m.porcelain, [[0, 0], [0.036, 0], [0.04, 0.006], [0.04, 0.095], [0.035, 0.095], [0.035, 0.012], [0, 0.012]], x, y, z, { segments: 24 });
+  bent(kit, g, m.porcelain, [[x + 0.038, y + 0.078, z], [x + 0.064, y + 0.07, z], [x + 0.066, y + 0.04, z], [x + 0.038, y + 0.026, z]], 0.006, { segments: 10, radial: 6 });
+}
+
+/** Closed notebook with a cloth cover, its page block showing at the edges. */
+function notebook(kit, g, m, x, y, z, w, yaw = 0.1) {
+  const f = sub(kit, g, x, y, z, { yaw });
+  kit.block(f, m.paper, -w / 2 + 0.004, w / 2 - 0.003, 0.002, 0.014, -w * 0.7 + 0.003, w * 0.7 - 0.003, true, { bevel: false });
+  for (const y0 of [0, 0.014]) kit.block(f, m.fabric, -w / 2, w / 2, y0, y0 + 0.002, -w * 0.7, w * 0.7, true, { bevel: false });
+  kit.block(f, m.fabric, -w / 2, -w / 2 + 0.004, 0, 0.016, -w * 0.7, w * 0.7, true, { bevel: false });
 }
 
 function drawWorkstation(ctx, o) {
@@ -498,7 +548,7 @@ function buildBenching(kit, { w, h, color }) {
     const r = sub(kit, g, 0, 0, 0, { yaw: side > 0 ? 0 : Math.PI });
     for (const [a, b] of [[-w / 2, -half], [half, w / 2]]) worksurface(kit, r, m.oak, a, b, half, BENCH.deskD + half, top);
   }
-  for (const x of [-w / 2 + 0.06, 0, w / 2 - 0.06]) sledLeg(kit, g, m.frame, x, -BENCH.deskD + 0.04, BENCH.deskD - 0.04, under);
+  for (const x of [-w / 2 + 0.06, 0, w / 2 - 0.06]) sledLeg(kit, g, m, m.frame, x, -BENCH.deskD + 0.04, BENCH.deskD - 0.04, under);
   kit.block(g, m.frame, -w / 2 + 0.08, w / 2 - 0.08, under - 0.07, under, -0.05, 0.05);
   privacyScreen(kit, g, m, finish(kit, color, m.sage, 0.95), -w / 2 + 0.02, w / 2 - 0.02, -0.013, top, h);
   for (const s of benchSeats(w)) {
@@ -561,17 +611,21 @@ function buildExecutiveDesk(kit, { w, d, h, color }) {
   return g;
 }
 
+/** Closed laptop: an aluminum shell in two halves with a thin seam. */
 function laptop(kit, g, m, x, top, z) {
   const f = sub(kit, g, x, top, z, { yaw: 0.2 });
-  kit.block(f, m.alu, -0.16, 0.16, 0, 0.018, -0.11, 0.11);
+  cushion(kit, f, m.alu, -0.16, 0.16, 0.002, 0.0095, -0.11, 0.11, { r: 0.004 });
+  cushion(kit, f, m.alu, -0.16, 0.16, 0.0105, 0.017, -0.11, 0.11, { r: 0.004 });
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) kit.cyl(f, m.rubber, 0.006, 0.002, sx * 0.13, 0, sz * 0.085, { segments: 8 });
 }
 
+/** Task lamp: a weighted disc base, a bent arm and a turned shade aimed at the desk. */
 function deskLamp(kit, g, m, x, top, z) {
-  kit.cyl(g, m.frame, 0.07, 0.015, x, top, z, { segments: 18 });
-  rod(kit, g, m.frame, 0.008, [x, top + 0.015, z], [x + 0.06, top + 0.36, z - 0.04]);
-  rod(kit, g, m.frame, 0.008, [x + 0.06, top + 0.36, z - 0.04], [x + 0.24, top + 0.38, z - 0.1]);
-  const head = kit.cyl(g, m.frame, 0.05, 0.08, x + 0.26, top + 0.33, z - 0.11, { rTop: 0.02, segments: 16 });
-  head.rotation.z = -0.2;
+  turned(kit, g, m.frame, [[0, 0], [0.068, 0], [0.072, 0.006], [0.07, 0.016], [0.02, 0.022], [0.012, 0.03], [0, 0.03]], x, top, z, { segments: 28 });
+  bent(kit, g, m.frame, [[x, top + 0.028, z], [x + 0.03, top + 0.25, z - 0.02], [x + 0.08, top + 0.38, z - 0.05], [x + 0.2, top + 0.4, z - 0.09], [x + 0.25, top + 0.37, z - 0.105]], 0.007, { segments: 20, radial: 8 });
+  const head = sub(kit, g, x + 0.262, top + 0.335, z - 0.11, { roll: -0.25 });
+  turned(kit, head, m.frame, [[0.05, 0], [0.048, 0.004], [0.022, 0.07], [0.012, 0.085], [0, 0.088]], 0, 0, 0, { segments: 24 });
+  turned(kit, head, m.panelLight, [[0, 0.004], [0.045, 0.004]], 0, 0, 0, { segments: 24 });
 }
 
 function drawExecutiveDesk(ctx, o) {
@@ -633,16 +687,19 @@ function buildConference(seats) {
     const m = mats(kit);
     const { tw, td } = spec;
     const t = 0.04, under = h - t;
-    roundedSlab(kit, g, finish(kit, color, m.oak, 0.5), -tw / 2, tw / 2, under, h, -td / 2, td / 2, 0.06);
+    roundedSlab(kit, g, finish(kit, color, m.oak), -tw / 2, tw / 2, under, h, -td / 2, td / 2, 0.06);
+    // Two T bases of rectangular tube, a spine between them and leveling glides at each foot.
     for (const s of [-1, 1]) {
       const x = s * (tw / 2 - 0.5);
-      kit.block(g, m.frame, x - 0.04, x + 0.04, 0.03, under, -td / 2 + 0.28, td / 2 - 0.28);
-      kit.block(g, m.frame, x - 0.05, x + 0.05, 0, 0.03, -td / 2 + 0.16, td / 2 - 0.16);
+      kit.block(g, m.frame, x - 0.04, x + 0.04, 0.035, under, -td / 2 + 0.28, td / 2 - 0.28);
+      kit.block(g, m.frame, x - 0.05, x + 0.05, 0.008, 0.038, -td / 2 + 0.16, td / 2 - 0.16);
       kit.block(g, m.frame, x - 0.05, x + 0.05, under - 0.03, under, -td / 2 + 0.12, td / 2 - 0.12);
+      for (const z of [-td / 2 + 0.2, td / 2 - 0.2]) kit.cyl(g, m.black, 0.022, 0.008, x, 0, z, { segments: 12 });
     }
     kit.block(g, m.frame, -tw / 2 + 0.5, tw / 2 - 0.5, under - 0.09, under, -0.06, 0.06);
-    kit.block(g, m.black, -0.17, 0.17, h - 0.002, h + 0.003, -0.06, 0.06);
-    kit.block(g, m.alu, -0.15, 0.15, h + 0.003, h + 0.005, -0.045, 0.045);
+    // Flush power and data box with a brushed lid.
+    kit.block(g, m.black, -0.17, 0.17, h - 0.002, h + 0.002, -0.06, 0.06, true, { bevel: false });
+    kit.block(g, m.alu, -0.155, 0.155, h + 0.002, h + 0.004, -0.048, 0.048, true, { bevel: false });
     for (const c of confSeats(spec)) swivelChair(kit, g, m, c.x, c.z, c.yaw, { back: 0.36, casters: false, base: m.chrome, lite: true });
     return g;
   };
@@ -678,12 +735,11 @@ function roundSeats() {
 function buildRoundTable(kit, { h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const top = finish(kit, color, m.oak, 0.5);
-  kit.cyl(g, top, ROUND.r, 0.03, 0, h - 0.03, 0, { segments: 48 });
-  kit.cyl(g, shade(kit, top), ROUND.r - 0.004, 0.012, 0, h - 0.042, 0, { segments: 48 });
-  kit.cyl(g, m.frame, 0.14, 0.02, 0, h - 0.062, 0, { segments: 24 });
-  kit.cyl(g, m.frame, 0.04, h - 0.08, 0, 0.02, 0, { segments: 16 });
-  kit.cyl(g, m.frame, 0.27, 0.02, 0, 0, 0, { rTop: 0.25, segments: 32 });
+  const top = finish(kit, color, m.oak);
+  slabTop(kit, g, top, -ROUND.r, ROUND.r, h - 0.03, h, -ROUND.r, ROUND.r, { corner: ROUND.r, edge: 0.006 });
+  kit.cyl(g, m.frame, 0.14, 0.02, 0, h - 0.05, 0, { segments: 24 });
+  // Pedestal: a turned column on a weighted, chamfered disc base.
+  turned(kit, g, m.frame, [[0.26, 0], [0.27, 0.004], [0.265, 0.016], [0.24, 0.026], [0.05, 0.034], [0.04, 0.06], [0.04, h - 0.06], [0.06, h - 0.05], [0, h - 0.05]], 0, 0, 0, { segments: 40 });
   for (const s of roundSeats()) sideChair(kit, g, m, s.x, s.z, s.yaw);
   return g;
 }
@@ -702,33 +758,43 @@ function drawRoundTable(ctx, o) {
 
 // ---- Sofa and lounge chair ----------------------------------------------------------
 
-/** Upholstered seating facing +z: `seats` cushions between two rolled arms. */
+/**
+ * Upholstered seating facing +z: a sprung deck between two padded track arms, `seats` crowned
+ * seat cushions with welted front edges, and loose back cushions leaning on the frame.
+ */
 function upholstered(kit, g, m, { w, d, h, seats, fabric, arm, armH, seatH, leg, legMat, tapered, backH = h - 0.2 }) {
   const backT = 0.17;
   const ix0 = -w / 2 + arm, ix1 = w / 2 - arm;
   const lx = w / 2 - 0.06, lz = d / 2 - 0.07;
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
-      if (tapered) kit.cyl(g, legMat, 0.015, leg, sx * lx, 0, sz * lz, { rTop: 0.024, segments: 10 });
-      else kit.block(g, legMat, sx * lx - 0.025, sx * lx + 0.025, 0, leg, sz * lz - 0.025, sz * lz + 0.025);
+      if (tapered) {
+        kit.cyl(g, legMat, 0.014, leg - 0.006, sx * lx, 0.006, sz * lz, { rTop: 0.022, segments: 12 });
+        kit.cyl(g, m.black, 0.013, 0.006, sx * lx, 0, sz * lz, { segments: 10 });
+      } else {
+        kit.block(g, legMat, sx * lx - 0.022, sx * lx + 0.022, 0.006, leg, sz * lz - 0.022, sz * lz + 0.022);
+        kit.block(g, m.black, sx * lx - 0.018, sx * lx + 0.018, 0, 0.006, sz * lz - 0.018, sz * lz + 0.018, true, { bevel: false });
+      }
     }
   }
   const deck = seatH - 0.13;
-  kit.block(g, fabric, ix0, ix1, leg, deck, -d / 2 + 0.04, d / 2 - 0.03);
+  const welt = shade(kit, fabric, 0.78);
+  cushion(kit, g, fabric, ix0 - 0.01, ix1 + 0.01, leg, deck + 0.01, -d / 2 + 0.04, d / 2 - 0.025, { r: 0.03 });
   for (const s of [-1, 1]) {
     const x0 = s < 0 ? -w / 2 : ix1, x1 = s < 0 ? ix0 : w / 2;
-    kit.block(g, fabric, x0, x1, leg, armH - arm / 2, -d / 2, d / 2);
-    kit.cyl(g, fabric, arm / 2, d, (x0 + x1) / 2, armH - arm / 2, 0, { axis: 'z', segments: 16 });
+    cushion(kit, g, fabric, x0, x1, leg, armH, -d / 2, d / 2, { r: Math.min(0.05, arm * 0.36), crown: 0.008 });
   }
-  kit.block(g, fabric, ix0, ix1, leg, backH, -d / 2, -d / 2 + backT);
-  const piping = shade(kit, fabric, 0.7);
+  cushion(kit, g, fabric, ix0 - 0.01, ix1 + 0.01, leg + 0.02, backH - 0.012, -d / 2, -d / 2 + backT, { r: 0.045, crown: 0.01 });
   const sw = (ix1 - ix0) / seats;
+  const sz0 = -d / 2 + backT + 0.12, sz1 = d / 2 - 0.012, r = 0.035;
   for (let i = 0; i < seats; i++) {
-    const a = ix0 + i * sw + 0.006, b = ix0 + (i + 1) * sw - 0.006;
-    kit.block(g, fabric, a, b, deck, seatH, -d / 2 + backT + 0.16, d / 2 - 0.012);
-    kit.block(g, piping, a + 0.004, b - 0.004, deck + 0.004, seatH - 0.004, d / 2 - 0.012, d / 2 - 0.006);
-    const bc = sub(kit, g, 0, deck, -d / 2 + backT - 0.005, { pitch: -0.12 });
-    kit.block(bc, fabric, a, b, 0, h - deck - 0.012, 0, 0.17);
+    const a = ix0 + i * sw + 0.004, b = ix0 + (i + 1) * sw - 0.004;
+    cushion(kit, g, fabric, a, b, deck, seatH, sz0, sz1, { r, crown: 0.018 });
+    // Welt cord along the cushion's top front edge.
+    const k = r * (1 - Math.SQRT1_2);
+    kit.cyl(g, welt, 0.0045, b - a - 2 * r, (a + b) / 2, seatH - k, sz1 - k, { axis: 'x', segments: 8 });
+    const bc = sub(kit, g, 0, deck, -d / 2 + backT - 0.02, { pitch: -0.14 });
+    cushion(kit, bc, fabric, a, b, 0.01, h - deck - 0.045, 0, 0.18, { r: 0.05, crown: 0.025, axis: 'z' });
   }
   return { deck, backT, ix0, ix1 };
 }
@@ -737,12 +803,13 @@ function buildSofa(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
   const S = upholstered(kit, g, m, {
-    w, d, h, seats: 3, fabric: finish(kit, color, m.green, 0.95),
+    w, d, h, seats: 3, fabric: finish(kit, color, m.green),
     arm: 0.16, armH: 0.62, seatH: 0.45, leg: 0.07, legMat: m.frame, tapered: false,
   });
+  // Throw pillows: plump, crowned on both faces, leaning into the corners.
   for (const s of [-1, 1]) {
-    const p = sub(kit, g, s * (S.ix1 - 0.24), 0.45, -d / 2 + S.backT + 0.22, { yaw: -s * 0.25, pitch: -0.3, roll: s * 0.06 });
-    kit.block(p, m.wheat, -0.2, 0.2, 0, 0.36, -0.06, 0.06);
+    const p = sub(kit, g, s * (S.ix1 - 0.21), 0.452, -d / 2 + S.backT + 0.25, { yaw: -s * 0.3, pitch: -0.3, roll: s * 0.05 });
+    cushion(kit, p, m.wheat, -0.19, 0.19, 0, 0.36, -0.035, 0.035, { r: 0.034, crown: 0.04, axis: 'z', both: true });
   }
   return g;
 }
@@ -751,7 +818,7 @@ function buildLounge(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
   upholstered(kit, g, m, {
-    w, d, h, seats: 1, fabric: finish(kit, color, m.celadon, 0.95),
+    w, d, h, seats: 1, fabric: finish(kit, color, m.celadon),
     arm: 0.13, armH: 0.6, seatH: 0.44, leg: 0.15, legMat: m.walnut, tapered: true, backH: h,
   });
   return g;
@@ -791,16 +858,25 @@ function drawLounge(ctx, o) {
 function buildCoffeeTable(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const top = finish(kit, color, m.oak, 0.5);
+  const top = finish(kit, color, m.oak);
   roundedSlab(kit, g, top, -w / 2, w / 2, h - 0.03, h, -d / 2, d / 2, 0.07);
   for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) kit.cyl(g, m.walnut, 0.016, h - 0.03, sx * (w / 2 - 0.1), 0, sz * (d / 2 - 0.09), { rTop: 0.022, segments: 10 });
+    for (const sz of [-1, 1]) kit.cyl(g, m.walnut, 0.015, h - 0.036, sx * (w / 2 - 0.1), 0.006, sz * (d / 2 - 0.09), { rTop: 0.022, segments: 12 });
   }
   kit.block(g, m.walnut, -w / 2 + 0.1, w / 2 - 0.1, 0.12, 0.14, -d / 2 + 0.09, d / 2 - 0.09);
-  kit.block(g, kit.material(BOOKS[1], { roughness: 0.7 }), -0.38, -0.12, h, h + 0.025, -0.13, 0.06);
-  kit.block(g, kit.material(BOOKS[3], { roughness: 0.7 }), -0.36, -0.15, h + 0.025, h + 0.045, -0.11, 0.04);
-  kit.cyl(g, m.white, 0.08, 0.045, 0.28, h, 0.02, { rTop: 0.1, segments: 20 });
+  // Two stacked books and a stoneware bowl.
+  book(kit, g, kit.material('#5b7c7d', { roughness: 0.7 }), m.paper, -0.38, -0.12, h, h + 0.025, -0.13, 0.06);
+  book(kit, g, kit.material('#c9c4a6', { roughness: 0.7 }), m.paper, -0.36, -0.15, h + 0.025, h + 0.045, -0.11, 0.04);
+  turned(kit, g, kit.material('#d9d6cf', { roughness: 0.35 }), [[0, 0], [0.055, 0], [0.06, 0.004], [0.1, 0.045], [0.094, 0.047], [0.055, 0.012], [0, 0.01]], 0.28, h, 0.02, { segments: 32 });
   return g;
+}
+
+/** Hardcover lying flat: cover boards around a paper block that shows on three sides. */
+function book(kit, g, cover, paper, x0, x1, y0, y1, z0, z1) {
+  const t = Math.min(0.003, (y1 - y0) / 6);
+  kit.block(g, paper, x0 + 0.002, x1 - 0.004, y0 + t, y1 - t, z0 + 0.004, z1 - 0.004, true, { bevel: false });
+  for (const y of [y0, y1 - t]) kit.block(g, cover, x0, x1, y, y + t, z0, z1, true, { bevel: false });
+  kit.block(g, cover, x1 - 0.006, x1, y0, y1, z0, z1, true, { bevel: 0.002 });
 }
 
 function drawCoffeeTable(ctx, o) {
@@ -818,17 +894,21 @@ function drawCoffeeTable(ctx, o) {
 function buildFiling(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const paint = finish(kit, color, m.frameLight, 0.45);
+  const paint = isColor(color) ? kit.paintMaterial(color, { roughness: 0.38 }) : m.frameLight;
   const zf = d / 2 - 0.032, base = 0.06, top = h - 0.025;
-  kit.block(g, m.reveal, -w / 2 + 0.03, w / 2 - 0.03, 0, base, -d / 2 + 0.02, zf - 0.04);
+  kit.block(g, m.shadow, -w / 2 + 0.03, w / 2 - 0.03, 0.008, base, -d / 2 + 0.02, zf - 0.04);
+  for (const x of [-w / 2 + 0.05, w / 2 - 0.05]) for (const z of [-d / 2 + 0.05, zf - 0.07]) kit.cyl(g, m.black, 0.016, 0.008, x, 0, z, { segments: 10 });
   kit.block(g, paint, -w / 2 + 0.004, w / 2 - 0.004, base, top, -d / 2, zf);
   kit.block(g, paint, -w / 2, w / 2, top, h, -d / 2, zf + 0.014);
   const n = 4, dh = (top - base) / n;
   for (let i = 0; i < n; i++) {
     const y0 = base + i * dh, y1 = y0 + dh;
     kit.block(g, paint, -w / 2 + 0.008, w / 2 - 0.008, y0 + GAP, y1 - GAP, zf, zf + 0.018);
-    kit.block(g, m.alu, -0.22, 0.22, y1 - 0.06, y1 - 0.045, zf + 0.018, zf + 0.03);
-    kit.block(g, m.alu, -0.05, 0.05, y1 - 0.12, y1 - 0.085, zf + 0.018, zf + 0.021);
+    // Recessed full width pull under the drawer's top edge, and a label holder.
+    kit.block(g, m.shadow, -0.22, 0.22, y1 - 0.06, y1 - 0.035, zf + 0.016, zf + 0.019, false, { bevel: false });
+    kit.block(g, m.alu, -0.23, 0.23, y1 - 0.065, y1 - 0.055, zf + 0.018, zf + 0.034);
+    kit.block(g, m.alu, -0.05, 0.05, y1 - 0.12, y1 - 0.085, zf + 0.018, zf + 0.021, true, { bevel: false });
+    kit.block(g, m.paper, -0.044, 0.044, y1 - 0.115, y1 - 0.09, zf + 0.021, zf + 0.0215, false, { bevel: false });
   }
   kit.cyl(g, m.chrome, 0.011, 0.01, w / 2 - 0.06, h - 0.07, zf + 0.018, { axis: 'z', segments: 12 });
   return g;
@@ -888,18 +968,21 @@ function fillShelf(kit, g, rnd, x0, x1, y, z0, depth, maxH) {
 function buildBookshelf(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const body = finish(kit, color, m.oak, 0.55);
+  const body = finish(kit, color, m.oak);
   const t = 0.02, zb = -d / 2 + 0.012;
   kit.block(g, body, -w / 2, -w / 2 + t, 0, h, -d / 2, d / 2);
   kit.block(g, body, w / 2 - t, w / 2, 0, h, -d / 2, d / 2);
   kit.block(g, body, -w / 2 + t, w / 2 - t, h - 0.022, h, -d / 2, d / 2);
-  kit.block(g, m.reveal, -w / 2 + t, w / 2 - t, 0, 0.07, -d / 2 + 0.02, d / 2 - 0.03);
-  kit.block(g, shade(kit, body, 0.9), -w / 2 + t, w / 2 - t, 0.07, h - 0.022, -d / 2, zb);
-  const rnd = seq(17);
-  for (const L of shelfLevels(h)) {
-    kit.block(g, body, -w / 2 + t, w / 2 - t, L.y - t, L.y, zb, d / 2);
-    fillShelf(kit, g, rnd, -w / 2 + t, w / 2 - t, L.y, zb, d / 2 - zb - 0.01, L.h - 0.02);
-  }
+  kit.block(g, body, -w / 2 + t, w / 2 - t, 0.01, 0.07, d / 2 - 0.04, d / 2 - 0.02);
+  kit.block(g, m.shadow, -w / 2 + t, w / 2 - t, 0, 0.07, -d / 2 + 0.02, d / 2 - 0.04);
+  kit.block(g, body, -w / 2 + t, w / 2 - t, 0.07, h - 0.022, -d / 2, zb);
+  // Books and objects merge into one mesh per color.
+  const books = assembly(kit, `books|${w}|${d}|${h}`, (a) => {
+    const rnd = seq(17);
+    for (const L of shelfLevels(h)) fillShelf(kit, a, rnd, -w / 2 + t, w / 2 - t, L.y, zb, d / 2 - zb - 0.01, L.h - 0.02);
+  });
+  g.add(books);
+  for (const L of shelfLevels(h)) kit.block(g, body, -w / 2 + t, w / 2 - t, L.y - t, L.y, zb, d / 2);
   return g;
 }
 
@@ -927,18 +1010,20 @@ const BOOTH = { wall: 0.06, roof: 0.11, shelfY: 1.04, stoolZ: 0.06 };
 function buildPhoneBooth(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const shell = finish(kit, color, kit.material('#e7e9e6', { roughness: 0.5 }), 0.5);
-  const felt = kit.material('#5d8a83', { roughness: 0.98 });
+  const shell = finish(kit, color, tint(kit, m.laminate, '#e4e5e1'));
+  const felt = m.felt;
   const t = BOOTH.wall, fz = d / 2 - 0.05, base = 0.06, ceil = h - BOOTH.roof;
-  kit.block(g, m.reveal, -w / 2 + 0.03, w / 2 - 0.03, 0, base, -d / 2 + 0.03, d / 2 - 0.03);
-  kit.block(g, kit.material('#454c4f', { roughness: 0.98 }), -w / 2 + t, w / 2 - t, base, base + 0.02, -d / 2 + t, fz);
+  kit.block(g, m.shadow, -w / 2 + 0.03, w / 2 - 0.03, 0, base, -d / 2 + 0.03, d / 2 - 0.03);
+  kit.block(g, m.fabric, -w / 2 + t, w / 2 - t, base, base + 0.02, -d / 2 + t, fz);
   kit.block(g, shell, -w / 2, w / 2, base, ceil, -d / 2, -d / 2 + t);
   for (const s of [-1, 1]) kit.block(g, shell, s < 0 ? -w / 2 : w / 2 - t, s < 0 ? -w / 2 + t : w / 2, base, ceil, -d / 2 + t, d / 2);
   kit.block(g, shell, -w / 2, w / 2, ceil, h, -d / 2, d / 2);
   kit.block(g, felt, -w / 2 + t, w / 2 - t, base + 0.02, ceil, -d / 2 + t, -d / 2 + t + 0.02);
   for (const s of [-1, 1]) kit.block(g, felt, s * (w / 2 - t) - (s > 0 ? 0.02 : 0), s * (w / 2 - t) + (s < 0 ? 0.02 : 0), base + 0.02, ceil, -d / 2 + t + 0.02, fz - 0.01);
   kit.block(g, felt, -w / 2 + t, w / 2 - t, ceil - 0.02, ceil, -d / 2 + t, fz);
-  kit.block(g, m.panelLight, -0.26, 0.26, ceil - 0.026, ceil - 0.02, -0.28, 0.18, false);
+  kit.block(g, m.panelLight, -0.26, 0.26, ceil - 0.026, ceil - 0.02, -0.28, 0.18, false, { bevel: false });
+  // Ventilation slots in the roof fascia.
+  kit.block(g, m.shadow, -w / 2 + 0.12, w / 2 - 0.12, h - 0.07, h - 0.05, d / 2 - 0.0005, d / 2 + 0.0005, false, { bevel: false });
   boothDoor(kit, g, m, -w / 2 + t, w / 2 - t, base, ceil, fz);
   kit.block(g, m.oak, -w / 2 + t + 0.02, w / 2 - t - 0.02, BOOTH.shelfY - 0.03, BOOTH.shelfY, -d / 2 + t + 0.02, -d / 2 + t + 0.32);
   kit.block(g, m.frame, -0.05, 0.05, BOOTH.shelfY - 0.08, BOOTH.shelfY - 0.03, -d / 2 + t + 0.02, -d / 2 + t + 0.06);
@@ -954,14 +1039,15 @@ function boothDoor(kit, g, m, x0, x1, y0, y1, z) {
   kit.block(g, m.alu, x0 + f, x1 - f, y0, y0 + f, z, z + 0.03);
   kit.block(g, m.alu, x0 + f, x1 - f, y1 - f, y1, z, z + 0.03);
   kit.block(g, kit.glass, x0 + f, x1 - f, y0 + f, y1 - f, z + 0.012, z + 0.02, false);
-  kit.block(g, m.frame, x1 - 0.1, x1 - 0.075, 0.85, 1.35, z + 0.03, z + 0.05);
+  kit.block(g, m.shadow, x0 + f, x1 - f, y0 + f - 0.004, y0 + f, z + 0.01, z + 0.022, false, { bevel: false });
+  barPull(kit, g, m.frame, x1 - 0.085, 1.1, z + 0.03, 0.5, { vertical: true, reach: 0.012, r: 0.008 });
 }
 
 function stool(kit, g, m, x, z, y0, seat) {
-  kit.cyl(g, m.frame, 0.19, 0.015, x, y0, z, { segments: 24 });
-  kit.cyl(g, m.chrome, 0.022, 0.5, x, y0 + 0.015, z, { segments: 12 });
-  kit.cyl(g, m.frame, 0.16, 0.025, x, y0 + 0.515, z, { segments: 24 });
-  kit.cyl(g, seat, 0.17, 0.05, x, y0 + 0.54, z, { segments: 24, rTop: 0.165 });
+  turned(kit, g, m.frame, [[0, 0], [0.185, 0], [0.19, 0.005], [0.185, 0.013], [0.04, 0.02], [0, 0.02]], x, y0, z, { segments: 32 });
+  kit.cyl(g, m.chrome, 0.02, 0.5, x, y0 + 0.015, z, { segments: 14 });
+  kit.cyl(g, m.frame, 0.12, 0.02, x, y0 + 0.51, z, { segments: 24 });
+  roundSeat(kit, g, seat, 0.17, 0.05, x, y0 + 0.525, z);
 }
 
 function drawPhoneBooth(ctx, o) {
@@ -1028,7 +1114,7 @@ function buildPantry(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
   const P = pantryLayout(w, d, h);
-  const doors = finish(kit, color, m.sagePaint, 0.5);
+  const doors = finish(kit, color, m.sagePaint);
   const { top, toe } = PANTRY;
   const ct = 0.03, base = top - ct, zf = P.zf, bowl = 0.2;
   kit.block(g, m.reveal, P.cx0, P.cx1, 0, toe, -d / 2, zf - 0.06);
@@ -1065,10 +1151,10 @@ function doorModule(kit, g, m, mat, a, b, y0, y1, zf, falseFront) {
     const c = (a + b) / 2;
     kit.block(g, mat, a + GAP, c - GAP, y0 + GAP, dt - GAP, zf, zf + 0.018);
     kit.block(g, mat, c + GAP, b - GAP, y0 + GAP, dt - GAP, zf, zf + 0.018);
-    for (const x of [c - 0.04, c + 0.04]) kit.block(g, m.alu, x - 0.006, x + 0.006, dt - 0.18, dt - 0.05, zf + 0.018, zf + 0.03);
+    for (const x of [c - 0.04, c + 0.04]) barPull(kit, g, m.alu, x, dt - 0.115, zf + 0.018, 0.13, { vertical: true });
   } else {
     kit.block(g, mat, a + GAP, b - GAP, y0 + GAP, dt - GAP, zf, zf + 0.018);
-    kit.block(g, m.alu, b - 0.05, b - 0.038, dt - 0.18, dt - 0.05, zf + 0.018, zf + 0.03);
+    barPull(kit, g, m.alu, b - 0.044, dt - 0.115, zf + 0.018, 0.13, { vertical: true });
   }
 }
 
@@ -1079,8 +1165,9 @@ function drawerStack(kit, g, m, mat, a, b, y0, y1, zf) {
 
 function dishwasher(kit, g, m, a, b, y0, y1, zf) {
   kit.block(g, m.steel, a + GAP, b - GAP, y0 + GAP, y1 - GAP, zf, zf + 0.02);
-  kit.block(g, m.reveal, a + GAP, b - GAP, y1 - 0.09, y1 - 0.085, zf + 0.02, zf + 0.021);
-  kit.block(g, m.chrome, a + 0.05, b - 0.05, y1 - 0.06, y1 - 0.045, zf + 0.02, zf + 0.035);
+  kit.block(g, m.black, a + GAP, b - GAP, y1 - 0.09, y1 - 0.05, zf + 0.02, zf + 0.022, true, { bevel: false });
+  kit.block(g, m.accent, b - 0.06, b - 0.052, y1 - 0.074, y1 - 0.066, zf + 0.022, zf + 0.023, false, { bevel: false });
+  barPull(kit, g, m.steel, (a + b) / 2, y1 - 0.11, zf + 0.02, b - a - 0.12, { reach: 0.022, r: 0.007 });
 }
 
 /** Slab with an optional rectangular hole {x0, x1, z0, z1}. */
@@ -1100,23 +1187,24 @@ function basin(kit, g, m, hole, y, depth) {
   kit.block(g, m.steel, x0, x1, yb, yt, z1 - t, z1);
   kit.block(g, m.steel, x0, x0 + t, yb, yt, z0 + t, z1 - t);
   kit.block(g, m.steel, x1 - t, x1, yb, yt, z0 + t, z1 - t);
-  kit.cyl(g, m.reveal, 0.03, 0.003, (x0 + x1) / 2, yb, (z0 + z1) / 2 - 0.05, { segments: 16 });
+  kit.cyl(g, m.steel, 0.03, 0.004, (x0 + x1) / 2, yb, (z0 + z1) / 2 - 0.05, { segments: 16, bevel: false });
+  kit.cyl(g, m.shadow, 0.02, 0.0045, (x0 + x1) / 2, yb, (z0 + z1) / 2 - 0.05, { segments: 16, bevel: false });
 }
 
 /** Arched pull-down faucet at (x, z) on a surface at y, its spout `reach` toward +z. */
 function faucet(kit, g, m, x, y, z, reach = 0.2) {
-  const rise = 0.3;
-  kit.cyl(g, m.chrome, 0.028, 0.03, x, y, z, { segments: 16 });
-  kit.cyl(g, m.chrome, 0.014, rise, x, y + 0.03, z, { segments: 12 });
-  let prev = [x, y + 0.03 + rise, z];
-  for (let i = 1; i <= 6; i++) {
+  const rise = 0.3, top = y + 0.03 + rise;
+  kit.cyl(g, m.chrome, 0.028, 0.03, x, y, z, { segments: 20 });
+  const arc = [[x, y + 0.02, z], [x, top - 0.06, z]];
+  for (let i = 0; i <= 6; i++) {
     const a = Math.PI * (1 - i / 6);
-    const p = [x, y + 0.03 + rise + (reach / 2) * Math.sin(a), z + reach / 2 + (reach / 2) * Math.cos(a)];
-    rod(kit, g, m.chrome, 0.013, prev, p, { over: 0.008 });
-    prev = p;
+    arc.push([x, top + (reach / 2) * Math.sin(a), z + reach / 2 + (reach / 2) * Math.cos(a)]);
   }
-  kit.cyl(g, m.chrome, 0.018, 0.07, x, y + rise - 0.04, z + reach, { segments: 12 });
-  kit.block(g, m.chrome, x + 0.04, x + 0.05, y + 0.06, y + 0.14, z - 0.01, z + 0.01);
+  arc.push([x, y + rise - 0.03, z + reach]);
+  bent(kit, g, m.chrome, arc, 0.013, { segments: 40, radial: 12 });
+  kit.cyl(g, m.chrome, 0.018, 0.07, x, y + rise - 0.04, z + reach, { segments: 14 });
+  // Side lever.
+  bent(kit, g, m.chrome, [[x + 0.012, y + 0.12, z], [x + 0.05, y + 0.13, z], [x + 0.075, y + 0.16, z + 0.01]], 0.006, { segments: 8, radial: 8 });
 }
 
 function upperRun(kit, g, m, x0, x1, y0, y1, z0, z1, n) {
@@ -1130,17 +1218,20 @@ function upperRun(kit, g, m, x0, x1, y0, y1, z0, z1, n) {
     for (const [p, q, hand] of halves) {
       kit.block(g, m.white, p + GAP, q - GAP, y0 + GAP, y1 - GAP, zf, z1);
       const px = hand > 0 ? q - 0.035 : p + 0.035;
-      kit.block(g, m.alu, px - 0.006, px + 0.006, y0 + 0.05, y0 + 0.17, z1, z1 + 0.012);
+      barPull(kit, g, m.alu, px, y0 + 0.11, z1, 0.13, { vertical: true });
     }
   }
 }
 
+/** Bean-to-cup machine: black body with a brushed front, spout, drip tray and a cup. */
 function coffeeMachine(kit, g, m, x, y, z) {
-  kit.block(g, m.black, x - 0.14, x + 0.14, y, y + 0.4, z - 0.17, z + 0.15);
-  kit.block(g, m.steel, x - 0.1, x + 0.1, y, y + 0.02, z + 0.06, z + 0.17);
-  kit.block(g, m.reveal, x - 0.08, x + 0.08, y + 0.1, y + 0.26, z + 0.15, z + 0.152, false);
-  kit.block(g, m.screen, x - 0.06, x + 0.06, y + 0.3, y + 0.36, z + 0.15, z + 0.153, false);
-  kit.cyl(g, m.white, 0.035, 0.09, x, y + 0.02, z + 0.1, { segments: 14 });
+  cushion(kit, g, m.black, x - 0.14, x + 0.14, y, y + 0.4, z - 0.17, z + 0.12, { r: 0.012 });
+  kit.block(g, m.alu, x - 0.135, x + 0.135, y + 0.27, y + 0.39, z + 0.12, z + 0.135);
+  kit.block(g, m.screen, x - 0.06, x + 0.06, y + 0.3, y + 0.36, z + 0.135, z + 0.137, false, { bevel: false });
+  kit.block(g, m.black, x - 0.05, x + 0.05, y + 0.22, y + 0.27, z + 0.06, z + 0.15);
+  kit.block(g, m.steel, x - 0.11, x + 0.11, y, y + 0.025, z + 0.04, z + 0.17);
+  kit.block(g, m.shadow, x - 0.1, x + 0.1, y + 0.025, y + 0.026, z + 0.05, z + 0.16, false, { bevel: false });
+  mug(kit, g, m, x, y + 0.026, z + 0.1);
 }
 
 function fridgeColumn(kit, g, m, x0, x1, h, d, zf) {
@@ -1148,15 +1239,15 @@ function fridgeColumn(kit, g, m, x0, x1, h, d, zf) {
   kit.block(g, m.casework, x0, x0 + t, 0, h, -d / 2, zf + 0.02);
   kit.block(g, m.casework, x1 - t, x1, 0, h, -d / 2, zf + 0.02);
   kit.block(g, m.reveal, x0 + t, x1 - t, 0, PANTRY.toe, -d / 2, zf - 0.04);
-  kit.block(g, m.reveal, x0 + t, x1 - t, PANTRY.toe, h - 0.38, -d / 2, zf - 0.005);
+  kit.block(g, m.shadow, x0 + t, x1 - t, PANTRY.toe, h - 0.38, -d / 2, zf - 0.005);
   const a = x0 + t, b = x1 - t, split = 0.78, cab = h - 0.38;
   kit.block(g, m.steel, a + GAP, b - GAP, PANTRY.toe + GAP, split - GAP, zf - 0.005, zf + 0.02);
   kit.block(g, m.steel, a + GAP, b - GAP, split + GAP, cab - GAP, zf - 0.005, zf + 0.02);
-  kit.block(g, m.chrome, a + 0.12, b - 0.12, split - 0.09, split - 0.07, zf + 0.02, zf + 0.045);
-  kit.block(g, m.chrome, a + 0.05, a + 0.07, split + 0.18, cab - 0.25, zf + 0.02, zf + 0.045);
+  barPull(kit, g, m.steel, (a + b) / 2, split - 0.08, zf + 0.02, b - a - 0.24, { reach: 0.032, r: 0.008 });
+  barPull(kit, g, m.steel, a + 0.06, (split + cab) / 2 + 0.1, zf + 0.02, Math.min(0.7, cab - split - 0.4), { vertical: true, reach: 0.032, r: 0.008 });
   kit.block(g, m.casework, a, b, cab, h, -d / 2, zf - 0.005);
   kit.block(g, m.white, a + GAP, b - GAP, cab + GAP, h - GAP, zf - 0.005, zf + 0.015);
-  kit.block(g, m.alu, (a + b) / 2 - 0.06, (a + b) / 2 + 0.06, cab + 0.05, cab + 0.062, zf + 0.015, zf + 0.027);
+  barPull(kit, g, m.alu, (a + b) / 2, cab + 0.056, zf + 0.015, 0.13);
 }
 
 function drawPantry(ctx, o) {
@@ -1198,10 +1289,13 @@ const MEDIA = { legH: 0.12, top: 0.62, screenW: 1.44, screenY: 0.77 };
 function buildMedia(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const doors = finish(kit, color, m.sagePaint, 0.5);
+  const doors = finish(kit, color, m.sagePaint);
   const zf = d / 2 - 0.035, { legH, top } = MEDIA;
   for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) kit.block(g, m.frame, sx * (w / 2 - 0.08) - 0.02, sx * (w / 2 - 0.08) + 0.02, 0, legH, sz * (d / 2 - 0.08) - 0.02, sz * (d / 2 - 0.08) + 0.02);
+    for (const sz of [-1, 1]) {
+      kit.block(g, m.frame, sx * (w / 2 - 0.08) - 0.02, sx * (w / 2 - 0.08) + 0.02, 0.006, legH, sz * (d / 2 - 0.08) - 0.02, sz * (d / 2 - 0.08) + 0.02);
+      kit.cyl(g, m.black, 0.016, 0.006, sx * (w / 2 - 0.08), 0, sz * (d / 2 - 0.08), { segments: 10 });
+    }
   }
   kit.block(g, m.oak, -w / 2, w / 2, legH, top, -d / 2 + 0.06, zf);
   kit.block(g, m.oak, -w / 2, w / 2, top - 0.02, top, -d / 2 + 0.05, d / 2 - 0.01);
@@ -1210,7 +1304,7 @@ function buildMedia(kit, { w, d, h, color }) {
     const a = -w / 2 + 0.02 + i * dw;
     kit.block(g, doors, a + GAP, a + dw - GAP, legH + 0.02, top - 0.035, zf, zf + 0.018);
     const px = i % 2 ? a + 0.035 : a + dw - 0.035;
-    kit.block(g, m.alu, px - 0.006, px + 0.006, top - 0.2, top - 0.07, zf + 0.018, zf + 0.03);
+    barPull(kit, g, m.alu, px, top - 0.135, zf + 0.018, 0.12, { vertical: true, reach: 0.012 });
   }
   const sw = Math.min(MEDIA.screenW, w - 0.2), sh = sw * 0.5625, sy = Math.min(MEDIA.screenY, h - sh - 0.01), z0 = -d / 2;
   kit.block(g, m.frame, -0.25, 0.25, sy + 0.15, sy + sh - 0.15, z0, z0 + 0.015);
@@ -1218,9 +1312,9 @@ function buildMedia(kit, { w, d, h, color }) {
   kit.block(g, m.screen, -sw / 2 + 0.008, sw / 2 - 0.008, sy + 0.012, sy + sh - 0.008, z0 + 0.05, z0 + 0.053, false);
   kit.block(g, m.black, -0.45, 0.45, top, top + 0.07, z0 + 0.09, z0 + 0.19);
   kit.block(g, m.reveal, -0.44, 0.44, top + 0.012, top + 0.058, z0 + 0.19, z0 + 0.192, false);
-  kit.block(g, kit.material(BOOKS[0], { roughness: 0.7 }), -w / 2 + 0.12, -w / 2 + 0.38, top, top + 0.03, z0 + 0.22, z0 + 0.4);
-  kit.block(g, kit.material(BOOKS[3], { roughness: 0.7 }), -w / 2 + 0.14, -w / 2 + 0.36, top + 0.03, top + 0.055, z0 + 0.24, z0 + 0.39);
-  kit.cyl(g, m.white, 0.05, 0.2, w / 2 - 0.2, top, z0 + 0.3, { rTop: 0.035, segments: 16 });
+  book(kit, g, kit.material('#2f4a44', { roughness: 0.7 }), m.paper, -w / 2 + 0.12, -w / 2 + 0.38, top, top + 0.03, z0 + 0.22, z0 + 0.4);
+  book(kit, g, kit.material('#c9c4a6', { roughness: 0.7 }), m.paper, -w / 2 + 0.14, -w / 2 + 0.36, top + 0.03, top + 0.055, z0 + 0.24, z0 + 0.39);
+  turned(kit, g, kit.material('#dedbd3', { roughness: 0.3 }), [[0, 0], [0.045, 0], [0.05, 0.01], [0.056, 0.08], [0.045, 0.15], [0.026, 0.19], [0.028, 0.2], [0.022, 0.2], [0.02, 0.185], [0, 0.185]], w / 2 - 0.2, top, z0 + 0.3, { segments: 28 });
   return g;
 }
 
@@ -1242,9 +1336,10 @@ function drawMedia(ctx, o) {
 
 function buildColumn(kit, { w, d, h, color }) {
   const g = kit.group();
-  const paint = finish(kit, color, kit.material('#eeeeea', { roughness: 0.7 }), 0.7);
-  kit.block(g, kit.material('#5d6466', { roughness: 0.8 }), -w / 2, w / 2, 0, 0.1, -d / 2, d / 2);
-  kit.block(g, paint, -w / 2 + 0.006, w / 2 - 0.006, 0.1, h, -d / 2 + 0.006, d / 2 - 0.006);
+  // Painted like the walls, on a rubber cove base.
+  const paint = kit.paintMaterial(isColor(color) ? color : '#efece6');
+  kit.block(g, kit.mat.rubber, -w / 2, w / 2, 0, 0.1, -d / 2, d / 2);
+  kit.block(g, paint, -w / 2 + 0.004, w / 2 - 0.004, 0.1, h, -d / 2 + 0.004, d / 2 - 0.004);
   return g;
 }
 
@@ -1257,27 +1352,36 @@ function drawColumn(ctx, o) {
 
 function buildPlant(kit, { w, d, h, color }) {
   const g = kit.group();
-  const pot = finish(kit, color, kit.mat.potWhite, 0.6);
+  const pot = finish(kit, color, kit.mat.potWhite);
   const R = Math.min(w, d) / 2;
-  kit.cyl(g, pot, 0.16, 0.4, 0, 0, 0, { rTop: 0.2, segments: 28 });
-  kit.cyl(g, pot, 0.215, 0.035, 0, 0.395, 0, { rTop: 0.215, segments: 28 });
-  kit.cyl(g, kit.mat.soil, 0.195, 0.01, 0, 0.415, 0, { segments: 24 });
-  const trunk = kit.material('#6b5a45', { roughness: 0.9 });
-  rod(kit, g, trunk, 0.018, [0, 0.42, 0], [0.03, 0.95, -0.02]);
-  rod(kit, g, trunk, 0.012, [0.01, 0.7, 0], [-0.12, 1.02, 0.05]);
-  rod(kit, g, trunk, 0.012, [0.02, 0.8, -0.01], [0.13, 1.1, 0.06]);
-  const leaves = LEAVES.map((c) => kit.material(c, { roughness: 0.8 }));
+  // Tapered planter with a rolled lip, soil just below it.
+  turned(kit, g, pot, [[0, 0], [0.15, 0], [0.16, 0.012], [0.2, 0.39], [0.216, 0.4], [0.214, 0.43], [0.198, 0.43], [0.196, 0.405], [0, 0.405]], 0, 0, 0, { segments: 40 });
+  turned(kit, g, kit.mat.soil, [[0, 0], [0.197, 0], [0.197, 0.008], [0, 0.012]], 0, 0.402, 0, { segments: 24 });
+  // Ficus: a trunk that forks into three leaders, leaves clustered along their upper reaches.
+  const bark = kit.material('#6e6152', { roughness: 0.9 });
+  const leaders = [
+    [[0, 0.4, 0], [0.01, 0.62, 0], [0.03, 0.85, -0.02], [0.02, 1.15, -0.03], [0.04, h - 0.12, -0.02]],
+    [[0.01, 0.62, 0], [-0.06, 0.82, 0.03], [-0.12, 1.02, 0.06], [-0.15, 1.18, 0.07]],
+    [[0.02, 0.74, -0.01], [0.08, 0.92, 0.02], [0.13, 1.08, 0.06], [0.15, 1.22, 0.05]],
+  ];
+  leaders.forEach((pts, i) => bent(kit, g, bark, pts, i ? 0.009 : 0.016, { segments: 16, radial: 7 }));
   const rnd = seq(23);
+  const tones = LEAVES.slice(0, 3).map((c) => kit.material(c, { roughness: 0.55 }));
+  const T = kit.THREE, curves = leaders.map((pts) => new T.CatmullRomCurve3(pts.map((p) => new T.Vector3(...p))));
   const y0 = 0.62, yc = (y0 + h) / 2, hh = (h - y0) / 2;
-  for (let i = 0; i < 24; i++) {
-    const r = 0.09 + rnd() * 0.05;
-    const y = y0 + r * 0.6 + (i / 23) * (h - y0 - r * 1.4);
-    const k = Math.sqrt(Math.max(0, 1 - ((y - yc) / hh) ** 2));
-    const lim = R - r - 0.005;
-    const spread = Math.min(lim, (R - 0.06) * (0.35 + 0.65 * k) * (0.75 + rnd() * 0.25));
-    const a = i * 2.39996 + rnd() * 0.4;
-    kit.sphere(g, leaves[i % leaves.length], r, clamp(spread * Math.cos(a), -lim, lim), y, clamp(spread * Math.sin(a), -lim, lim), { segments: 12, scaleY: 0.8 });
-  }
+  const leafAt = () => {
+    // A point in the canopy (an ellipsoid inside the footprint), a leaf pointing out and down.
+    for (let tries = 0; tries < 6; tries++) {
+      const t = 0.35 + rnd() * 0.65, c = curves[(rnd() * 3) | 0].getPoint(t);
+      const a = rnd() * TAU, out = 0.04 + rnd() * 0.2;
+      const x = c.x + Math.cos(a) * out, z = c.z + Math.sin(a) * out, y = c.y + (rnd() - 0.4) * 0.16;
+      const k = Math.sqrt(Math.max(0, 1 - ((y - yc) / hh) ** 2));
+      if (Math.hypot(x, z) > (R - 0.17) * (0.3 + 0.7 * k) || y > h - 0.15) continue;
+      return { x, y, z, yaw: Math.atan2(x - c.x, z - c.z) + (rnd() - 0.5) * 0.6, pitch: 0.25 + rnd() * 0.7, roll: (rnd() - 0.5) * 0.8, size: 0.1 + rnd() * 0.07 };
+    }
+    return null;
+  };
+  for (const mat of tones) leaves(kit, g, mat, 55, leafAt);
   return g;
 }
 
@@ -1309,26 +1413,43 @@ function planterBushes(w, d, L) {
 function buildPlanter(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const box = finish(kit, color, kit.material('#3e4548', { roughness: 0.55, metalness: 0.2 }), 0.55);
+  const box = finish(kit, color, m.frame);
   const L = planterLayout(w, d);
   const bh = Math.min(0.6, h * 0.66);
-  kit.block(g, m.reveal, -w / 2 + 0.03, w / 2 - 0.03, 0, 0.04, -d / 2 + 0.03, d / 2 - 0.03);
+  kit.block(g, m.shadow, -w / 2 + 0.03, w / 2 - 0.03, 0, 0.04, -d / 2 + 0.03, d / 2 - 0.03);
   kit.block(g, box, -w / 2, w / 2, 0.04, bh - 0.02, -d / 2, d / 2);
   kit.block(g, box, -w / 2, w / 2, bh - 0.02, bh, -d / 2, -d / 2 + L.rim);
   kit.block(g, box, -w / 2, w / 2, bh - 0.02, bh, d / 2 - L.rim, d / 2);
   kit.block(g, box, -w / 2, -w / 2 + L.rim, bh - 0.02, bh, -d / 2 + L.rim, d / 2 - L.rim);
   kit.block(g, box, w / 2 - L.rim, w / 2, bh - 0.02, bh, -d / 2 + L.rim, d / 2 - L.rim);
   kit.block(g, kit.mat.soil, -w / 2 + L.rim, w / 2 - L.rim, bh - 0.035, bh - 0.025, -d / 2 + L.rim, d / 2 - L.rim);
-  const leaves = LEAVES.map((c) => kit.material(c, { roughness: 0.8 }));
+  // Boxwood-like shrubs: a dense dark core under a shell of small leaves in three greens.
+  const core = kit.material('#2f4a30', { roughness: 0.9 });
+  const tones = LEAVES.map((c) => kit.material(c, { roughness: 0.6 }));
   const rnd = seq(31);
   const lim = d / 2 - L.rim;
-  for (const bush of planterBushes(w, d, L)) {
+  const bushes = planterBushes(w, d, L).map((bush) => {
     const r = Math.min(bush.r * (0.85 + rnd() * 0.3), lim);
-    const z = clamp(bush.z, -lim + r, lim - r);
-    const x = clamp(bush.x, -w / 2 + L.rim + r, w / 2 - L.rim - r);
-    const y = Math.min(bh - 0.02 + r * (0.45 + rnd() * 0.35), h - r * 0.75);
-    kit.sphere(g, pick(rnd, leaves), r, x, y, z, { segments: 12, scaleY: 0.75 });
-  }
+    return {
+      r, z: clamp(bush.z, -lim + r, lim - r), x: clamp(bush.x, -w / 2 + L.rim + r, w / 2 - L.rim - r),
+      y: Math.min(bh - 0.02 + r * (0.45 + rnd() * 0.35), h - r * 0.75),
+    };
+  });
+  const shrubs = assembly(kit, `planter|${w}|${d}|${h}`, (a) => {
+    for (const b of bushes) kit.sphere(a, core, b.r * 0.9, b.x, b.y, b.z, { segments: 12, scaleY: 0.72 });
+    const per = Math.round(70 / Math.max(1, bushes.length / 8));
+    for (const mat of tones) {
+      leaves(kit, a, mat, (bushes.length * per) / tones.length, (i) => {
+        const b = bushes[i % bushes.length];
+        const u = rnd() * 2 - 1, t = rnd() * TAU, k = Math.sqrt(1 - u * u);
+        const nx = k * Math.cos(t), ny = Math.abs(u) * 0.9 + 0.1, nz = k * Math.sin(t);
+        const y = b.y + ny * b.r * 0.72;
+        if (y < bh - 0.01) return null;
+        return { x: clamp(b.x + nx * b.r * 0.85, -w / 2 + 0.07, w / 2 - 0.07), y, z: clamp(b.z + nz * b.r * 0.85, -d / 2 + 0.07, d / 2 - 0.07), yaw: Math.atan2(nx, nz), pitch: -0.4 + rnd() * 0.9 - ny * 0.6, roll: rnd() - 0.5, size: 0.035 + rnd() * 0.025 };
+      });
+    }
+  });
+  g.add(shrubs);
   return g;
 }
 
@@ -1354,9 +1475,11 @@ function rugLayout(w, d) {
 
 function buildRug(kit, { w, d, h, color }) {
   const g = kit.group();
-  const field = finish(kit, color, kit.material('#bcc7c0', { roughness: 1 }), 1);
-  const border = kit.material('#538184', { roughness: 1 });
-  const stripe = kit.material('#dbd99a', { roughness: 1 });
+  const m = mats(kit);
+  // Flatweave wool: the field takes the caller's color, the border and inlay stay fixed.
+  const field = finish(kit, color, tint(kit, m.grey, '#a3aaa1'));
+  const border = tint(kit, m.sage, '#5a7774');
+  const stripe = tint(kit, m.wheat, '#cdc79e');
   const R = rugLayout(w, d);
   const t = Math.max(0.004, h), b = R.band;
   kit.block(g, field, -w / 2 + b, w / 2 - b, 0, t * 0.9, -d / 2 + b, d / 2 - b, false);
@@ -1385,8 +1508,8 @@ function drawRug(ctx, o) {
 function buildPrinter(kit, { w, d, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const body = finish(kit, color, kit.material('#eef0ef', { roughness: 0.45 }), 0.45);
-  const trim = kit.material('#cdd2d3', { roughness: 0.5 });
+  const body = finish(kit, color, tint(kit, m.plastic, '#e8e9e6'));
+  const trim = tint(kit, m.plastic, '#b9bebf');
   const x0 = -w / 2 + 0.01, x1 = w / 2 - 0.01, z0 = -d / 2 + 0.02, zf = d / 2 - 0.06;
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) kit.cyl(g, m.rubber, 0.022, 0.022, sx * (w / 2 - 0.06), 0.022, sz * (d / 2 - 0.08), { axis: 'z', segments: 10 });
   kit.block(g, m.reveal, x0 + 0.02, x1 - 0.02, 0.03, 0.06, z0 + 0.02, zf - 0.02);
@@ -1430,20 +1553,20 @@ function drawPrinter(ctx, o) {
 
 // ---- Waste and recycling ------------------------------------------------------------
 
-const BINS = [{ lid: '#2f6f9f', hole: 'round' }, { lid: '#3e7d55', hole: 'slot' }];
+const BINS = [{ lid: '#3a6a8c', hole: 'round' }, { lid: '#47705a', hole: 'slot' }];
 
 function buildBins(kit, { w, d, h }) {
   const g = kit.group();
   const m = mats(kit);
-  const body = kit.material('#d9dddd', { roughness: 0.35, metalness: 0.5 });
+  const body = m.steel;
   const bw = (w - 0.02) / 2;
   BINS.forEach((b, i) => {
     const x0 = -w / 2 + i * (bw + 0.02), x1 = x0 + bw, cx = (x0 + x1) / 2;
-    const lid = kit.material(b.lid, { roughness: 0.5 });
-    kit.block(g, m.reveal, x0 + 0.02, x1 - 0.02, 0, 0.02, -d / 2 + 0.02, d / 2 - 0.02);
-    kit.block(g, body, x0 + 0.008, x1 - 0.008, 0.02, h - 0.05, -d / 2 + 0.008, d / 2 - 0.008);
-    kit.block(g, lid, x0, x1, h - 0.05, h - 0.012, -d / 2, d / 2);
-    kit.block(g, lid, x0 + 0.02, x1 - 0.02, h - 0.012, h, -d / 2 + 0.02, d / 2 - 0.02);
+    const lid = tint(kit, m.plastic, b.lid);
+    kit.block(g, m.shadow, x0 + 0.02, x1 - 0.02, 0, 0.02, -d / 2 + 0.02, d / 2 - 0.02);
+    cushion(kit, g, body, x0 + 0.008, x1 - 0.008, 0.02, h - 0.045, -d / 2 + 0.008, d / 2 - 0.008, { r: 0.02 });
+    cushion(kit, g, lid, x0, x1, h - 0.05, h - 0.012, -d / 2, d / 2, { r: 0.016 });
+    cushion(kit, g, lid, x0 + 0.02, x1 - 0.02, h - 0.016, h, -d / 2 + 0.02, d / 2 - 0.02, { r: 0.01, crown: 0.003 });
     if (b.hole === 'round') kit.cyl(g, m.black, 0.075, 0.004, cx, h - 0.002, 0, { segments: 24 });
     else kit.block(g, m.black, cx - 0.12, cx + 0.12, h - 0.002, h + 0.002, -0.025, 0.025);
     kit.block(g, lid, x0 + 0.06, x1 - 0.06, h - 0.32, h - 0.2, d / 2 - 0.008, d / 2 - 0.004, false);
@@ -1473,14 +1596,16 @@ function buildToilet(kit, { d, h }) {
   const m = mats(kit);
   const p = m.porcelain;
   const tz0 = -d / 2 + WC.tankZ0, tz1 = tz0 + WC.tankD;
-  kit.block(g, p, -0.21, 0.21, 0.42, h - 0.03, tz0, tz1);
-  kit.block(g, p, -0.225, 0.225, h - 0.03, h, tz0 - 0.01, tz1 + 0.012);
-  kit.block(g, m.chrome, -0.2, -0.15, h - 0.12, h - 0.1, tz1, tz1 + 0.02);
-  kit.block(g, p, -0.11, 0.11, 0.2, 0.43, tz1 - 0.04, tz1 + 0.08);
+  // Vitreous china: a softly radiused tank and lid, and a turned bowl drawn out to an oval.
+  cushion(kit, g, p, -0.21, 0.21, 0.42, h - 0.03, tz0, tz1, { r: 0.025 });
+  cushion(kit, g, p, -0.225, 0.225, h - 0.032, h, tz0 - 0.01, tz1 + 0.012, { r: 0.012, crown: 0.004 });
+  barPull(kit, g, m.chrome, -0.175, h - 0.11, tz1, 0.05, { reach: 0.018, r: 0.005 });
+  cushion(kit, g, p, -0.11, 0.11, 0.2, 0.43, tz1 - 0.04, tz1 + 0.08, { r: 0.03 });
   const e = WC.rz / WC.rx;
-  kit.cyl(g, p, 0.12, 0.3, 0, 0, WC.bowlZ - 0.02, { rTop: 0.15, segments: 28 }).scale.z = e;
-  kit.cyl(g, p, 0.155, 0.1, 0, 0.3, WC.bowlZ, { rTop: WC.rx, segments: 32 }).scale.z = e;
-  kit.cyl(g, kit.material('#c3d3d7', { roughness: 0.1 }), 0.12, 0.004, 0, 0.36, WC.bowlZ + 0.01, { segments: 28 }).scale.z = e * 0.95;
+  const bowl = turned(kit, g, p, [[0.115, 0], [0.12, 0.01], [0.13, 0.18], [0.152, 0.3], [0.18, 0.37], [WC.rx, 0.395], [WC.rx - 0.004, 0.402], [0.15, 0.4], [0.12, 0.36], [0.07, 0.3], [0, 0.29]], 0, 0, WC.bowlZ, { segments: 40 });
+  bowl.scale.z = e;
+  const water = turned(kit, g, kit.material('#aebfc2', { roughness: 0.03 }), [[0, 0], [0.105, 0]], 0, 0.335, WC.bowlZ + 0.01, { segments: 28 });
+  water.scale.z = e * 0.95;
   const seat = kit.torus(g, m.white, 0.155, 0.03, 0, 0.415, WC.bowlZ);
   seat.scale.set(1, e * 0.98, 0.45);
   kit.block(g, m.chrome, -0.09, 0.09, 0.4, 0.43, tz1 + 0.02, tz1 + 0.05);
@@ -1509,28 +1634,28 @@ function buildVanity(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
   const V = vanityLayout(w, d);
-  const apron = finish(kit, color, m.oak, 0.55);
+  const apron = finish(kit, color, m.oak);
   const t = 0.04;
   kit.block(g, m.quartz, -w / 2, w / 2, h - t, h, -d / 2, d / 2);
   kit.block(g, apron, -w / 2, w / 2, h - 0.22, h - t, d / 2 - 0.03, d / 2 - 0.005);
   kit.block(g, apron, -w / 2, -w / 2 + 0.03, h - 0.22, h - t, -d / 2, d / 2 - 0.03);
   kit.block(g, apron, w / 2 - 0.03, w / 2, h - 0.22, h - t, -d / 2, d / 2 - 0.03);
   kit.block(g, m.quartz, -w / 2, w / 2, h, h + 0.1, -d / 2, -d / 2 + 0.015);
-  const inner = kit.material('#e3e6e5', { roughness: 0.2 });
   for (let i = 0; i < V.n; i++) {
-    const x = -w / 2 + V.pitch * (i + 0.5);
-    kit.cyl(g, m.porcelain, V.r * 0.7, 0.12, x, h, V.bowlZ, { rTop: V.r, segments: 28 });
-    kit.cyl(g, inner, V.r * 0.88, 0.004, x, h + 0.1, V.bowlZ, { segments: 28 });
+    const x = -w / 2 + V.pitch * (i + 0.5), R = V.r;
+    // Vessel basin: a thin turned porcelain wall with a drain.
+    turned(kit, g, m.porcelain, [[0, 0], [R * 0.55, 0], [R * 0.62, 0.006], [R * 0.9, 0.07], [R, 0.115], [R - 0.004, 0.122], [R - 0.012, 0.118], [R * 0.86, 0.075], [R * 0.5, 0.025], [0, 0.02]], x, h, V.bowlZ, { segments: 40 });
+    kit.cyl(g, m.chrome, 0.018, 0.003, x, h + 0.02, V.bowlZ, { segments: 16, bevel: false });
     const fz = -d / 2 + 0.06;
-    kit.cyl(g, m.chrome, 0.02, 0.025, x, h, fz, { segments: 14 });
-    kit.cyl(g, m.chrome, 0.012, 0.25, x, h + 0.025, fz, { segments: 12 });
-    kit.block(g, m.chrome, x - 0.012, x + 0.012, h + 0.25, h + 0.27, fz, V.bowlZ - V.r * 0.35);
-    if (V.pitch > 0.5) kit.cyl(g, m.chrome, 0.018, 0.12, x + V.r + 0.07, h, fz + 0.01, { segments: 12, rTop: 0.014 });
+    kit.cyl(g, m.chrome, 0.02, 0.025, x, h, fz, { segments: 16 });
+    bent(kit, g, m.chrome, [[x, h + 0.02, fz], [x, h + 0.2, fz], [x, h + 0.255, fz + 0.03], [x, h + 0.255, V.bowlZ - R * 0.4]], 0.012, { segments: 20, radial: 12 });
+    if (V.pitch > 0.5) kit.cyl(g, m.chrome, 0.018, 0.12, x + R + 0.07, h, fz + 0.01, { segments: 14, rTop: 0.014 });
   }
   const legs = repeats(Math.ceil(w / 1.5) + 1, 2);
   for (let i = 0; i < legs; i++) {
     const x = -w / 2 + 0.07 + (i * (w - 0.14)) / (legs - 1);
-    kit.cyl(g, m.steel, 0.019, h - 0.22, x, 0, d / 2 - 0.07, { segments: 14 });
+    kit.cyl(g, m.steel, 0.019, h - 0.22, x, 0.006, d / 2 - 0.07, { segments: 16 });
+    kit.cyl(g, m.black, 0.02, 0.006, x, 0, d / 2 - 0.07, { segments: 12 });
   }
   const my0 = h + 0.25, my1 = h + 1.05;
   kit.block(g, m.frame, -w / 2 + 0.03, w / 2 - 0.03, my0, my1, -d / 2, -d / 2 + 0.012);

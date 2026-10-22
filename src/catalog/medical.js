@@ -1,6 +1,7 @@
 // Medical office catalog: exam rooms, reception and waiting, patient care and imaging.
 // Local frame: x = width, y = up, z = depth with the front facing +z (plan +y).
 import { registerItems } from './registry.js';
+import { tint, cushion, turned, bent, assembly, barPull, roundSeat } from './lab.js';
 
 const TOP = 0.9;        // casework counter height
 const DESK = 0.74;      // work surface height
@@ -12,7 +13,7 @@ const FINE = 0.75;      // plan detail weight in px
 const DASH = [4, 3];    // hidden or overhead elements, in px
 const MAX_REPEAT = 200; // most modules or seats a run repeats, so absurd sizes stay fast
 
-const VINYL = '#538184';            // clinical upholstery (sage)
+const VINYL = '#557b7a';            // clinical upholstery (sage)
 const GLOVES = ['#80bbad', '#538184', '#032842'];
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -22,7 +23,9 @@ const span = (a, b) => (a < b ? [a, b] : [b, a]);
 
 // ---- Materials ----------------------------------------------------------------------
 
+/** Clinical finishes: laminate casework, quartz tops, brushed stainless, molded plastics, vinyl. */
 function palette(kit) {
+  const plastic = kit.mat.plastic;
   return {
     white: kit.mat.white,
     case: kit.mat.casework,
@@ -37,23 +40,28 @@ function palette(kit) {
     led: kit.mat.led,
     oak: kit.mat.oak,
     status: kit.mat.accentGreen,
-    reveal: kit.material('#8d969a', { roughness: 0.85 }),
-    plinth: kit.material('#3b4246', { roughness: 0.85 }),
-    trim: kit.material('#dfe3e3', { roughness: 0.45 }),
-    shell: kit.material('#eef0ef', { roughness: 0.38 }),
-    slot: kit.material('#2a2f33', { roughness: 0.9 }),
-    alu: kit.material('#a9b1b5', { roughness: 0.35, metalness: 0.6 }),
-    sharps: kit.material('#b8322d', { roughness: 0.5 }),
+    reveal: kit.material('#3d4245', { roughness: 0.9 }),
+    plinth: kit.mat.rubber,
+    trim: tint(kit, plastic, '#dadedd'),
+    shell: tint(kit, plastic, '#eaecea'),
+    slot: kit.material('#25292c', { roughness: 0.9 }),
+    alu: tint(kit, kit.mat.steel, '#cfd2d3'),
+    sharps: tint(kit, plastic, '#a63a31'),
+    paper: kit.material('#efeee9', { roughness: 0.85 }),
+    linen: tint(kit, kit.mat.fabricGrey, '#e7e6e1'),
   };
 }
 
-/** The item's main finish: the user's color when given, otherwise the default material. */
-function finish(kit, color, fallback, roughness = 0.6) {
-  const c = custom(color);
-  return c ? kit.material(c, { roughness }) : fallback;
+/** The item's main finish in the caller's color, keeping the fallback's texture. */
+function finish(kit, color, fallback) {
+  return tint(kit, fallback, custom(color));
 }
 
-const vinyl = (kit, color) => finish(kit, color, kit.material(VINYL, { roughness: 0.5 }), 0.5);
+/** Wipeable vinyl upholstery, sage unless the caller picks a color. */
+const vinyl = (kit, color) => tint(kit, kit.mat.vinylBlue, custom(color) || VINYL);
+
+/** A darker variant of a finish, for seams and welts. */
+const shadeOf = (kit, mat, f = 0.72) => tint(kit, mat, null, f);
 
 // ---- 3D helpers ---------------------------------------------------------------------
 
@@ -90,18 +98,13 @@ function rod(kit, g, mat, r, a, b, { segments = 10, over = 0 } = {}) {
   return mesh;
 }
 
-/** Upholstered pad: a body plus an inset crown on its top (face 'y') or front (face 'z'). */
+/** Upholstered pad with rounded edges and a crown on its top (face 'y') or front (face 'z'). */
 function pad(kit, g, mat, x0, x1, y0, y1, z0, z1, face = 'y') {
-  const i = 0.012;
-  if (face === 'y') {
-    const c = Math.min(0.014, (y1 - y0) * 0.3);
-    kit.block(g, mat, x0, x1, y0, y1 - c, z0, z1);
-    kit.block(g, mat, x0 + i, x1 - i, y1 - c, y1, z0 + i, z1 - i);
-  } else {
-    const c = Math.min(0.014, (z1 - z0) * 0.3);
-    kit.block(g, mat, x0, x1, y0, y1, z0, z1 - c);
-    kit.block(g, mat, x0 + i, x1 - i, y0 + i, y1 - i, z1 - c, z1);
-  }
+  const t = face === 'y' ? y1 - y0 : z1 - z0;
+  const crown = Math.min(0.012, t * 0.25);
+  const r = Math.min(0.03, t * 0.4, (x1 - x0) * 0.3);
+  if (face === 'y') cushion(kit, g, mat, x0, x1, y0, y1 - crown, z0, z1, { r, crown });
+  else cushion(kit, g, mat, x0, x1, y0, y1, z0, z1 - crown, { r, crown, axis: 'z' });
 }
 
 /** Door or drawer front whose face is at z, facing +z (s = 1) or -z (s = -1). */
@@ -109,10 +112,9 @@ function front(kit, g, mat, x0, x1, y0, y1, z, s = 1) {
   kit.block(g, mat, x0 + GAP, x1 - GAP, y0 + GAP, y1 - GAP, ...span(z, z - s * FRONT_T));
 }
 
+/** Stainless wire pull on a face at z, facing +z (s = 1) or -z (s = -1). */
 function pull(kit, g, mat, x, y, z, vertical, len, s = 1) {
-  const [z0, z1] = span(z, z + s * 0.016);
-  if (vertical) kit.block(g, mat, x - 0.006, x + 0.006, y - len / 2, y + len / 2, z0, z1);
-  else kit.block(g, mat, x - len / 2, x + len / 2, y - 0.006, y + 0.006, z0, z1);
+  barPull(kit, g, mat, x, y, z, len, { vertical, reach: 0.015, r: 0.0045, s });
 }
 
 /** Door bay from y0 to y1: one door, or a pair when the bay is wide. Pulls near pullY. */
@@ -129,39 +131,46 @@ function doors(kit, g, m, mat, a, b, y0, y1, z, pullY, hand = 1) {
   }
 }
 
-/** Swivel caster with its wheel of radius r resting on the floor. */
+/** Swivel caster with its wheel of radius r resting on the floor: twin wheels under a fork. */
 function caster(kit, g, m, x, z, r) {
-  kit.cyl(g, m.rubber, r, r * 0.75, x, r, z, { axis: 'x', segments: 14 });
-  kit.block(g, m.darkSteel, x - r * 0.5, x + r * 0.5, r * 1.3, r * 2.4, z - r * 0.55, z + r * 0.55);
+  for (const s of [-1, 1]) kit.cyl(g, m.rubber, r, r * 0.34, x + s * r * 0.22, r, z, { axis: 'x', segments: 16 });
+  kit.cyl(g, m.darkSteel, r * 0.3, r * 0.9, x, r, z, { axis: 'x', segments: 10 });
+  kit.block(g, m.darkSteel, x - r * 0.5, x + r * 0.5, r * 1.4, r * 2.4, z - r * 0.55, z + r * 0.55);
 }
 
 /** Five-star base on casters, hub at the origin, legs reaching `reach`. */
 function starBase(kit, g, m, reach, r = 0.025) {
   const y = 2 * r + 0.006;
-  kit.cyl(g, m.black, 0.05, 0.05, 0, y - 0.008, 0, { segments: 16 });
+  kit.cyl(g, m.black, 0.052, 0.05, 0, y - 0.008, 0, { rTop: 0.04, segments: 18 });
   for (let i = 0; i < 5; i++) {
     const leg = sub(kit, g, 0, 0, 0, { yaw: (i * Math.PI * 2) / 5 + Math.PI / 2 });
-    kit.block(leg, m.black, 0.03, reach - r + 0.008, y, y + 0.028, -0.017, 0.017);
-    kit.cyl(leg, m.rubber, r, r * 0.9, reach - r, r, 0, { axis: 'z', segments: 12 });
+    const tilt = sub(kit, leg, 0, y + 0.014, 0, { roll: -0.04 });
+    cushion(kit, tilt, m.black, 0.03, reach - r + 0.008, -0.014, 0.014, -0.018, 0.018, { r: 0.01 });
+    for (const s of [-1, 1]) kit.cyl(leg, m.rubber, r, r * 0.42, reach - r, r, s * r * 0.3, { axis: 'z', segments: 14 });
   }
 }
 
-/** Office task chair facing +z, centered at (x, z). */
+/** Office task chair facing +z, centered at (x, z); one merged assembly per fabric. */
 function taskChair(kit, g, m, fabric, x, z) {
-  const c = sub(kit, g, x, 0, z);
-  starBase(kit, c, m, 0.29);
-  kit.cyl(c, m.black, 0.032, 0.16, 0, 0.09, 0, { segments: 14 });
-  kit.cyl(c, m.chrome, 0.022, 0.16, 0, 0.25, 0, { segments: 14 });
-  kit.block(c, m.black, -0.11, 0.11, 0.4, 0.44, -0.13, 0.1);
-  pad(kit, c, fabric, -0.24, 0.24, 0.44, 0.51, -0.22, 0.24);
-  kit.block(c, m.black, -0.035, 0.035, 0.4, 0.62, -0.28, -0.24);
-  kit.block(c, m.black, -0.035, 0.035, 0.4, 0.44, -0.24, -0.12);
-  const back = sub(kit, c, 0, 0.56, -0.25, { pitch: -0.1 });
-  pad(kit, back, fabric, -0.22, 0.22, 0, 0.46, -0.03, 0.03, 'z');
-  for (const s of [-1, 1]) {
-    kit.block(c, m.black, s * 0.215 - 0.014, s * 0.215 + 0.014, 0.44, 0.64, -0.08, -0.04);
-    kit.block(c, m.black, s * 0.215 - 0.03, s * 0.215 + 0.03, 0.64, 0.665, -0.17, 0.11);
-  }
+  const c = assembly(kit, `medical-task|${fabric.uuid}`, (a) => {
+    starBase(kit, a, m, 0.29);
+    kit.cyl(a, m.black, 0.032, 0.16, 0, 0.09, 0, { segments: 14 });
+    kit.cyl(a, m.chrome, 0.022, 0.16, 0, 0.25, 0, { segments: 14 });
+    kit.block(a, m.black, -0.11, 0.11, 0.4, 0.44, -0.13, 0.1);
+    cushion(kit, a, m.black, -0.23, 0.23, 0.425, 0.45, -0.21, 0.22, { r: 0.01 });
+    cushion(kit, a, fabric, -0.24, 0.24, 0.44, 0.5, -0.22, 0.24, { r: 0.03, crown: 0.012 });
+    kit.block(a, m.black, -0.035, 0.035, 0.4, 0.62, -0.28, -0.24);
+    kit.block(a, m.black, -0.035, 0.035, 0.4, 0.44, -0.24, -0.12);
+    const back = sub(kit, a, 0, 0.56, -0.25, { pitch: -0.1 });
+    cushion(kit, back, m.black, -0.225, 0.225, 0, 0.46, -0.04, -0.016, { r: 0.012 });
+    cushion(kit, back, fabric, -0.22, 0.22, 0.01, 0.45, -0.025, 0.03, { r: 0.028, crown: 0.012, axis: 'z' });
+    for (const s of [-1, 1]) {
+      kit.block(a, m.black, s * 0.215 - 0.014, s * 0.215 + 0.014, 0.44, 0.645, -0.08, -0.04);
+      cushion(kit, a, m.black, s * 0.215 - 0.03, s * 0.215 + 0.03, 0.638, 0.668, -0.17, 0.11, { r: 0.012, crown: 0.004 });
+    }
+  });
+  c.position.set(x, 0, z);
+  g.add(c);
   return c;
 }
 
@@ -205,19 +214,18 @@ function basin(kit, g, m, hole, y, depth) {
 function gooseneck(kit, g, m, x, y, z, rise, reach) {
   const f = sub(kit, g, x, y, z, { yaw: -Math.PI / 2 });
   const r = reach / 2, t = 0.01;
-  kit.cyl(f, m.chrome, 0.024, 0.022, 0, 0, 0, { segments: 16 });
-  kit.cyl(f, m.chrome, t, rise, 0, 0, 0, { segments: 10 });
-  let prev = [0, rise, 0];
-  for (let i = 1; i <= 7; i++) {
-    const a = Math.PI * (1 - i / 7);
-    const p = [r + r * Math.cos(a), rise + r * Math.sin(a), 0];
-    rod(kit, f, m.chrome, t, prev, p, { over: 0.006 });
-    prev = p;
+  turned(kit, f, m.chrome, [[0, 0], [0.025, 0], [0.025, 0.01], [0.018, 0.02], [0.012, 0.026], [0, 0.026]], 0, 0, 0, { segments: 20 });
+  const pts = [[0, 0.02, 0], [0, rise * 0.6, 0]];
+  for (let i = 0; i <= 8; i++) {
+    const a = Math.PI * (1 - i / 8);
+    pts.push([r + r * Math.cos(a), rise + r * Math.sin(a), 0]);
   }
-  kit.cyl(f, m.chrome, t * 1.3, 0.035, reach, rise - 0.035, 0, { segments: 10 });
+  pts.push([reach, rise - 0.03, 0]);
+  bent(kit, f, m.chrome, pts, t, { segments: 36, radial: 10 });
+  kit.cyl(f, m.chrome, t * 1.35, 0.03, reach, rise - 0.045, 0, { segments: 12 });
   for (const s of [-1, 1]) {
-    kit.cyl(f, m.chrome, 0.014, 0.045, 0, 0, s * 0.075, { segments: 10 });
-    kit.block(f, m.chrome, -0.008, 0.008, 0.04, 0.05, s * 0.075, s * 0.075 + s * 0.1);
+    kit.cyl(f, m.chrome, 0.014, 0.045, 0, 0, s * 0.075, { segments: 14 });
+    bent(kit, f, m.chrome, [[0, 0.042, s * 0.075], [0, 0.046, s * 0.12], [0, 0.052, s * 0.175]], 0.005, { segments: 6, radial: 8 });
   }
 }
 
@@ -337,16 +345,16 @@ function buildExamTable(kit, { w, d, color }) {
   }
 
   pad(kit, g, top, L.pivot + 0.006, L.x1, seat, seat + padT, z0, z1);
-  kit.block(g, m.white, L.pivot + 0.02, L.x1, seat + padT, seat + padT + 0.003, -paper, paper, false);
-  kit.block(g, m.white, L.x1, L.x1 + 0.003, seat + 0.03, seat + padT + 0.003, -paper, paper, false);
+  kit.block(g, m.paper, L.pivot + 0.02, L.x1, seat + padT, seat + padT + 0.002, -paper, paper, false, { bevel: false });
+  kit.block(g, m.paper, L.x1, L.x1 + 0.002, seat + 0.03, seat + padT + 0.002, -paper, paper, false, { bevel: false });
 
   const br = sub(kit, g, L.pivot, seat, 0, { roll: -L.tilt });
   const len = L.back;
   kit.block(br, m.plinth, -len + 0.05, -0.04, -0.035, 0, -d / 2 + 0.07, d / 2 - 0.07);
   pad(kit, br, top, -len, -0.006, 0, padT, z0, z1);
-  kit.block(br, m.white, -len + 0.01, -0.02, padT, padT + 0.003, -paper, paper, false);
-  kit.block(br, m.white, -len - 0.003, -len, -0.06, padT + 0.003, -paper, paper, false);
-  kit.cyl(br, m.white, 0.05, paper * 2 + 0.02, -len + 0.05, -0.065, 0, { axis: 'z', segments: 20 });
+  kit.block(br, m.paper, -len + 0.01, -0.02, padT, padT + 0.002, -paper, paper, false, { bevel: false });
+  kit.block(br, m.paper, -len - 0.002, -len, -0.06, padT + 0.002, -paper, paper, false, { bevel: false });
+  kit.cyl(br, m.paper, 0.05, paper * 2 + 0.02, -len + 0.05, -0.065, 0, { axis: 'z', segments: 24 });
   for (const s of [-1, 1]) kit.block(br, m.alu, -len + 0.03, -len + 0.07, -0.1, -0.035, s * (paper + 0.02), s * (paper + 0.032));
   const sp = Math.sin(L.tilt), cp = Math.cos(L.tilt);
   const mount = (lx, ly) => [L.pivot + lx * cp + ly * sp, seat - lx * sp + ly * cp];
@@ -404,7 +412,7 @@ function gloveHolder(kit, g, m, x, y, z, width) {
     const bx = x - gw / 2 + 0.01 + k * (bw + 0.005);
     const fz = z + 0.1;
     kit.block(g, m.white, bx, bx + bw, y + 0.012, y1 - 0.01, z + 0.008, fz);
-    kit.block(g, kit.material(GLOVES[k], { roughness: 0.5 }), bx + 0.008, bx + bw - 0.008, y + 0.075, y + 0.13, fz, fz + 0.002, false);
+    kit.block(g, kit.material(GLOVES[k], { roughness: 0.6 }), bx + 0.008, bx + bw - 0.008, y + 0.075, y + 0.13, fz, fz + 0.002, false, { bevel: false });
     kit.block(g, m.slot, bx + 0.025, bx + bw - 0.025, y1 - 0.085, y1 - 0.045, fz, fz + 0.002, false);
   }
 }
@@ -413,7 +421,7 @@ function towelDispenser(kit, g, m, x, y, z) {
   kit.block(g, m.shell, x - 0.13, x + 0.13, y, y + 0.28, z, z + 0.1);
   kit.block(g, m.trim, x - 0.12, x + 0.12, y + 0.02, y + 0.27, z + 0.1, z + 0.106);
   kit.block(g, m.slot, x - 0.09, x + 0.09, y + 0.18, y + 0.22, z + 0.106, z + 0.108, false);
-  kit.block(g, m.white, x - 0.09, x + 0.09, y - 0.04, y + 0.005, z + 0.05, z + 0.058);
+  kit.block(g, m.paper, x - 0.09, x + 0.09, y - 0.04, y + 0.005, z + 0.05, z + 0.058);
 }
 
 function sharpsBox(kit, g, m, x, y, z) {
@@ -426,7 +434,7 @@ function sharpsBox(kit, g, m, x, y, z) {
 function buildCasework(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = palette(kit);
-  const door = finish(kit, color, m.case, 0.5);
+  const door = finish(kit, color, m.case);
   const L = caseworkLayout(w, d, h);
   const ct = TOP - 0.03, bowlDepth = 0.18, cutY = TOP - bowlDepth - 0.03;
   const back = -d / 2, carcass = L.fz - FRONT_T - 0.004;
@@ -521,10 +529,9 @@ function buildPhysicianStool(kit, { w, d, h, color }) {
   starBase(kit, g, m, reach, 0.028);
   kit.cyl(g, m.black, 0.032, 0.2, 0, 0.09, 0, { segments: 14 });
   kit.cyl(g, m.chrome, 0.022, sy - 0.31, 0, 0.29, 0, { segments: 14 });
-  kit.cyl(g, m.black, 0.15, 0.022, 0, sy - 0.022, 0, { segments: 24 });
-  kit.block(g, m.black, 0.08, 0.2, sy - 0.03, sy - 0.018, -0.01, 0.01);
-  kit.cyl(g, seat, 0.19, 0.07, 0, sy, 0, { rTop: 0.2, segments: 32 });
-  kit.sphere(g, seat, 0.2, 0, sy + 0.07, 0, { segments: 32, scaleY: 0.1 });
+  kit.cyl(g, m.black, 0.15, 0.022, 0, sy - 0.022, 0, { segments: 28 });
+  bent(kit, g, m.black, [[0.08, sy - 0.024, 0], [0.16, sy - 0.03, 0], [0.2, sy - 0.05, 0]], 0.006, { segments: 6, radial: 8 });
+  roundSeat(kit, g, seat, 0.2, 0.07, 0, sy - 0.002, 0, { crown: 0.016, rim: 0.03 });
   return g;
 }
 
@@ -546,7 +553,7 @@ function sideChairLayout(w, d) {
 function buildSideChair(kit, { w, d, h, color }) {
   const g = kit.group();
   const wood = kit.mat.oak;
-  const fabric = finish(kit, color, kit.mat.fabricSage, 0.95);
+  const fabric = finish(kit, color, kit.mat.fabricSage);
   const { hx, hz, t, seatY, armY } = sideChairLayout(w, d);
   for (const s of [-1, 1]) {
     const x = s * hx;
@@ -607,7 +614,7 @@ function deskPhone(kit, g, m, x, z) {
 
 function sanitizer(kit, g, m, x, y, z) {
   kit.cyl(g, m.white, 0.034, 0.12, x, y, z, { segments: 16 });
-  kit.cyl(g, kit.material('#80bbad', { roughness: 0.5 }), 0.0345, 0.04, x, y + 0.04, z, { segments: 16 });
+  kit.cyl(g, tint(kit, kit.mat.plastic, '#86aaa1'), 0.0345, 0.04, x, y + 0.04, z, { segments: 16 });
   kit.cyl(g, m.trim, 0.018, 0.03, x, y + 0.12, z, { segments: 12 });
   kit.block(g, m.trim, x - 0.006, x + 0.006, y + 0.135, y + 0.15, z, z + 0.045);
 }
@@ -616,7 +623,7 @@ function buildDesk(kit, { w, d, h, color }, variant) {
   const g = kit.group();
   const m = palette(kit);
   const L = deskLayout(w, d, variant.pitch);
-  const face = finish(kit, color, variant.face(kit), 0.55);
+  const face = finish(kit, color, variant.face(kit));
   const work = m.laminate;
   const fz = L.front - 0.012;
   const ledgeY = h - 0.03;
@@ -684,7 +691,7 @@ const RECEPTION = {
     const n = clamp(Math.round(w / 0.16), 2, 20);
     for (let i = 1; i < n; i++) {
       const x = -w / 2 + (i * w) / n;
-      kit.block(g, m.plinth, x - 0.004, x + 0.004, 0.08, ledgeY, fz, fz + 0.002, false);
+      kit.block(g, m.reveal, x - 0.003, x + 0.003, 0.08, ledgeY, fz - 0.001, fz + 0.0012, false, { bevel: false });
     }
     kit.block(g, kit.mat.cbreGreen, -w / 2, w / 2, 0.08, 0.1, fz - 0.002, fz + 0.004, false);
   },
@@ -692,15 +699,15 @@ const RECEPTION = {
 
 const NURSE = {
   pitch: 1.2,
-  face: (kit) => kit.material('#538184', { roughness: 0.55 }),
+  face: (kit) => tint(kit, kit.mat.laminate, '#5b7e7c'),
   dress(kit, g, m, w, fz, ledgeY) {
     const n = repeats(Math.round(w / 0.8));
     for (let i = 1; i < n; i++) {
       const x = -w / 2 + (i * w) / n;
-      kit.block(g, m.plinth, x - 0.003, x + 0.003, 0.08, ledgeY - 0.2, fz, fz + 0.002, false);
+      kit.block(g, m.reveal, x - 0.003, x + 0.003, 0.08, ledgeY - 0.2, fz - 0.001, fz + 0.0012, false, { bevel: false });
     }
     kit.block(g, m.white, -w / 2, w / 2, ledgeY - 0.2, ledgeY, fz - 0.002, fz + 0.006);
-    kit.block(g, m.plinth, -w / 2, w / 2, ledgeY - 0.206, ledgeY - 0.2, fz, fz + 0.007, false);
+    kit.block(g, m.reveal, -w / 2, w / 2, ledgeY - 0.206, ledgeY - 0.2, fz, fz + 0.007, false, { bevel: false });
   },
 };
 
@@ -718,7 +725,7 @@ function waitingLayout(w, d) {
 function buildWaitingChairs(kit, { w, d, color }) {
   const g = kit.group();
   const m = palette(kit);
-  const fabric = finish(kit, color, kit.mat.fabricGreen, 0.95);
+  const fabric = finish(kit, color, kit.mat.fabricGreen);
   const frame = m.darkSteel;
   const L = waitingLayout(w, d);
   const bz = L.beamZ;
@@ -726,7 +733,7 @@ function buildWaitingChairs(kit, { w, d, color }) {
   for (const [i, x] of L.arms.entries()) {
     kit.block(g, frame, x - 0.012, x + 0.012, 0.36, 0.6, bz + 0.065, bz + 0.105);
     kit.block(g, frame, x - 0.012, x + 0.012, 0.33, 0.37, bz - 0.015, bz + 0.105);
-    kit.block(g, m.oak, x - L.armT / 2, x + L.armT / 2, 0.6, 0.63, L.seatZ0 - 0.02, L.seatZ1 - 0.02);
+    cushion(kit, g, m.oak, x - L.armT / 2, x + L.armT / 2, 0.6, 0.63, L.seatZ0 - 0.02, L.seatZ1 - 0.02, { r: 0.01 });
     if (i % 2 && i !== L.n) continue;
     kit.block(g, frame, x - 0.02, x + 0.02, 0.03, 0.3, bz - 0.025, bz + 0.015);
     kit.block(g, frame, x - 0.022, x + 0.022, 0.012, 0.045, -L.foot, L.foot);
@@ -765,9 +772,9 @@ const BED = { pivot: -0.3, deck: 0.56, mT: 0.14, tilt: 0.42, headLen: 0.7, fold:
 function buildHospitalBed(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = palette(kit);
-  const blanket = finish(kit, color, kit.mat.fabricCeladon, 0.95);
-  const mattress = kit.material('#3f5f72', { roughness: 0.55 });
-  const board = kit.material('#e7eae9', { roughness: 0.42 });
+  const blanket = finish(kit, color, kit.mat.fabricCeladon);
+  const mattress = tint(kit, kit.mat.vinylBlue, '#45606e');
+  const board = tint(kit, kit.mat.plastic, '#e4e7e6');
   const hz = d / 2, bx = w / 2 - 0.06, mx = w / 2 - 0.07;
   const { pivot, deck, mT, tilt, headLen, fold } = BED;
   const top = deck + mT;
@@ -778,20 +785,20 @@ function buildHospitalBed(kit, { w, d, h, color }) {
   for (const z of [-0.5, 0.5]) kit.block(g, m.darkSteel, -0.1, 0.1, 0.3, deck - 0.06, z - 0.08, z + 0.08);
   kit.block(g, m.shell, -mx + 0.01, mx - 0.01, deck - 0.06, deck, -hz + 0.1, hz - 0.07);
 
-  kit.block(g, mattress, -mx, mx, deck, top - 0.012, pivot, hz - 0.08);
-  kit.block(g, m.white, -mx + 0.005, mx - 0.005, top - 0.012, top, pivot, fold + 0.02);
-  kit.block(g, blanket, -mx - 0.012, mx + 0.012, top - 0.012, top + 0.012, fold, hz - 0.075);
-  for (const s of [-1, 1]) kit.block(g, blanket, ...span(s * mx, s * (mx + 0.012)), deck + 0.03, top, fold, hz - 0.075);
-  kit.block(g, blanket, -mx - 0.012, mx + 0.012, deck + 0.03, top + 0.012, hz - 0.087, hz - 0.075);
-  kit.cyl(g, m.white, 0.028, 2 * mx, 0, top + 0.012, fold + 0.012, { axis: 'x', segments: 14 });
+  // Mattress in a fitted sheet, a blanket draped over the foot and a folded sheet cuff.
+  cushion(kit, g, mattress, -mx, mx, deck, top - 0.006, pivot, hz - 0.08, { r: 0.03 });
+  cushion(kit, g, m.linen, -mx + 0.004, mx - 0.004, top - 0.02, top + 0.002, pivot, fold + 0.03, { r: 0.008 });
+  cushion(kit, g, blanket, -mx - 0.012, mx + 0.012, top - 0.014, top + 0.014, fold, hz - 0.075, { r: 0.012, crown: 0.006 });
+  for (const s of [-1, 1]) cushion(kit, g, blanket, ...span(s * (mx - 0.004), s * (mx + 0.012)), deck + 0.03, top + 0.004, fold, hz - 0.075, { r: 0.006 });
+  cushion(kit, g, blanket, -mx - 0.012, mx + 0.012, deck + 0.03, top + 0.014, hz - 0.087, hz - 0.071, { r: 0.006 });
+  kit.cyl(g, m.linen, 0.026, 2 * mx + 0.02, 0, top + 0.012, fold + 0.012, { axis: 'x', segments: 18 });
 
   const hs = sub(kit, g, 0, deck, pivot, { pitch: tilt });
   kit.block(hs, m.shell, -mx + 0.01, mx - 0.01, -0.04, 0, -headLen, 0);
-  kit.block(hs, mattress, -mx, mx, 0, mT - 0.012, -headLen, 0);
-  kit.block(hs, m.white, -mx + 0.005, mx - 0.005, mT - 0.012, mT, -headLen, 0);
+  cushion(kit, hs, mattress, -mx, mx, 0, mT - 0.006, -headLen, 0.02, { r: 0.03 });
+  cushion(kit, hs, m.linen, -mx + 0.004, mx - 0.004, mT - 0.02, mT + 0.002, -headLen + 0.004, 0.02, { r: 0.008 });
   const p0 = -headLen + 0.06, p1 = -headLen + 0.36, pr = 0.05;
-  kit.block(hs, m.white, -0.27, 0.27, mT, mT + 2 * pr, p0 + pr, p1 - pr);
-  for (const z of [p0 + pr, p1 - pr]) kit.cyl(hs, m.white, pr, 0.54, 0, mT + pr, z, { axis: 'x', segments: 16 });
+  cushion(kit, hs, m.linen, -0.28, 0.28, mT - 0.004, mT + 2 * pr - 0.04, p0, p1, { r: 0.04, crown: 0.02, both: true });
 
   kit.block(g, board, -bx, bx, 0.4, h - 0.03, -hz + 0.004, -hz + 0.04);
   kit.cyl(g, board, 0.028, 2 * bx, 0, h - 0.03, -hz + 0.03, { axis: 'x', segments: 14 });
@@ -849,7 +856,7 @@ function buildRecliner(kit, { w, d, color }) {
   const g = kit.group();
   const m = palette(kit);
   const up = vinyl(kit, color);
-  const seam = kit.material('#2f4f52', { roughness: 0.6 });
+  const seam = shadeOf(kit, up);
   const L = reclinerLayout(w, d);
   const hw = L.cw / 2, iw = hw - 0.1;
   const c = sub(kit, g, L.cx, 0, 0);
@@ -889,7 +896,7 @@ function buildRecliner(kit, { w, d, color }) {
     rod(kit, g, m.chrome, 0.005, [px, top, pz], [px + dx, top + 0.015, pz + dz], { segments: 6 });
     kit.sphere(g, m.chrome, 0.008, px + dx, top + 0.02, pz + dz, { segments: 8 });
   }
-  const bag = kit.material('#e9f3f1', { roughness: 0.2, transparent: true, opacity: 0.7 });
+  const bag = kit.glassMaterial({ tint: '#eef5f3', frosted: true });
   kit.block(g, bag, px - 0.045, px + 0.045, top - 0.3, top - 0.08, pz + 0.065, pz + 0.095);
   kit.block(g, m.white, px - 0.01, px + 0.01, top - 0.08, top + 0.01, pz + 0.075, pz + 0.085);
   rod(kit, g, m.white, 0.003, [px, top - 0.3, pz + 0.08], [px + 0.02, 1.2, pz + 0.055], { segments: 6 });
@@ -923,26 +930,32 @@ function ctLayout(w, d, h) {
   return { ro, rb: 0.39, cy: h - ro, gz0, gz1, bezel: 0.47, tube: 0.09, ped0: gz1 + 0.16, ped1: gz1 + 1.9, tip: d / 2 - 0.06 };
 }
 
-/** Polygonal annulus of `n` radial blocks in the xy plane, spanning z0..z1. */
-function annulus(kit, g, mat, cy, rIn, rOut, z0, z1, n) {
-  const hw = rOut * Math.tan(Math.PI / n) + 0.002;
-  for (let i = 0; i < n; i++) {
-    const a = ((i + 0.5) * Math.PI * 2) / n;
-    const seg = sub(kit, g, 0, cy, 0, { roll: a - Math.PI / 2 });
-    kit.block(seg, mat, -hw, hw, rIn, rOut, z0, z1);
-  }
+/** Gantry ring in the xy plane centered at height cy, spanning z0..z1, its edges radiused by e. */
+function annulus(kit, g, mat, cy, rIn, rOut, z0, z1, e = 0.04) {
+  const d = z1 - z0, arc = (cx, cz, a0) => [0, 1, 2, 3].map((k) => {
+    const a = a0 + (k * Math.PI) / 6;
+    return [cx + e * Math.cos(a), cz + e * Math.sin(a)];
+  });
+  // Profile [radius, depth] around the ring: front face out, outer wall, back face in, bore.
+  const profile = [
+    [rIn + e, 0], ...arc(rOut - e, e, -Math.PI / 2), ...arc(rOut - e, d - e, 0),
+    ...arc(rIn + e, d - e, Math.PI / 2), ...arc(rIn + e, e, Math.PI), [rIn + e, 0],
+  ];
+  const ring = turned(kit, g, mat, profile, 0, cy, z0, { segments: 64 });
+  ring.rotation.x = Math.PI / 2;
+  return ring;
 }
 
 function buildCT(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = palette(kit);
-  const body = kit.material('#f4f5f4', { roughness: 0.35 });
-  const cushion = vinyl(kit, color);
+  const body = tint(kit, kit.mat.plastic, '#eef0ee');
+  const mat = vinyl(kit, color);
   const glow = kit.material('#bfe9dc', { emissive: '#80bbad', emissiveIntensity: 1.2, roughness: 0.4 });
   const C = ctLayout(w, d, h);
   const { ro, rb, cy, gz0, gz1 } = C;
 
-  annulus(kit, g, body, cy, rb, ro, gz0, gz1, 48);
+  annulus(kit, g, body, cy, rb, ro, gz0, gz1);
   const inset = 0.002;
   kit.block(g, body, -ro, -rb, 0.07, cy, gz0 + inset, gz1 - inset);
   kit.block(g, body, rb, ro, 0.07, cy, gz0 + inset, gz1 - inset);
@@ -965,7 +978,7 @@ function buildCT(kit, { w, d, h, color }) {
   kit.block(g, m.trim, -0.2, 0.2, 0.68, 0.73, C.ped0 - 0.1, C.ped1);
   kit.block(g, body, -0.25, 0.25, 0.73, 0.77, gz0 + 0.04, C.tip);
   kit.cyl(g, body, 0.02, 0.5, 0, 0.75, C.tip, { axis: 'x', segments: 14 });
-  pad(kit, g, cushion, -0.22, 0.22, 0.77, 0.815, gz0 + 0.35, C.tip - 0.05);
+  pad(kit, g, mat, -0.22, 0.22, 0.77, 0.815, gz0 + 0.35, C.tip - 0.05);
   kit.block(g, m.trim, -0.13, 0.13, 0.77, 0.83, gz0 + 0.08, gz0 + 0.34);
   kit.block(g, m.darkSteel, -0.25, 0.25, 0.745, 0.755, C.tip - 0.3, C.tip - 0.04, false);
   return g;
@@ -1004,20 +1017,16 @@ function curtainLayout(w, d, h) {
 function buildCurtain(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = palette(kit);
-  const fabric = finish(kit, color, kit.mat.fabricCeladon, 0.95);
-  const mesh = kit.material('#f4f6f5', { roughness: 0.9, transparent: true, opacity: 0.5, depthWrite: false });
+  const fabric = finish(kit, color, kit.mat.fabricCeladon);
+  const mesh = kit.material('#f1f3f2', { roughness: 0.9, transparent: true, opacity: 0.5, depthWrite: false });
   const C = curtainLayout(w, d, h);
   const { top } = C;
   const trackY = top - 0.035, meshTop = top - 0.08, meshBot = Math.max(0.8, top - 0.56), hem = Math.min(0.35, top * 0.15);
   const zAt = (i) => (i % 2 ? C.a : -C.a);
-  for (let i = 0; i < C.n; i++) {
-    const xa = -w / 2 + i * C.s, za = zAt(i), zb = zAt(i + 1);
-    const len = Math.hypot(C.s, zb - za) + 0.004;
-    const f = sub(kit, g, xa + C.s / 2, 0, (za + zb) / 2, { yaw: -Math.atan2(zb - za, C.s) });
-    kit.block(f, fabric, -len / 2, len / 2, hem, meshBot, -0.003, 0.003);
-    kit.block(f, mesh, -len / 2, len / 2, meshBot, meshTop - 0.025, -0.002, 0.002, false);
-    kit.block(f, m.white, -len / 2, len / 2, meshTop - 0.025, meshTop, -0.0035, 0.0035);
-  }
+  // Soft folds through the same points the carriers hang from: fabric, open mesh and a header band.
+  pleats(kit, g, fabric, w, hem, meshBot, C);
+  pleats(kit, g, mesh, w, meshBot, meshTop - 0.025, C);
+  pleats(kit, g, m.linen, w, meshTop - 0.025, meshTop, C);
   for (let i = 0; i <= C.n; i += 2) {
     const x = clamp(-w / 2 + i * C.s, -w / 2 + 0.01, w / 2 - 0.01);
     rod(kit, g, m.alu, 0.003, [x, meshTop - 0.01, zAt(i)], [x, trackY, 0], { segments: 5 });
@@ -1033,6 +1042,58 @@ function buildCurtain(kit, { w, d, h, color }) {
     }
   }
   return g;
+}
+
+/**
+ * Two-sided curtain sheet from y0 to y1 whose folds pass through +-C.a at every half pleat (C.s),
+ * with UVs in meters along the cloth.
+ */
+function pleats(kit, g, mat, w, y0, y1, C) {
+  const T = kit.THREE;
+  const steps = C.n * 4, rows = Math.max(1, Math.round((y1 - y0) / 0.4));
+  const pos = [], nrm = [], uv = [];
+  let u = 0, px = -w / 2, pz = 0;
+  const cols = [];
+  for (let i = 0; i <= steps; i++) {
+    const x = -w / 2 + (i / steps) * w, ph = (Math.PI * x) / C.s, z = -C.a * Math.cos(ph + Math.PI * (w / 2 / C.s));
+    const dz = C.a * Math.sin(ph + Math.PI * (w / 2 / C.s)) * (Math.PI / C.s);
+    if (i) u += Math.hypot(x - px, z - pz);
+    px = x;
+    pz = z;
+    const l = Math.hypot(dz, 1);
+    cols.push({ x, z, u, nx: -dz / l, nz: 1 / l });
+  }
+  for (const side of [1, -1]) {
+    for (const c of cols) {
+      for (let j = 0; j <= rows; j++) {
+        const y = y0 + ((y1 - y0) * j) / rows;
+        pos.push(c.x, y, c.z + side * 0.0015);
+        nrm.push(side * c.nx, 0, side * c.nz);
+        uv.push(c.u, y);
+      }
+    }
+  }
+  const idx = [], per = (steps + 1) * (rows + 1);
+  for (const [side, base] of [[1, 0], [-1, per]]) {
+    for (let i = 0; i < steps; i++) {
+      for (let j = 0; j < rows; j++) {
+        const a = base + i * (rows + 1) + j, b = a + rows + 1;
+        if (side > 0) idx.push(a, b, a + 1, b, b + 1, a + 1);
+        else idx.push(a, a + 1, b, b, a + 1, b + 1);
+      }
+    }
+  }
+  const geo = new T.BufferGeometry();
+  geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new T.Float32BufferAttribute(nrm, 3));
+  geo.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeBoundingSphere();
+  const mesh = new T.Mesh(geo, mat);
+  mesh.castShadow = !mat.transparent;
+  mesh.receiveShadow = true;
+  g.add(mesh);
+  return mesh;
 }
 
 function drawCurtain(ctx, o) {
@@ -1063,8 +1124,8 @@ function cartLayout(w, d, h) {
 function buildSupplyCart(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = palette(kit);
-  const drawer = finish(kit, color, kit.material('#80bbad', { roughness: 0.45 }), 0.45);
-  const body = kit.material('#e6e9e8', { roughness: 0.4 });
+  const drawer = finish(kit, color, tint(kit, kit.mat.plastic, '#8db3a9'));
+  const body = tint(kit, kit.mat.plastic, '#e4e7e6');
   const C = cartLayout(w, d, h);
   const { x0, x1, z0, z1, by0, by1 } = C;
   const face = z1 - FRONT_T;
@@ -1080,7 +1141,7 @@ function buildSupplyCart(kit, { w, d, h, color }) {
     const y0 = y - f * total;
     front(kit, g, drawer, x0 + 0.02, x1 - 0.02, y0, y, z1);
     kit.block(g, m.slot, -0.1 + (x0 + x1) / 2, 0.1 + (x0 + x1) / 2, y - 0.035, y - 0.018, z1, z1 + 0.002, false);
-    kit.block(g, m.white, x0 + 0.05, x0 + 0.13, y - 0.035, y - 0.018, z1, z1 + 0.002, false);
+    kit.block(g, m.paper, x0 + 0.05, x0 + 0.13, y - 0.035, y - 0.018, z1, z1 + 0.002, false);
     if (i === 0) kit.cyl(g, m.chrome, 0.011, 0.008, x1 - 0.06, y - 0.027, z1, { axis: 'z', segments: 12 });
     y = y0;
   }
@@ -1095,7 +1156,7 @@ function buildSupplyCart(kit, { w, d, h, color }) {
 
   const ty = by1 + 0.025;
   kit.block(g, m.white, x0 + 0.03, x0 + 0.27, ty, ty + 0.09, z0 + 0.05, z0 + 0.175);
-  kit.block(g, kit.material(GLOVES[0], { roughness: 0.5 }), x0 + 0.03, x0 + 0.27, ty + 0.03, ty + 0.06, z0 + 0.175, z0 + 0.177, false);
+  kit.block(g, kit.material(GLOVES[0], { roughness: 0.6 }), x0 + 0.03, x0 + 0.27, ty + 0.03, ty + 0.06, z0 + 0.175, z0 + 0.177, false, { bevel: false });
   kit.block(g, m.slot, x0 + 0.09, x0 + 0.21, ty + 0.09, ty + 0.092, z0 + 0.09, z0 + 0.135, false);
   kit.block(g, m.sharps, x1 - 0.17, x1 - 0.04, ty, ty + 0.075, z0 + 0.04, z0 + 0.15);
   kit.block(g, m.shell, x1 - 0.17, x1 - 0.04, ty + 0.075, ty + 0.095, z0 + 0.04, z0 + 0.15);

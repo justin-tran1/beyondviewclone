@@ -53,14 +53,16 @@ const BLOOM = { strength: 0.16, radius: 0.45, threshold: 3, knee: 2 };
 
 // Values are in exposed scene-linear units (after toneMappingExposure). AgX spans about 16 stops,
 // far more than a daylit interior, so on its own it reads flat and grey; the log-space contrast and
-// toe below were fitted so lit walls and floors keep their brightness while shadows regain depth
-// without crushing. Above the pivot the contrast rolls off (smoothly, its slope continuous) toward
-// `shoulder` stops, so sun patches on pale floors and the view through windows keep their texture
-// instead of clipping. 8-bit display values: deep shadow (0.02) 29, a lit white wall (0.6 to 1)
-// 178 to 207, a sun patch on a pale floor (4 to 8) 245 to 249, the view out of a window (20) 252.
+// toe below were fitted so lit walls keep their brightness while shadows regain depth without
+// crushing. The contrast eases to none within a quarter stop of the pivot, so it never stretches
+// the highlights: pale floors, white casework and sun patches stay apart instead of crowding into
+// the top of AgX's range, and above the pivot the curve rolls off toward `shoulder` stops, so the
+// view through windows keeps its texture instead of clipping. 8-bit display values: deep shadow
+// (0.02) 29, a lit white wall (0.6 to 1) 178 to 202, a pale floor (2) 223, a sun patch on a pale
+// floor (4 to 8) 236 to 244, the view out of a window (20) 248.
 const GRADE = {
   balance: [0.945, 1, 1.06], // a touch cool, so lit warm-white paint reads white; normalized, brightness holds
-  contrast: 1.5, // log-space contrast around the pivot
+  contrast: 1.5, // log-space contrast below the pivot
   pivot: 0.75, // a lit wall: contrast turns around it, so whites hold
   shoulder: 4.5, // stops above the pivot that highlights approach (AgX white is about 4.4 above)
   toe: 0.012, // flare-like floor that keeps the deepest shadows open
@@ -69,10 +71,12 @@ const GRADE = {
 };
 
 // The grade's curve on luminance, shared by the post pass and the 'fast' tone mapping:
-// x = contrast * log2(y / pivot), above the pivot shoulder * tanh(x / shoulder).
+// x = log2(y / pivot) times contrast below the pivot and 1 above it (blended over half a stop), then
+// above the pivot shoulder * tanh(x / shoulder).
 const GRADE_CURVE = /* glsl */`
 float interiorGradeLuma( float y, float pivot, float contrast, float shoulder, float toe ) {
-	float x = contrast * log2( y / pivot );
+	float x = log2( y / pivot );
+	x *= mix( contrast, 1.0, smoothstep( - 0.25, 0.25, x ) );
 	if ( x > 0.0 ) {
 		// tanh through exp2, kept finite for the brightest sky and fixture texels.
 		float t = exp2( 2.8853901 * min( x / shoulder, 8.0 ) );

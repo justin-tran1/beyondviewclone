@@ -187,7 +187,8 @@ export function buildPlanScene(plan, { kit, quality = 'high' }) -> {
   bounds,        // plan-space bounds
   lights,        // the real-time area lights at windows and fixtures (reflections only; photos skip them)
   probe,         // {x, y, z} world point captureEnvironment() looks from: the largest room's middle at 1.5 m
-  planLight,     // the light map: { cell (m), size [nx, ny], origin {x, y}, ms, spaceAt(x, y), levelAt(x, y) }
+  planLight,     // the light map: { cell (m), size [nx, ny], origin {x, y}, ms, spaceAt(x, y), levelAt(x, y),
+                 //   meter(x, y, dx, dy) -> { level, daylight }: the light seen looking along (dx, dy) }
   dispose(),     // frees this build's geometry, materials, light map textures and lights
 }
 export function setupEnvironment(renderer, scene) -> { sun, hemi, fit(bounds), dispose() }
@@ -258,10 +259,10 @@ edges thinner than a pixel, such as trim and pendant lights, draw as lines; SMAA
 dotted) and copies the resolved image into the chain, whose buffers carry no depth. AO, bloom and
 the grade work in linear light; `OutputPass` applies `renderer.toneMapping` (AgX) and `toneMappingExposure` exactly once,
 then sRGB with half-step dithering; SMAA runs last on display values. The grade (in exposed
-units, so it holds if the exposure changes) is a white balance a touch cool (lit warm-white paint reads white), a log-space contrast around
-a lit wall with a small toe and a smooth shoulder above it (sun patches and the view out of the
-windows keep their texture instead of clipping), a little saturation and a barely visible lens
-falloff. AO reads the
+units, so it holds if the exposure changes) is a white balance a touch cool (lit warm-white paint
+reads white), a log-space contrast below a lit wall that eases to none above it, a small toe and a
+smooth shoulder (sun patches, pale floors and the view out of the windows keep their texture
+instead of clipping), a little saturation and a barely visible lens falloff. AO reads the
 scene pass's resolved depth (no second geometry pass), rebuilds normals from it, denoises with a
 cross-bilateral 5 x 5 box that cancels GTAO's rotation pattern, and is multiplied in with a
 depth-aware upsample. Positions are always rebuilt at the depth texel they read, which keeps
@@ -295,7 +296,11 @@ export class Walkthrough extends EventTarget {
 }
 ```
 
-Rendering: AgX tone mapping at exposure 1.8 (`EXPOSURE`; keep `PHOTO_EXPOSURE` equal), PCF soft shadows updated
+Rendering: AgX tone mapping at exposure 1.8 (`EXPOSURE`; keep `PHOTO_EXPOSURE` equal) in the overview.
+In Walk the exposure is metered per view from the light map (`planLight.meter`, daylight counted
+twice): daylit spots by the windows come down to as little as 0.6 times that, views with little
+daylight keep 1.8; it eases over about 0.3 s while walking and is set at once on a jump, a rebuild
+and for `screenshot()`. Photos take the live exposure. PCF soft shadows updated
 only when the scene changes, and frames drawn only when something moved or changed. While moving
 stays slower than 40 ms a frame, the walkthrough steps the quality down one level at a time (never
 above the chosen level), then lowers the pixel ratio used while moving; idle frames keep the full

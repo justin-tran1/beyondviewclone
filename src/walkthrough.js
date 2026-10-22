@@ -38,6 +38,16 @@ const MIN_RATIO = 0.5;
 // brighter than the original ACES look (interiors read as well-lit offices, not dim ones), with sun
 // patches by the windows kept below clipping by the grade's shoulder. Keep photo.js PHOTO_EXPOSURE equal.
 const EXPOSURE = 1.8;
+// In Walk the exposure follows the light where the walker looks, as a photographer meters each
+// view: daylit spots by the windows come down toward the level the exposure was calibrated for,
+// so their floors and white casework keep their texture. The meter is the light map's view meter
+// (builder3d.js planLight.meter) with its daylight weighted `daylight` times, as the window reveals,
+// the floor by the glass and the view out are what blow out first, while a well lit office with
+// dark carpet and an open deck keeps its exposure. Exposure is EXPOSURE times
+// (reference / meter) ^ strength, within `range`; it eases over about `ease` seconds while walking
+// and is set at once on a jump or a rebuild. The overview keeps EXPOSURE. Photos take the live
+// exposure (src/ui/photo.js).
+const METER = { daylight: 2, reference: 7.3, strength: 0.9, range: [0.6, 1], ease: 0.3 };
 const MAX_DT = 0.25;
 const TRANSITION = 1.1;
 const OVERVIEW_ELEVATION = 52;
@@ -499,6 +509,7 @@ export class Walkthrough extends EventTarget {
     this._inertia = null;
     this._fov = FOV.walk;
     this._fovTarget = FOV.walk;
+    this._snapExposure = true;
     this._pointers = new Map();
     this._look = null;
     this._pinch = null;
@@ -631,6 +642,7 @@ export class Walkthrough extends EventTarget {
     }
     this._layoutMinimap();
     this._poseChanged();
+    this._snapExposure = true;
     this._invalidate();
   }
 
@@ -671,6 +683,7 @@ export class Walkthrough extends EventTarget {
     } else {
       Object.assign(cur, to);
       this._poseChanged();
+      this._snapExposure = true;
     }
     this._invalidate();
   }
@@ -711,6 +724,9 @@ export class Walkthrough extends EventTarget {
       }
       const ring = this._ring.visible;
       this._ring.visible = false;
+      // The view as it settles, even if the exposure is still easing toward it.
+      this._snapExposure = true;
+      this._stepExposure(0);
       this._render();
       this._canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not capture the 3D view.'))), 'image/png');
       this._ring.visible = ring;
@@ -1163,8 +1179,34 @@ export class Walkthrough extends EventTarget {
     }
     active = this._stepFov(dt) || active;
     if (this._poseDirty) this._poseChanged();
+    active = this._stepExposure(dt) || active;
     this._updateRing(active);
     return active;
+  }
+
+  /** The exposure for the current view: metered in Walk (see METER), EXPOSURE in the overview. */
+  _exposureTarget() {
+    const L = this._built?.planLight;
+    if (this._mode !== 'walk' || !L?.meter) return EXPOSURE;
+    const p = this._pose, yaw = deg2rad(p.yaw);
+    const m = L.meter(p.x, p.y, Math.sin(yaw), -Math.cos(yaw));
+    const level = m.level + (METER.daylight - 1) * m.daylight;
+    if (!(level > 0)) return EXPOSURE;
+    return EXPOSURE * clamp((METER.reference / level) ** METER.strength, METER.range[0], METER.range[1]);
+  }
+
+  /**
+   * Ease the exposure toward its target (at once after a jump). True while it is still easing; a
+   * value set at once only marks this frame dirty, so it costs no extra frame.
+   */
+  _stepExposure(dt) {
+    const r = this._renderer, target = this._exposureTarget(), cur = r.toneMappingExposure;
+    const snap = this._snapExposure || Math.abs(target - cur) < 0.002 * target;
+    this._snapExposure = false;
+    if (cur === target) return false;
+    r.toneMappingExposure = snap ? target : cur + (target - cur) * (1 - Math.exp(-dt / METER.ease));
+    this._dirty = true;
+    return !snap;
   }
 
   _render() {

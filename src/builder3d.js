@@ -101,6 +101,9 @@ const PLAN_LIGHT = {
   colors: { fixture: '#fff5ea', day: '#f2f5f9', bounce: '#f7f4ef' },
   budget: 6e6,
 };
+// The light map's view meter (planLight.meter): ray directions off the view axis (radians, about
+// the horizontal field of view) and the distances (m) sampled along each.
+const METER = { fan: [-0.7, -0.35, 0, 0.35, 0.7], reach: [0.6, 1.3, 2.2, 3.3, 4.8, 6.6, 9] };
 // Image based lighting strength for every material once the interior has been captured.
 const ENV_INTENSITY = 0.75;
 // While capturing, the fill and window lights are this much weaker (bright windows and fixtures keep
@@ -234,8 +237,9 @@ function buildScene(ctx) {
     lights: daylight.children.slice(),
     // Where captureEnvironment() looks from by default: the largest room's middle, at 1.5 m.
     probe,
-    // The diffuse light map: cell size (m), grid size and origin, build time, lookups by plan point.
-    planLight: { cell: light.cell, size: light.size, origin: light.origin, ms: light.ms, spaceAt: light.spaceAt, levelAt: light.levelAt },
+    // The diffuse light map: cell size (m), grid size and origin, build time, lookups by plan point
+    // and the view meter the walkthrough exposes by.
+    planLight: { cell: light.cell, size: light.size, origin: light.origin, ms: light.ms, spaceAt: light.spaceAt, levelAt: light.levelAt, meter: light.meter },
     dispose() {
       root.removeFromParent();
       for (const l of daylight.children) l.dispose();
@@ -3266,6 +3270,34 @@ function buildPlanLight(ctx) {
     levelAt: (x, y) => {
       const k = cell(x, y);
       return k < 0 ? 0 : S[k] + B[k];
+    },
+    /**
+     * The light a viewer at plan (x, y) looking along (dx, dy) sees, like an incident light meter
+     * pointed into the view: { level, daylight }, the map's level (as levelAt) and its share from
+     * the windows, averaged over a fan of rays ahead, each held at its last open cell once it meets
+     * a wall (that wall fills the rest of its direction). Zeros outdoors.
+     */
+    meter: (x, y, dx, dy) => {
+      const k0 = cell(x, y);
+      if (k0 < 0 || space[k0] < 0) return { level: 0, daylight: 0 };
+      const len = Math.hypot(dx, dy) || 1, ux = dx / len, uy = dy / len;
+      let level = 0, daylight = 0, count = 0;
+      for (const a of METER.fan) {
+        const c = Math.cos(a), s = Math.sin(a), rx = ux * c - uy * s, ry = uy * c + ux * s;
+        let at = k0, blocked = false, d = 0;
+        for (const to of METER.reach) {
+          // Half-cell steps up to the next sample, stopping at a wall or the edge of the building.
+          for (; !blocked && d < to; d = Math.min(to, d + g / 2)) {
+            const k = cell(x + rx * d, y + ry * d);
+            if (k < 0 || occ[k] === 2 || space[k] < 0) blocked = true;
+          }
+          if (!blocked) at = cell(x + rx * to, y + ry * to);
+          level += S[at] + B[at];
+          daylight += D[at];
+          count++;
+        }
+      }
+      return { level: level / count, daylight: daylight / count };
     },
     dispose() {
       for (const t of maps) t.dispose();

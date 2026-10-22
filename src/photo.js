@@ -103,8 +103,58 @@ export function photoSupport() {
 }
 
 const abortError = () => new DOMException('The photo was cancelled.', 'AbortError');
-const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
 const clampInt = (v, lo, hi, fallback) => (Number.isFinite(+v) ? Math.min(hi, Math.max(lo, Math.round(+v))) : fallback);
+
+// Answers each message a few milliseconds later. Timers in a worker keep running in a hidden page,
+// where the page's own timers fire about once a second at most.
+const TICKER = 'onmessage = () => setTimeout(() => postMessage(0), 4);';
+let tickerUrl = null;
+
+/**
+ * The photo's pace. frame() waits for the next display frame while the page is visible; a hidden
+ * page (another tab in front, a minimized or covered window) gets no frames at all, so a pending
+ * frame also ends when the page is hidden and from then on frame() is a tick. tick() waits a few
+ * milliseconds on a worker's timer, or without a worker for a message event, which browsers do not
+ * throttle either.
+ */
+function createClock(trash) {
+  const waiting = [];
+  const wake = () => waiting.shift()?.();
+  const channel = new MessageChannel();
+  channel.port1.onmessage = wake;
+  let worker = null;
+  try {
+    tickerUrl ??= URL.createObjectURL(new Blob([TICKER], { type: 'text/javascript' }));
+    worker = new Worker(tickerUrl);
+    worker.onmessage = wake;
+    worker.onerror = (e) => {
+      // Blocked by the page's security policy, say: answer what it was asked on the channel.
+      e.preventDefault();
+      worker = null;
+      for (let i = 0; i < waiting.length; i++) channel.port2.postMessage(0);
+    };
+  } catch {
+    worker = null;
+  }
+  trash.push(() => {
+    worker?.terminate();
+    channel.port1.close();
+  });
+  const tick = () => new Promise((resolve) => {
+    waiting.push(resolve);
+    (worker || channel.port2).postMessage(0);
+  });
+  const frame = () => (document.hidden ? tick() : new Promise((resolve) => {
+    const done = () => {
+      cancelAnimationFrame(id);
+      document.removeEventListener('visibilitychange', done);
+      resolve();
+    };
+    const id = requestAnimationFrame(done);
+    document.addEventListener('visibilitychange', done);
+  }));
+  return { frame, tick };
+}
 
 /** Ray-traced PNG of camera's view of scene. See the top of this file. */
 export async function renderPhoto({
@@ -153,8 +203,9 @@ async function run(job, trash) {
     }
   };
 
+  const clock = createClock(trash);
   report(0, 'prepare');
-  await nextFrame();
+  await clock.frame();
   aborted();
 
   const canvas = document.createElement('canvas');
@@ -242,7 +293,7 @@ async function run(job, trash) {
   let started = false;
   report(0, 'compile');
   while (finished < samples) {
-    await nextFrame();
+    await clock.frame();
     aborted();
     if (!settled()) continue;
     if (issuedAt) {
@@ -256,7 +307,8 @@ async function run(job, trash) {
       finished = queued;
       started = true;
       let preview = null;
-      if (job.onProgress && finished < samples && performance.now() - lastPreview > 1000) {
+      // Previews are skipped while the page is hidden, where nobody sees them.
+      if (job.onProgress && finished < samples && !document.hidden && performance.now() - lastPreview > 1000) {
         post.compose(finished);
         lastPreview = performance.now();
         preview = canvas;

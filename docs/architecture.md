@@ -330,7 +330,8 @@ albedo), adds the same subtle bloom and tone maps with the walkthrough's grade a
 exposure (the dialog passes the live view's `toneMappingExposure`), raised by `PHOTO_GAIN` (1.2
 stops, fitted together with the fixtures' output) because path traced walls and ceilings get no
 fill light and otherwise read darker than the live view. Opaque surfaces block sun and sky from
-both sides, so none comes in through the single-sided ceilings and roof deck. `onProgress(done, total,
+both sides, so none comes in through the single-sided ceilings and roof deck. Rendering goes on
+while the tab is hidden. `onProgress(done, total,
 { phase, preview, stats })` reports 'prepare', 'compile', 'render' and 'finish'; aborting `signal`
 rejects with an `AbortError`. When updating three-gpu-pathtracer, check `photo.js`'s patches to
 the path tracer's shader (fixture emission, shadow rays at single-sided surfaces); each warns and

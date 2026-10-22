@@ -252,6 +252,19 @@ function packRegion(i, aspect) {
   return [x0 / W, (x0 + cw * fw) / W, 1 - (y0 + ch * fh) / H, 1 - y0 / H];
 }
 
+const PRINTS = new Map();
+const PRINTS_CAP = 2000;
+
+/** Print geometry cached by key: the packs of a run share one, and rebuilds draw the same runs. */
+function printGeometry(key, make) {
+  let geo = PRINTS.get(key);
+  if (!geo) {
+    if (PRINTS.size >= PRINTS_CAP) PRINTS.delete(PRINTS.keys().next().value);
+    PRINTS.set(key, (geo = make()));
+  }
+  return geo;
+}
+
 /**
  * Printed panel of design i over x0..x1, y0..y1 on a face at z, facing +z (s = 1) or -z, set a
  * hair proud of it. It casts no shadow of its own (the pack under it does).
@@ -259,10 +272,15 @@ function packRegion(i, aspect) {
 function printPanel(kit, g, i, x0, x1, y0, y1, z, s = 1) {
   const T = kit.THREE, w = x1 - x0, h = y1 - y0;
   if (!(w > 0.005 && h > 0.005)) return null;
-  const [u0, u1, v0, v1] = packRegion(i, w / h);
-  const geo = new T.PlaneGeometry(1, 1);
-  const uv = geo.attributes.uv;
-  for (let k = 0; k < uv.count; k++) uv.setXY(k, u0 + uv.getX(k) * (u1 - u0), v0 + uv.getY(k) * (v1 - v0));
+  // A unit quad per design and aspect, in 2 percent steps.
+  const step = Math.round(Math.log(w / h) * 50);
+  const geo = printGeometry(`p|${i}|${step}`, () => {
+    const [u0, u1, v0, v1] = packRegion(i, Math.exp(step / 50));
+    const quad = new T.PlaneGeometry(1, 1);
+    const uv = quad.attributes.uv;
+    for (let k = 0; k < uv.count; k++) uv.setXY(k, u0 + uv.getX(k) * (u1 - u0), v0 + uv.getY(k) * (v1 - v0));
+    return quad;
+  });
   const mesh = new T.Mesh(geo, packArt(kit));
   mesh.scale.set(w, h, 1);
   mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, z + s * 0.0015);
@@ -279,15 +297,18 @@ function printPanel(kit, g, i, x0, x1, y0, y1, z, s = 1) {
  */
 function printSleeve(kit, g, i, r, h, x, y0, z, s = 1) {
   const T = kit.THREE;
-  const [u0, u1, v0, v1] = packRegion(i, (Math.PI * r) / h);
-  const geo = new T.LatheGeometry([new T.Vector2(r, 0), new T.Vector2(r, h)], 8, -Math.PI / 2);
-  const uv = geo.attributes.uv;
-  // Vertices run around (8 + 1 columns from -90 degrees) and up (2 rows); columns past the front
-  // half all take the design's right edge, which is plain background.
-  for (let k = 0; k < uv.count; k++) {
-    const col = Math.floor(k / 2), row = k % 2;
-    uv.setXY(k, col <= 4 ? u0 + (col / 4) * (u1 - u0) : u1, row ? v1 : v0);
-  }
+  const geo = printGeometry(`s|${i}|${Math.round(r * 1e4)}|${Math.round(h * 1e4)}`, () => {
+    const [u0, u1, v0, v1] = packRegion(i, (Math.PI * r) / h);
+    const lathe = new T.LatheGeometry([new T.Vector2(r, 0), new T.Vector2(r, h)], 8, -Math.PI / 2);
+    const uv = lathe.attributes.uv;
+    // Vertices run around (8 + 1 columns from -90 degrees) and up (2 rows); columns past the front
+    // half all take the design's right edge, which is plain background.
+    for (let k = 0; k < uv.count; k++) {
+      const col = Math.floor(k / 2), row = k % 2;
+      uv.setXY(k, col <= 4 ? u0 + (col / 4) * (u1 - u0) : u1, row ? v1 : v0);
+    }
+    return lathe;
+  });
   const mesh = new T.Mesh(geo, packArt(kit));
   mesh.position.set(x, y0, z);
   if (s < 0) mesh.rotation.y = Math.PI;

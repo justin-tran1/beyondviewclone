@@ -28,21 +28,22 @@ export const QUALITIES = ['high', 'balanced', 'fast'];
  * Per-level settings. msaa is the scene pass's sample count. AO radius and thickness are meters:
  * thickness is the view-space depth gap within which a sample still counts as an occluder, fading
  * out over its upper half, so a sofa a meter from the wall or a stool in front of a booth's back
- * panel leaves no dark outline on it while contact shading stays. denoise.depthPhi is the plane
- * tolerance per meter (see onPlane).
+ * panel leaves no dark outline on it while contact shading stays. Surfaces facing up (floors,
+ * worktops, seats) use floorThickness instead, so tables, chairs and stools still shade the floor
+ * under them. denoise.depthPhi is the plane tolerance per meter (see onPlane).
  */
 const LEVELS = {
   high: {
     msaa: 4,
     aoScale: 1,
-    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, scale: 1.7, samples: 16, distanceFallOff: 1 },
+    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, floorThickness: 1, scale: 1.7, samples: 16, distanceFallOff: 1 },
     denoise: { depthPhi: 0.05, normalPhi: 8 },
     bloom: true,
   },
   balanced: {
     msaa: 2,
     aoScale: 0.5,
-    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, scale: 1.7, samples: 8, distanceFallOff: 1 },
+    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, floorThickness: 1, scale: 1.7, samples: 8, distanceFallOff: 1 },
     denoise: { depthPhi: 0.05, normalPhi: 8 },
     bloom: false,
   },
@@ -366,6 +367,12 @@ const AOUpsampleShader = {
     }`,
 };
 
+// Occlusion from a sample fades out over the upper half of the thickness, instead of stopping at a
+// hard cutoff that draws a ring wherever an object stands exactly that far in front of a surface.
+// Surfaces facing up (world normal within about 45 degrees of up) blend to floorThickness.
+const GTAO_THICKNESS = 'vec3 viewNormal = getViewNormal(vUv);\n\t\t\tfloat aoThickness = mix(thickness, floorThickness, smoothstep(0.7, 0.95, (cameraWorldMatrix * vec4(viewNormal, 0.0)).y));';
+const GTAO_FADE = 'distanceFallOff) * (1. - smoothstep(0.5 * aoThickness, aoThickness, abs(viewDelta.z))));';
+
 /**
  * Point reconstruction for the stock GTAO shader (three r160), which pairs a sample's exact uv with
  * the depth of the texel around it. On a grazing plane that puts the point above or below the plane
@@ -376,10 +383,6 @@ const AOUpsampleShader = {
  * texel are skipped (they carry no horizon), and samples off screen count as open instead of
  * repeating the border.
  */
-// Occlusion from a sample fades out over the upper half of the thickness, instead of stopping at a
-// hard cutoff that draws a ring wherever an object stands exactly that far in front of a surface.
-const GTAO_FADE = 'distanceFallOff) * (1. - smoothstep(0.5 * thickness, thickness, abs(viewDelta.z))));';
-
 const GTAO_POINTS = /* glsl */`
 		vec2 depthTexelUv(const in vec2 uv) {
 			vec2 size = vec2(textureSize(tDepth, 0));
@@ -403,8 +406,12 @@ function patchGTAO(fs) {
     .replace(/vec3 getSceneUvAndDepth\(vec3 sampleViewPos\) \{[\s\S]*?return vec3\(sampleUv, sampleSceneDepth\);\s*\}/, GTAO_POINTS)
     .replace('float depth = getDepth(vUv.xy);', 'vec2 centerUv = depthTexelUv(vUv);\n\t\t\tgtaoCenterUv = centerUv;\n\t\t\tfloat depth = getDepth(centerUv);')
     .replace('vec3 viewPos = getViewPosition(vUv, depth);', 'vec3 viewPos = getViewPosition(centerUv, depth);')
+    .replace('uniform float thickness;', 'uniform float thickness;\n\t\tuniform float floorThickness;')
+    .replace('vec3 viewNormal = getViewNormal(vUv);', GTAO_THICKNESS)
+    .replaceAll('abs(viewDelta.z) < thickness)', 'abs(viewDelta.z) < aoThickness)')
     .replaceAll('distanceFallOff));', GTAO_FADE);
-  if (!out.includes('centerUv, depth') || !out.includes('depthTexelUv(sampleUv)') || out.split(GTAO_FADE).length !== 3) {
+  if (!out.includes('centerUv, depth') || !out.includes('depthTexelUv(sampleUv)') || !out.includes(GTAO_THICKNESS)
+    || out.split('< aoThickness)').length !== 3 || out.split(GTAO_FADE).length !== 3) {
     console.warn('postfx: the GTAO shader changed, so its sample reconstruction and thickness fade were not patched');
     return fs;
   }
@@ -432,6 +439,7 @@ class InteriorAOPass extends GTAOPass {
     });
     this.gtaoMaterial.defines.NORMAL_VECTOR_TYPE = 1;
     this.gtaoMaterial.defines.DEPTH_SWIZZLING = 'x';
+    this.gtaoMaterial.uniforms.floorThickness = { value: 1 };
     this.gtaoMaterial.fragmentShader = patchGTAO(this.gtaoMaterial.fragmentShader);
     this.gtaoMaterial.uniforms.tNormal.value = this.normalTarget.texture;
     this.gtaoMaterial.needsUpdate = true;
@@ -459,6 +467,12 @@ class InteriorAOPass extends GTAOPass {
     blend.dispose();
     this.blendMaterial.uniforms.tNormal.value = this.normalTarget.texture;
     this.blendIntensity = AO_INTENSITY;
+  }
+
+  updateGtaoMaterial(parameters) {
+    super.updateGtaoMaterial(parameters);
+    const u = this.gtaoMaterial.uniforms.floorThickness;
+    if (u && parameters.floorThickness !== undefined) u.value = parameters.floorThickness;
   }
 
   updatePdMaterial({ depthPhi, normalPhi } = {}) {

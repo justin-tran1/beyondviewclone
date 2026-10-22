@@ -269,8 +269,9 @@ cross-bilateral 5 x 5 box that cancels GTAO's rotation pattern, and is multiplie
 depth-aware upsample. Positions are always rebuilt at the depth texel they read, which keeps
 grazing floors and tops free of false occlusion. The denoiser blends across inside corners
 (wall and ceiling, a leg and the floor), never across silhouettes or outside edges, and an
-occluder counts only within 0.35 m of depth in front of a surface, fading over the upper half, so
-objects standing clear of a wall leave no dark outline on it. Bloom caps each pixel at 16
+occluder counts only within 0.35 m of depth in front of a surface (1 m on surfaces facing up, so
+furniture still shades the floor under it), fading over the upper half, so objects standing clear
+of a wall leave no dark outline on it. Bloom caps each pixel at 16
 exposed units before its bright pass, so a specular pinpoint cannot bloom into squares. 'fast'
 keeps the linear scene pass (glass and other blending stay in linear light, so it looks like the
 other levels apart from AO, bloom and edges) and replaces the rest of the chain with one output

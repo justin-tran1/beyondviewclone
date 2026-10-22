@@ -239,7 +239,8 @@ function drawPack(ctx, i) {
 
 /**
  * The region of design i (atlas UVs [u0, u1, v0, v1]) for a panel of aspect `aspect` (width over
- * height): cropped toward the middle of the design so it is never stretched more than a third.
+ * height): cropped toward the middle of the design, so it is stretched by a third at most (a little
+ * more on extremely narrow or wide panels, where the crop stops).
  */
 function packRegion(i, aspect) {
   const P = PACK, cw = P.w - 2 * P.margin, ch = P.h - 2 * P.margin, a0 = cw / ch;

@@ -2,7 +2,7 @@
 // media, plus building elements, greenery, printers and restroom fixtures.
 // Local frame: x = width, y = up, z = depth with the front facing +z (plan +y).
 import { registerItems } from './registry.js';
-import { tint, cushion, turned, slabTop, bent, leaves, assembly, barPull, roundSeat } from './lab.js';
+import { tint, cushion, turned, slabTop, bent, leaves, assembly, barPull, roundSeat, officeChair, shaded } from './lab.js';
 
 const OUT = 1.25;       // plan outline weight in px
 const FINE = 0.75;      // plan detail weight in px
@@ -13,7 +13,6 @@ const TAU = Math.PI * 2;
 const MAX_REPEAT = 200; // most modules, seats or bushes a run repeats, so absurd sizes stay fast
 
 const BOOKS = ['#003f2d', '#538184', '#80bbad', '#dbd99a', '#435254', '#cad1d3', '#032842', '#7f8480', '#f1f0ea', '#8c5a44'];
-const LEAVES = ['#4f7a4a', '#5f8b52', '#3d6741', '#6d9a5c'];
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const repeats = (n, min = 1) => clamp(n, min, MAX_REPEAT);
@@ -184,50 +183,12 @@ function keyboard(kit, g, m, x, top, z, yaw = 0, mouse = true) {
   if (mouse) cushion(kit, f, m.plastic, 0.29, 0.35, 0, 0.022, -0.045, 0.03, { r: 0.01, crown: 0.008 });
 }
 
-const CHAIR = { seat: 0.47 };
-
 /**
- * Swivel chair centered at (x, z), facing local +z turned by yaw: a five-star base on twin-wheel
- * casters (or glides), a gas lift, a crowned seat and back on black shells, and T arms with soft
- * pads. back is the backrest height; lite drops the arms for rooms that seat many people. The
- * chair is one merged assembly per variant, so a table of twelve stays light.
+ * Swivel chair centered at (x, z), facing local +z turned by yaw (see officeChair in lab.js):
+ * back is the backrest height, mesh a mesh back in a molded frame, arms false for armless seats.
  */
-function swivelChair(kit, g, m, x, z, yaw, { fabric = m.fabric, back = 0.47, casters = true, base = m.black, lite = false } = {}) {
-  const key = `swivel|${fabric.uuid}|${base.uuid}|${back}|${casters}|${lite}`;
-  const c = assembly(kit, key, (a) => {
-    const legY = casters ? 0.06 : 0.014;
-    kit.cyl(a, base, 0.052, 0.06, 0, legY - 0.006, 0, { rTop: 0.04, segments: 18 });
-    for (let i = 0; i < 5; i++) {
-      const leg = sub(kit, a, 0, 0, 0, { yaw: (i * TAU) / 5 + Math.PI / 2 });
-      const tilt = sub(kit, leg, 0, legY + 0.014, 0, { roll: -0.04 });
-      cushion(kit, tilt, base, 0.03, 0.3, -0.014, 0.016, -0.018, 0.018, { r: 0.011 });
-      if (casters) {
-        kit.block(leg, base, 0.27, 0.3, 0.05, legY + 0.002, -0.013, 0.013);
-        for (const s of [-1, 1]) kit.cyl(leg, m.rubber, 0.029, 0.014, 0.276, 0.029, s * 0.01, { axis: 'z', segments: 14 });
-      } else {
-        kit.cyl(leg, m.rubber, 0.017, 0.01, 0.285, 0, 0, { segments: 12 });
-      }
-    }
-    kit.cyl(a, m.chrome, 0.014, 0.12, 0, legY + 0.04, 0, { segments: 12 });
-    kit.cyl(a, m.black, 0.026, 0.2, 0, legY + 0.15, 0, { segments: 14 });
-    kit.block(a, m.black, -0.1, 0.1, 0.355, 0.395, -0.12, 0.09);
-    cushion(kit, a, m.black, -0.235, 0.235, 0.385, 0.41, -0.235, 0.205, { r: 0.01 });
-    cushion(kit, a, fabric, -0.25, 0.25, 0.402, CHAIR.seat + 0.012, -0.24, 0.225, { r: 0.034, crown: 0.012 });
-    kit.block(a, m.black, -0.035, 0.035, 0.37, 0.63, -0.275, -0.24);
-    const b = sub(kit, a, 0, 0.55, -0.245, { pitch: -0.1 });
-    cushion(kit, b, m.black, -0.235, 0.235, 0, back, -0.036, -0.012, { r: 0.012 });
-    cushion(kit, b, fabric, -0.222, 0.222, 0.012, back - 0.012, -0.016, 0.034, { r: 0.028, crown: 0.012, axis: 'z' });
-    if (lite) return;
-    for (const s of [-1, 1]) {
-      kit.block(a, m.black, s * 0.262 - 0.012, s * 0.262 + 0.012, 0.4, 0.645, -0.085, -0.05);
-      bent(kit, a, m.black, [[s * 0.2, 0.41, -0.068], [s * 0.255, 0.405, -0.068], [s * 0.262, 0.42, -0.068]], 0.012, { segments: 6, radial: 8 });
-      cushion(kit, a, m.black, s * 0.262 - 0.03, s * 0.262 + 0.03, 0.638, 0.668, -0.17, 0.085, { r: 0.012 });
-    }
-  });
-  c.position.set(x, 0, z);
-  c.rotation.y = yaw;
-  g.add(c);
-  return c;
+function swivelChair(kit, g, m, x, z, yaw, { fabric = m.fabric, back = 0.47, casters = true, base = m.black, arms = true, mesh = false } = {}) {
+  return officeChair(kit, g, x, z, yaw, { fabric, back, casters, base, arms, mesh });
 }
 
 /**
@@ -476,7 +437,7 @@ function buildWorkstation(kit, { w, d, h, color }) {
   mug(kit, g, m, -0.55, WS.top, z0 + 0.42);
   cushion(kit, g, m.felt, 0.45, 0.66, WS.top, WS.top + 0.004, z0 + 0.3, z0 + 0.58, { r: 0.002 });
   notebook(kit, g, m, 0.555, WS.top + 0.004, z0 + 0.44, 0.12);
-  swivelChair(kit, g, m, 0.04, WS.chairZ, WS.chairYaw);
+  swivelChair(kit, g, m, 0.04, WS.chairZ, WS.chairYaw, { mesh: true });
   return g;
 }
 
@@ -517,7 +478,7 @@ function drawWorkstation(ctx, o) {
 function buildTaskChair(kit, { color }) {
   const g = kit.group();
   const m = mats(kit);
-  swivelChair(kit, g, m, 0, 0.015, 0, { fabric: finish(kit, color, m.fabric, 0.95) });
+  swivelChair(kit, g, m, 0, 0.015, 0, { fabric: finish(kit, color, m.fabric) });
   return g;
 }
 
@@ -556,7 +517,7 @@ function buildBenching(kit, { w, h, color }) {
     const x = s.side * s.x;
     dualMonitors(kit, r, m, x, top, 0.2);
     keyboard(kit, r, m, x - 0.03, top, 0.5, 0, false);
-    swivelChair(kit, r, m, x + s.jitter * 0.3, BENCH.chairZ, Math.PI + s.jitter, { lite: true });
+    swivelChair(kit, r, m, x + s.jitter * 0.3, BENCH.chairZ, Math.PI + s.jitter, { arms: false, mesh: true });
   }
   return g;
 }
@@ -700,7 +661,7 @@ function buildConference(seats) {
     // Flush power and data box with a brushed lid.
     kit.block(g, m.black, -0.17, 0.17, h - 0.002, h + 0.002, -0.06, 0.06, true, { bevel: false });
     kit.block(g, m.alu, -0.155, 0.155, h + 0.002, h + 0.004, -0.048, 0.048, true, { bevel: false });
-    for (const c of confSeats(spec)) swivelChair(kit, g, m, c.x, c.z, c.yaw, { back: 0.36, casters: false, base: m.chrome, lite: true });
+    for (const c of confSeats(spec)) swivelChair(kit, g, m, c.x, c.z, c.yaw, { back: 0.4, casters: false, base: m.chrome, mesh: true });
     return g;
   };
 }
@@ -1366,7 +1327,7 @@ function buildPlant(kit, { w, d, h, color }) {
   ];
   leaders.forEach((pts, i) => bent(kit, g, bark, pts, i ? 0.009 : 0.016, { segments: 16, radial: 7 }));
   const rnd = seq(23);
-  const tones = LEAVES.slice(0, 3).map((c) => kit.material(c, { roughness: 0.55 }));
+  const tones = ['#34552f', '#43663a', '#2b4729'].map((c) => kit.material(c, { roughness: 0.42 }));
   const T = kit.THREE, curves = leaders.map((pts) => new T.CatmullRomCurve3(pts.map((p) => new T.Vector3(...p))));
   const y0 = 0.62, yc = (y0 + h) / 2, hh = (h - y0) / 2;
   const leafAt = () => {
@@ -1415,39 +1376,53 @@ function buildPlanter(kit, { w, d, h, color }) {
   const m = mats(kit);
   const box = finish(kit, color, m.frame);
   const L = planterLayout(w, d);
-  const bh = Math.min(0.6, h * 0.66);
+  const bh = Math.min(0.6, h * 0.54);
   kit.block(g, m.shadow, -w / 2 + 0.03, w / 2 - 0.03, 0, 0.04, -d / 2 + 0.03, d / 2 - 0.03);
   kit.block(g, box, -w / 2, w / 2, 0.04, bh - 0.02, -d / 2, d / 2);
   kit.block(g, box, -w / 2, w / 2, bh - 0.02, bh, -d / 2, -d / 2 + L.rim);
   kit.block(g, box, -w / 2, w / 2, bh - 0.02, bh, d / 2 - L.rim, d / 2);
   kit.block(g, box, -w / 2, -w / 2 + L.rim, bh - 0.02, bh, -d / 2 + L.rim, d / 2 - L.rim);
   kit.block(g, box, w / 2 - L.rim, w / 2, bh - 0.02, bh, -d / 2 + L.rim, d / 2 - L.rim);
-  kit.block(g, kit.mat.soil, -w / 2 + L.rim, w / 2 - L.rim, bh - 0.035, bh - 0.025, -d / 2 + L.rim, d / 2 - L.rim);
-  // Boxwood-like shrubs: a dense dark core under a shell of small leaves in three greens.
-  const core = kit.material('#2f4a30', { roughness: 0.9 });
-  const tones = LEAVES.map((c) => kit.material(c, { roughness: 0.6 }));
+  kit.block(g, kit.mat.soil, -w / 2 + L.rim, w / 2 - L.rim, bh - 0.025, bh - 0.014, -d / 2 + L.rim, d / 2 - L.rim);
+  // Snake plants: clumps of stiff, upright, slightly twisted blades, each over a mound of trailing
+  // leaves that hides the soil and spills toward the rim, in a few deep, natural greens.
+  const tones = ['#33522f', '#47663c', '#2a4429', '#58723f'].map((c) => kit.material(c, { roughness: 0.5 }));
   const rnd = seq(31);
-  const lim = d / 2 - L.rim;
-  const bushes = planterBushes(w, d, L).map((bush) => {
-    const r = Math.min(bush.r * (0.85 + rnd() * 0.3), lim);
-    return {
-      r, z: clamp(bush.z, -lim + r, lim - r), x: clamp(bush.x, -w / 2 + L.rim + r, w / 2 - L.rim - r),
-      y: Math.min(bh - 0.02 + r * (0.45 + rnd() * 0.35), h - r * 0.75),
-    };
-  });
-  const shrubs = assembly(kit, `planter|${w}|${d}|${h}`, (a) => {
-    for (const b of bushes) kit.sphere(a, core, b.r * 0.9, b.x, b.y, b.z, { segments: 12, scaleY: 0.72 });
-    const per = Math.round(70 / Math.max(1, bushes.length / 8));
-    for (const mat of tones) {
-      leaves(kit, a, mat, (bushes.length * per) / tones.length, (i) => {
-        const b = bushes[i % bushes.length];
-        const u = rnd() * 2 - 1, t = rnd() * TAU, k = Math.sqrt(1 - u * u);
-        const nx = k * Math.cos(t), ny = Math.abs(u) * 0.9 + 0.1, nz = k * Math.sin(t);
-        const y = b.y + ny * b.r * 0.72;
-        if (y < bh - 0.01) return null;
-        return { x: clamp(b.x + nx * b.r * 0.85, -w / 2 + 0.07, w / 2 - 0.07), y, z: clamp(b.z + nz * b.r * 0.85, -d / 2 + 0.07, d / 2 - 0.07), yaw: Math.atan2(nx, nz), pitch: -0.4 + rnd() * 0.9 - ny * 0.6, roll: rnd() - 0.5, size: 0.035 + rnd() * 0.025 };
-      });
+  const x0 = -w / 2 + L.rim + 0.02, x1 = w / 2 - L.rim - 0.02, z0 = -d / 2 + L.rim + 0.02, z1 = d / 2 - L.rim - 0.02;
+  const soil = bh - 0.016, tall = Math.max(0.12, h - soil);
+  const clumps = planterBushes(w, d, L).map((b) => ({
+    x: clamp(b.x, x0 + 0.04, x1 - 0.04), z: clamp(b.z, z0 + 0.03, z1 - 0.03), r: Math.min(b.r, (z1 - z0) / 2),
+    n: 5 + Math.floor(rnd() * 4), k: 0.7 + rnd() * 0.3,
+  }));
+  const at = (list, i) => {
+    for (const c of list) {
+      if (i < c.n) return c;
+      i -= c.n;
     }
+    return null;
+  };
+  const blades = clumps.reduce((sum, c) => sum + c.n, 0), mound = 22;
+  const shrubs = assembly(kit, `planter|${w}|${d}|${h}`, (a) => {
+    tones.forEach((mat, t) => {
+      if (t < 2) leaves(kit, a, mat, Math.ceil(blades / 2), (i) => {
+        const c = at(clumps, i * 2 + t);
+        if (!c) return null;
+        const ang = rnd() * TAU, spread = 0.01 + rnd() * 0.035;
+        return {
+          x: c.x + Math.cos(ang) * spread, y: soil, z: c.z + Math.sin(ang) * spread, yaw: ang + (rnd() - 0.5) * 1.2,
+          pitch: -1.18 - rnd() * 0.3, roll: (rnd() - 0.5) * 0.6, size: tall * c.k * (0.65 + rnd() * 0.35), width: 0.1, base: 0.3, droop: 0.03,
+        };
+      });
+      if (t !== 1) leaves(kit, a, mat, Math.ceil((clumps.length * mound) / 3), (i) => {
+        const c = clumps[Math.floor((i * 3 + (t ? t - 1 : 0)) / mound) % clumps.length];
+        const ang = rnd() * TAU, el = rnd() * 0.9, rr = c.r * (0.35 + rnd() * 0.65);
+        const x = clamp(c.x + Math.cos(ang) * Math.cos(el) * rr, x0, x1), z = clamp(c.z + Math.sin(ang) * Math.cos(el) * rr, z0 - 0.01, z1 + 0.01);
+        return {
+          x, y: soil + 0.01 + Math.sin(el) * rr * 0.45, z, yaw: Math.atan2(x - c.x, z - c.z) + (rnd() - 0.5) * 0.8,
+          pitch: 0.05 + rnd() * 0.55, roll: (rnd() - 0.5) * 0.9, size: 0.065 + rnd() * 0.05,
+        };
+      });
+    });
   });
   g.add(shrubs);
   return g;
@@ -1476,10 +1451,12 @@ function rugLayout(w, d) {
 function buildRug(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  // Flatweave wool: the field takes the caller's color, the border and inlay stay fixed.
-  const field = finish(kit, color, tint(kit, m.grey, '#a3aaa1'));
-  const border = tint(kit, m.sage, '#5a7774');
-  const stripe = tint(kit, m.wheat, '#cdc79e');
+  // Flatweave wool: the field takes the caller's color, the border and inlay stay fixed. Wool has
+  // little of upholstery's sheen, which would glow at the grazing angles a rug is seen from.
+  const wool = (hex) => tint(kit, m.grey, hex, 1, { sheen: 0.08 });
+  const field = wool(isColor(color) ? color : '#8e918a');
+  const border = wool('#566f6b');
+  const stripe = wool('#c4bd95');
   const R = rugLayout(w, d);
   const t = Math.max(0.004, h), b = R.band;
   kit.block(g, field, -w / 2 + b, w / 2 - b, 0, t * 0.9, -d / 2 + b, d / 2 - b, false);
@@ -1606,9 +1583,14 @@ function buildToilet(kit, { d, h }) {
   bowl.scale.z = e;
   const water = turned(kit, g, kit.material('#aebfc2', { roughness: 0.03 }), [[0, 0], [0.105, 0]], 0, 0.335, WC.bowlZ + 0.01, { segments: 28 });
   water.scale.z = e * 0.95;
-  const seat = kit.torus(g, m.white, 0.155, 0.03, 0, 0.415, WC.bowlZ);
-  seat.scale.set(1, e * 0.98, 0.45);
-  kit.block(g, m.chrome, -0.09, 0.09, 0.4, 0.43, tz1 + 0.02, tz1 + 0.05);
+  // Molded seat and closed lid, hinged on chrome posts in front of the tank.
+  const seatY = 0.404, sz = WC.bowlZ + 0.03, k = e * 0.9;
+  const seat = turned(kit, g, m.white, [[0.118, 0], [0.18, 0], [0.188, 0.006], [0.186, 0.014], [0.176, 0.02], [0.13, 0.02], [0.118, 0.012], [0.118, 0]], 0, seatY, sz, { segments: 40 });
+  seat.scale.z = k;
+  const lid = turned(kit, g, m.white, [[0, 0], [0.182, 0], [0.19, 0.008], [0.186, 0.016], [0.16, 0.022], [0.08, 0.026], [0, 0.027]], 0, seatY + 0.02, sz, { segments: 40 });
+  lid.scale.z = k;
+  kit.block(g, m.white, -0.09, 0.09, 0.396, 0.41, tz1 + 0.002, tz1 + 0.026);
+  for (const sx of [-1, 1]) kit.cyl(g, m.chrome, 0.011, 0.034, sx * 0.07, seatY + 0.018, tz1 + 0.016, { axis: 'x', segments: 10 });
   return g;
 }
 
@@ -1683,7 +1665,7 @@ function drawVanity(ctx, o) {
 
 // ---- Registration -------------------------------------------------------------------
 
-registerItems([
+registerItems(shaded([
   fixed({
     type: 'workstation', name: 'Workstation', category: 'office', colorable: true,
     w: 1.52, d: 1.37, h: 1.2,
@@ -1828,4 +1810,4 @@ registerItems([
     tags: ['vanity', 'sink', 'restroom', 'lavatory', 'mirror'],
     build: buildVanity, draw2d: drawVanity,
   },
-]);
+]));

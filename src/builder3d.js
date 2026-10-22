@@ -2,11 +2,15 @@
 // Static geometry is written straight into per-material buckets and merged at the end, so large
 // plans stay at a few dozen draw calls. Contract: docs/architecture.md (builder3d.js).
 //
-// Lighting is set up like an architectural rendering: daylight enters through the windows (area
-// lights at the glass, aimed at the windows nearest the viewer, plus a shadowed sun), fixtures glow
-// over a fill from above that stands in for their light, the outdoors reads several stops brighter
-// than the interior, and captureEnvironment() renders the finished interior into the image based
-// lighting so floors, glass and metals reflect the room they are in. Light levels are scene-linear.
+// Lighting is set up like an architectural rendering. A plan light map, computed per build, holds
+// the diffuse light every point of the floor plate receives from the ceiling fixtures and through
+// the windows (walls block it, doorways and glass let it through) plus the light bounced around each
+// room, so windows read as the main light source with a soft falloff and windowless rooms stay
+// evenly lit by their fixtures. Interior materials read it in their shaders in place of a uniform
+// fill. A shadowed sun casts the sun patches, area lights at the windows nearest the viewer add their
+// reflections to glossy floors, quartz and metals (only within the room they light), the outdoors
+// reads several stops brighter than the interior, and captureEnvironment() renders the finished
+// interior into the image based lighting, scaled per room by the light map. Levels are scene-linear.
 import * as THREE from 'three';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { OPENING_TYPES } from './model.js';
@@ -66,8 +70,31 @@ const OUTDOOR_FILL = 1.6;
 const FILL = { sky: '#fff1df', ground: '#8f877c', intensity: 1.9 };
 // Sky light through the windows: radiance of the area lights at the glass, at most `max` of them
 // (aimed at the runs nearest the viewer), and the gap (m) under which windows in a row share one.
-const DAYLIGHT = { color: '#f1f4f8', radiance: 3.5, max: 10, maxLow: 5, merge: 1.6 };
+// They add only reflections; the light map carries the diffuse daylight from every window.
+const DAYLIGHT = { color: '#f1f4f8', radiance: 3.5, max: 6, maxLow: 3, merge: 1.6 };
+// Fixture lenses nearest the viewer that get an area light for their reflections.
+const FIXTURE_LIGHTS = 4;
 const LED = { color: '#fff3e4', troffer: 4.5, downlight: 7, pendant: 5, reflector: 0.28 };
+// The plan light map. cell: texel size (m), grown so the map stays under maxCells; height: where
+// light is evaluated (m above the floor). Emitter output is per fixture (per sample for pendant runs,
+// every `pendantStep` m), set so a grid of them gives about 3 on a desk (scene-linear irradiance).
+// sky: radiance of a window as seen from inside (sky above, sunlit ground below, through the glass).
+// reach: how far (m) fixtures and windows light. bounce: interreflection as a share of the direct
+// light, spread `spread` m locally and averaged over the room (plus `uplight` under open ceilings,
+// whose pendants light the deck). exposure: per room adaptation (see
+// buildPlanLight). shade: [isotropic, directional] split
+// of the irradiance model, hemi: share of the uniform fill kept indoors, ibl: share of the image
+// based diffuse light kept indoors (the bounce stands in for the rest).
+const PLAN_LIGHT = {
+  cell: 0.25, maxCells: 32000, height: 0.6,
+  troffer: 4.8, downlight: 4, pendant: 1.7, pendantStep: 0.6,
+  sky: 2.8, glass: 0.8, reach: { fixture: 5.5, window: 11 },
+  bounce: { local: 0.18, room: 0.22, uplight: 0.25, spread: 1.1 },
+  exposure: { reference: 3, adapt: 0.5, range: [0.5, 1.6] },
+  shade: [0.15, 0.85], hemi: 0.12, ibl: 0.3,
+  colors: { fixture: '#fff0de', day: '#f2f5f9', bounce: '#fbf3ea' },
+  budget: 6e6,
+};
 // Image based lighting strength for every material once the interior has been captured.
 const ENV_INTENSITY = 0.75;
 // While capturing, room surfaces are lit this much less (bright windows and fixtures keep full
@@ -98,7 +125,7 @@ export function buildPlanScene(plan, { kit, quality = 'high' } = {}) {
   checkPlan(plan);
   // Kit materials reflect the captured interior at a physically sensible strength.
   kit.setEnvironmentIntensity?.(ENV_INTENSITY);
-  const owned = { geometries: [], materials: [], textures: [] };
+  const owned = { geometries: [], materials: [], textures: [], extra: [] };
   const loose = [];
   try {
     return buildScene(createContext(plan, kit, quality, owned, loose));
@@ -134,8 +161,10 @@ function release(owned, loose) {
   for (const g of owned.geometries) g.dispose();
   for (const m of owned.materials) m.dispose();
   for (const key of owned.textures) releaseTexture(key);
+  for (const fn of owned.extra || []) fn();
   for (const o of loose) disposeObject(o);
   owned.geometries.length = owned.materials.length = owned.textures.length = loose.length = 0;
+  if (owned.extra) owned.extra.length = 0;
 }
 
 function buildScene(ctx) {
@@ -152,6 +181,9 @@ function buildScene(ctx) {
   buildCeilings(ctx);
   buildItems(ctx);
   buildExterior(ctx, exterior);
+  const light = buildPlanLight(ctx);
+  ctx.owned.extra.push(() => light.dispose());
+  ctx.planLight = light;
   const probe = environmentProbe(ctx);
   const daylight = buildDaylight(ctx, probe);
 
@@ -163,10 +195,20 @@ function buildScene(ctx) {
   for (const m of flush(ctx.fx, shading, ctx.owned)) m.renderOrder = -1;
   flush(ctx.ext, exterior, ctx.owned);
   for (const o of ctx.loose) structure.add(o);
+  // Everything indoors is lit by the light map.
+  for (const group of [structure, furnishings, ceilings]) {
+    group.traverse((o) => {
+      if (!o.isMesh) return;
+      o.material = Array.isArray(o.material) ? o.material.map((m) => planMaterial(ctx.kit, m)) : planMaterial(ctx.kit, o.material);
+    });
+  }
+  usePlanLight(ctx.kit, light, probe, daylight.userData.rectSpace);
 
-  root.add(exterior, structure, furnishings, shading, ceilings, daylight);
+  // The window lights come first, so their indices in the shaders match planRectSpace.
+  root.add(daylight, exterior, structure, furnishings, shading, ceilings);
   root.userData.horizon = exterior.userData.horizon;
   root.userData.daylight = daylight;
+  root.userData.planUniforms = planUniforms(ctx.kit);
   root.updateMatrixWorld(true);
 
   return {
@@ -180,6 +222,8 @@ function buildScene(ctx) {
     lights: daylight.children.slice(),
     // Where captureEnvironment() looks from by default: the largest room's middle, at 1.5 m.
     probe,
+    // The diffuse light map: cell size (m), grid size, build time, and lookups by plan point.
+    planLight: { cell: light.cell, size: light.size, origin: light.origin, ms: light.ms, phases: light.phases, budget: light.budget, spaceAt: light.spaceAt, levelAt: light.levelAt },
     dispose() {
       root.removeFromParent();
       for (const l of daylight.children) l.dispose();
@@ -355,6 +399,9 @@ export function captureEnvironment(renderer, scene, built, { position } = {}) {
     saved.push([o, o.intensity]);
     o.intensity *= o.isDirectionalLight ? 0 : CAPTURE_DIM;
   });
+  const plan = built?.root?.userData.planUniforms?.planScale;
+  const scale = plan?.value;
+  if (plan) plan.value = scale * CAPTURE_DIM;
   // Furniture barely shows in blurred reflections and ambient, and is most of the geometry.
   const furnishings = built?.root?.getObjectByName('furnishings');
   const shown = furnishings?.visible;
@@ -371,6 +418,7 @@ export function captureEnvironment(renderer, scene, built, { position } = {}) {
     scene.onBeforeRender = hook;
     if (furnishings) furnishings.visible = shown;
     for (const [o, v] of saved) o.intensity = v;
+    if (plan) plan.value = scale;
     scene.environment = prev.env;
     renderer.setRenderTarget(prev.target);
     if (!state) {
@@ -402,8 +450,12 @@ function createContext(plan, kit, quality, owned, loose) {
     ext: createBuckets(),
     colliders: [],
     obstacles: [],
-    // Glazing that lets daylight in: candidates for the window area lights.
+    // Glazing that lets daylight in: the light map's windows and candidates for the area lights.
     windows: [],
+    // Ceiling fixtures for the light map: { x, y (plan), h, power, cone }.
+    emitters: [],
+    // Fixture lenses for reflections: { x, z (plan x, y), y (height), length, breadth, dir, radiance }.
+    luminaires: [],
     lights: 0,
     fixtures: MAX_FIXTURES,
     itemVerts: 0,
@@ -433,7 +485,7 @@ const SHARED = new WeakMap();
 
 function sharedStore(kit) {
   let store = SHARED.get(kit);
-  if (!store) SHARED.set(kit, (store = { materials: new Map(), owned: { geometries: [], materials: [], textures: [] }, tints: new Map() }));
+  if (!store) SHARED.set(kit, (store = { materials: new Map(), owned: { geometries: [], materials: [], textures: [] }, tints: new Map(), lit: new Map(), plan: null }));
   return store;
 }
 
@@ -486,9 +538,11 @@ function createMaterials(kit) {
     // The outside face of exterior walls: the kit's paint in a warm grey, with the outdoor fill.
     facade: sharedMaterial(kit, 'facade', () => outdoor(kit.paintMaterial('#cbc7be', { roughness: 0.8 }).clone())),
     cut: kit.material('#454d4f', { roughness: 0.9 }),
-    base: kit.material('#3b4042', { roughness: 0.6 }),
-    // Painted hollow metal door frames and clear anodized aluminum storefront and window frames.
-    frame: kit.material('#596164', { roughness: 0.38 }),
+    // Rubber cove base in a soft charcoal, so it grounds the walls without drawing a black line.
+    base: kit.material('#4b4f4f', { roughness: 0.62 }),
+    // Satin painted hollow metal door frames in a warm light grey (dark frames read as outlines),
+    // and clear anodized aluminum storefront and window frames.
+    frame: kit.material('#a9aaa5', { roughness: 0.42 }),
     alu: kit.material('#b9bdbf', { roughness: 0.34, metalness: 0.65 }),
     leaf: kit.mat.oak,
     handle: kit.mat.steel,
@@ -530,6 +584,7 @@ function createMaterials(kit) {
  */
 function outdoor(m, fill = OUTDOOR_FILL) {
   const base = m.onBeforeCompile, key = m.customProgramCacheKey;
+  m.userData.outdoor = true;
   m.onBeforeCompile = function (shader, renderer) {
     base.call(this, shader, renderer);
     shader.uniforms.outdoorFill = { value: fill };
@@ -1974,7 +2029,8 @@ function upperWall(ctx, info) {
   const { w, sides, tops } = info;
   const M = ctx.mats;
   // Paint and facade take shadows like the wall below them; the dark plenum faces need not.
-  const get = (m) => ctx.ceil.get(m, m !== M.cut, m === M.paint || m === M.facade);
+  // Every face takes shadows: under an open ceiling the sun would otherwise light them through the roof.
+  const get = (m) => ctx.ceil.get(m, m !== M.cut, true);
   const f = { pu: M.paint, nu: M.paint, top: M.cut };
   // Recessed a hair behind the wall faces: it hides the seam without ever peeking out below a ceiling.
   const u = w.thickness / 2 - 0.0008;
@@ -2145,7 +2201,8 @@ function buildCeilings(ctx) {
  */
 function bulkheads(ctx) {
   const B = ctx.ceil;
-  const band = all(B.get(ctx.mats.drywall, false, false)), dark = all(B.get(ctx.mats.deck, false, false));
+  // Vertical faces take shadows, so the sun never reaches them through the roof.
+  const band = all(B.get(ctx.mats.drywall, false, true)), dark = all(B.get(ctx.mats.deck, false, true));
   // Above a wall the band carries the wall on up, in its paint.
   const onWall = all(B.get(ctx.mats.paint, false, true));
   const topOf = (space) => (space.ceiling === 'open' ? space.deck : space.ceilY);
@@ -2416,11 +2473,12 @@ function troffer(ctx, p, h) {
   const B = ctx.ceil;
   const hs = TILE / 2 - 0.004, rim = 0.024, depth = 0.014;
   const lens = B.get(ctx.mats.led, false, false);
+  ctx.emitters.push({ x: p.x, y: p.y, h, power: PLAN_LIGHT.troffer, cone: 1 });
   if (ctx.low) {
     box(WORLD, { bottom: lens }, p.x - hs, p.x + hs, p.y - hs, p.y + hs, h - 0.002, h);
     return;
   }
-  const trim = B.get(ctx.mats.trim, false, false), y0 = h - depth, r = 0.003;
+  const trim = B.get(ctx.mats.trim, false, true), y0 = h - depth, r = 0.003;
   const long = ['bottom', 'pu', 'nu', 's0', 's1'], short = ['bottom', 'pu', 'nu'];
   rbox(ctx, WORLD, trim, p.x - hs, p.x + hs, p.y - hs, p.y - hs + rim, y0, h, r, { faces: long });
   rbox(ctx, WORLD, trim, p.x - hs, p.x + hs, p.y + hs - rim, p.y + hs, y0, h, r, { faces: long });
@@ -2440,6 +2498,7 @@ function troffer(ctx, p, h) {
     poly(refl, [V(at(a, -a, y0)), V(at(a, a, y0)), V(at(l, l, yl)), V(at(l, -l, yl))]);
   }
   quad(lens, [p.x - l, yl, p.y - l], [p.x + l, yl, p.y - l], [p.x + l, yl, p.y + l], [p.x - l, yl, p.y + l], DOWN, 0, 1, 1, 0);
+  ctx.luminaires.push({ x: p.x, y: yl - 0.002, z: p.y, length: 2 * l, breadth: 2 * l, dir: { x: 1, y: 0 }, radiance: LED.troffer });
 }
 
 function diffuser(ctx, p, h) {
@@ -2451,12 +2510,16 @@ function diffuser(ctx, p, h) {
 /** Recessed LED downlight: a white trim ring around a bright lens. */
 function downlight(ctx, p, h) {
   const seg = ctx.low ? 12 : 24;
-  cylinder(ctx, ctx.ceil.get(ctx.mats.trim, false, false), p.x, h - 0.008, p.y, 0.09, 0.008, seg);
+  // Reflector downlights throw a narrower beam than a troffer's lambertian lens.
+  ctx.emitters.push({ x: p.x, y: p.y, h, power: PLAN_LIGHT.downlight, cone: 2 });
+  cylinder(ctx, ctx.ceil.get(ctx.mats.trim, false, true), p.x, h - 0.008, p.y, 0.09, 0.008, seg);
   cylinder(ctx, ctx.ceil.get(ctx.mats.spot, false, false), p.x, h - 0.0086, p.y, 0.064, 0.0006, seg);
+  // A square of the lens's area.
+  ctx.luminaires.push({ x: p.x, y: h - 0.009, z: p.y, length: 0.113, breadth: 0.113, dir: { x: 1, y: 0 }, radiance: LED.downlight });
 }
 
 function sprinkler(ctx, p, h) {
-  const f = { ...faces2(ctx.ceil.get(ctx.mats.sprinkler, false, false)) };
+  const f = { ...faces2(ctx.ceil.get(ctx.mats.sprinkler, false, true)) };
   f.s0 = f.s1 = f.bottom = f.pu;
   box(WORLD, f, p.x - 0.022, p.x + 0.022, p.y - 0.022, p.y + 0.022, h - 0.003, h);
   box(WORLD, f, p.x - 0.006, p.x + 0.006, p.y - 0.006, p.y + 0.006, h - 0.026, h - 0.003);
@@ -2497,7 +2560,8 @@ function openCeiling(ctx, region) {
     }
   }
   if (ctx.low) return;
-  const beam = all(ctx.ceil.get(ctx.mats.beam, false, false));
+  // Exposed structure takes shadows (the deck above shades it from the sun).
+  const beam = all(ctx.ceil.get(ctx.mats.beam, false, true));
   const bays = clamp(Math.round((l1 - l0) / 3), 1, 400);
   for (let k = 1; k < bays; k++) {
     const l = l0 + ((l1 - l0) * k) / bays;
@@ -2557,15 +2621,21 @@ function pendant(ctx, p0, p1, h, deck) {
   const len = Math.hypot(d.x, d.y);
   const F = frameOf(p0, { x: d.x / len, y: d.y / len });
   const y0 = h - 0.18, y1 = h - 0.1;
-  box(F, all(B.get(ctx.mats.pendant, false, false)), 0, len, -0.03, 0.03, y0, y1);
+  const n = Math.max(1, Math.round(len / PLAN_LIGHT.pendantStep));
+  for (let k = 0; k < n; k++) {
+    const s = ((k + 0.5) * len) / n;
+    ctx.emitters.push({ x: p0.x + F.d.x * s, y: p0.y + F.d.y * s, h: y0, power: (PLAN_LIGHT.pendant * len) / n / PLAN_LIGHT.pendantStep, cone: 1 });
+  }
+  box(F, all(B.get(ctx.mats.pendant, false, true)), 0, len, -0.03, 0.03, y0, y1);
   box(F, { bottom: B.get(ctx.mats.strip, false, false) }, 0.01, len - 0.01, -0.02, 0.02, y0 - 0.002, y0);
-  const cable = all(B.get(ctx.mats.duct, false, false));
+  ctx.luminaires.push({ x: p0.x + F.d.x * len / 2, y: y0 - 0.004, z: p0.y + F.d.y * len / 2, length: len - 0.02, breadth: 0.04, dir: F.d, radiance: LED.pendant });
+  const cable = all(B.get(ctx.mats.duct, false, true));
   for (const s of [0.25, len - 0.25]) box(F, cable, s - 0.002, s + 0.002, -0.002, 0.002, y1, deck);
 }
 
 /** Round duct that drops from the deck at p0 and runs to p1, with seam rings and hanger rods. */
 function duct(ctx, p0, p1, r, deck) {
-  const B = ctx.ceil.get(ctx.mats.duct, false, false);
+  const B = ctx.ceil.get(ctx.mats.duct, false, true);
   const y = deck - 0.45 - r;
   const seg = ctx.low ? 12 : 20;
   const a = new THREE.Vector3(p0.x, y, p0.y);
@@ -2575,7 +2645,7 @@ function duct(ctx, p0, p1, r, deck) {
   const len = Math.hypot(p1.x - p0.x, p1.y - p0.y);
   const d = { x: (p1.x - p0.x) / len, y: (p1.y - p0.y) / len };
   const F = frameOf(p0, d);
-  const rod = all(ctx.ceil.get(ctx.mats.beam, false, false));
+  const rod = all(ctx.ceil.get(ctx.mats.beam, false, true));
   // Spacing grows on absurdly long runs so the part count stays bounded.
   const rodStep = Math.max(2.4, len / 400), ringStep = Math.max(1.5, len / 400);
   for (let s = rodStep / 2; s < len - 0.3; s += rodStep) {
@@ -2592,65 +2662,108 @@ function duct(ctx, p0, p1, r, deck) {
 // ---- Daylight and the environment probe -------------------------------------------
 
 /**
- * Sky light through the glazing as one-sided area lights at the glass, facing in: windows read as
- * the main light source and their light falls off softly across floors and walls. Windows in a row
- * (same line, sill and head, gaps under DAYLIGHT.merge) form one run whose radiance is scaled by
- * its glass share. A fixed set of at most DAYLIGHT.max lights is aimed at the runs nearest the
- * viewer before every render (see aimDaylight; the count never changes, so shaders stay compiled).
- * They are real-time stand-ins (the path traced photo finds the real daylight), so the group is
- * flagged as an overlay that photo.js leaves out.
+ * Area lights for reflections: one-sided lights at the glass of the windows, facing in, and on the
+ * lenses of the ceiling fixtures, facing down, so glossy floors, quartz and metals mirror the windows
+ * and fixtures around the viewer. Their diffuse light is left to the light map. Windows in a row
+ * (same line, sill and head, gaps under DAYLIGHT.merge, one space) form one run whose radiance is
+ * scaled by its glass share. Fixed sets of at most DAYLIGHT.max window lights and FIXTURE_LIGHTS
+ * fixture lights are aimed at the runs and fixtures nearest the viewer, in the viewer's space first,
+ * before every render (see aimDaylight; the counts never change, so shaders stay compiled). They are
+ * real-time stand-ins (the path traced photo finds the real light), so the group is flagged as an
+ * overlay that photo.js leaves out.
  */
 function buildDaylight(ctx, probe) {
   const group = namedGroup('daylight');
   group.userData.overlay = true;
   group.userData.realtimeOnly = true;
-  const runs = daylightRuns(ctx);
-  group.userData.runs = runs;
-  const n = Math.min(runs.length, ctx.low ? DAYLIGHT.maxLow : DAYLIGHT.max);
-  if (!n) return group;
-  initAreaLights();
-  for (let i = 0; i < n; i++) {
-    const light = new THREE.RectAreaLight(DAYLIGHT.color, 0, 1, 1);
-    light.name = 'window-light';
-    light.userData.run = -1;
-    group.add(light);
+  const pools = [
+    { runs: daylightRuns(ctx), max: ctx.low ? DAYLIGHT.maxLow : DAYLIGHT.max, name: 'window-light', place: placeWindow, lights: [] },
+    { runs: fixtureRuns(ctx), max: ctx.low ? 0 : FIXTURE_LIGHTS, name: 'fixture-light', place: placeFixture, lights: [] },
+  ];
+  group.userData.pools = pools;
+  group.userData.runs = pools[0].runs;
+  group.userData.spaceAt = ctx.planLight.spaceAt;
+  for (const pool of pools) {
+    const n = Math.min(pool.runs.length, pool.max);
+    if (n) initAreaLights();
+    for (let i = 0; i < n; i++) {
+      const light = new THREE.RectAreaLight(DAYLIGHT.color, 0, 1, 1);
+      light.name = pool.name;
+      light.userData.run = -1;
+      pool.lights.push(light);
+      group.add(light);
+    }
   }
+  // Per light, the space its run lights; shaders only take a light's reflection within that space.
+  group.userData.rectSpace = new Float32Array(Math.max(1, group.children.length)).fill(-2);
   // Until a render aims them, the lights sit on the runs nearest the environment probe.
   aimDaylight(group, probe.x, probe.z);
   return group;
 }
 
 /**
- * Put the daylight group's lights on the runs nearest plan point (x, z). Lights already on a
- * chosen run stay, so only the farthest lights ever move as the viewer walks.
+ * Put each pool's lights on the runs nearest plan point (x, z), those of the space there first
+ * (other rooms' lights reflect only in those rooms). Lights already on a chosen run stay, so only
+ * the farthest lights ever move as the viewer walks.
  */
 function aimDaylight(group, x, z) {
-  const runs = group.userData.runs, lights = group.children;
-  if (!runs?.length || !lights.length) return;
-  const near = runs.map((r, i) => {
-    const t = clamp((z - r.center.y) * r.normal.x - (x - r.center.x) * r.normal.y, -r.width / 2, r.width / 2);
-    // Closest point of the run's span, from the run center along its tangent (-normal.y, normal.x).
-    return [Math.hypot(x - (r.center.x - r.normal.y * t), z - (r.center.y + r.normal.x * t)), i];
-  }).sort((a, b) => a[0] - b[0]).slice(0, lights.length).map((e) => e[1]);
-  const chosen = new Set(near), kept = new Set(), free = [];
-  for (const l of lights) {
-    if (chosen.has(l.userData.run) && !kept.has(l.userData.run)) kept.add(l.userData.run);
-    else free.push(l);
+  const pools = group.userData.pools;
+  if (!pools) return;
+  const here = group.userData.spaceAt?.(x, z) ?? -1;
+  for (const { runs, lights, place } of pools) {
+    if (!runs.length || !lights.length) continue;
+    const near = runs.map((r, i) => [runDistance(r, x, z) + (here >= 0 && r.space !== here ? 12 : 0), i])
+      .sort((a, b) => a[0] - b[0]).slice(0, lights.length).map((e) => e[1]);
+    const chosen = new Set(near), kept = new Set(), free = [];
+    for (const l of lights) {
+      if (chosen.has(l.userData.run) && !kept.has(l.userData.run)) kept.add(l.userData.run);
+      else free.push(l);
+    }
+    for (const i of near) {
+      if (kept.has(i)) continue;
+      const l = free.pop();
+      l.userData.run = i;
+      l.userData.space = runs[i].space;
+      place(l, runs[i]);
+      l.updateMatrixWorld();
+    }
   }
-  for (const i of near) {
-    if (kept.has(i)) continue;
-    const l = free.pop(), r = runs[i];
-    l.userData.run = i;
-    l.width = r.width;
-    l.height = r.height;
-    l.intensity = DAYLIGHT.radiance * r.weight * Math.min(1, r.glass / r.area) * r.sun;
-    l.color.copy(r.tint);
-    // Just inside the glass, emitting into the room (a RectAreaLight shines along its -z, which lookAt aims).
-    const y = (r.y0 + r.y1) / 2;
-    l.position.set(r.center.x + r.normal.x * 0.02, y, r.center.y + r.normal.y * 0.02);
-    l.lookAt(l.position.x + r.normal.x, y, l.position.z + r.normal.y);
-    l.updateMatrixWorld();
-  }
+  const spaces = group.userData.rectSpace;
+  group.children.forEach((l, i) => { if (i < spaces.length) spaces[i] = l.userData.space ?? -2; });
+}
+
+/** Plan distance from (x, z) to a run: the nearest point of a window run's span, a fixture's center. */
+function runDistance(r, x, z) {
+  if (!r.normal) return Math.hypot(x - r.center.x, z - r.center.y);
+  const t = clamp((z - r.center.y) * r.normal.x - (x - r.center.x) * r.normal.y, -r.width / 2, r.width / 2);
+  // Along the run from its center on its tangent (-normal.y, normal.x).
+  return Math.hypot(x - (r.center.x - r.normal.y * t), z - (r.center.y + r.normal.x * t));
+}
+
+function placeWindow(l, r) {
+  l.width = r.width;
+  l.height = r.height;
+  l.intensity = DAYLIGHT.radiance * r.weight * Math.min(1, r.glass / r.area) * r.sun;
+  l.color.copy(r.tint);
+  // Just inside the glass, emitting into the room (a RectAreaLight shines along its -z, which lookAt aims).
+  const y = (r.y0 + r.y1) / 2;
+  l.position.set(r.center.x + r.normal.x * 0.02, y, r.center.y + r.normal.y * 0.02);
+  l.lookAt(l.position.x + r.normal.x, y, l.position.z + r.normal.y);
+}
+
+function placeFixture(l, r) {
+  l.width = r.length;
+  l.height = r.breadth;
+  l.intensity = r.radiance;
+  l.color.set(LED.color);
+  l.position.set(r.center.x, r.y, r.center.y);
+  // Face down (local -z to world -y), its width along the fixture.
+  l.rotation.set(-Math.PI / 2, Math.atan2(-r.dir.y, r.dir.x), 0, 'YXZ');
+}
+
+/** Ceiling fixture lenses as reflection light candidates, in their spaces. */
+function fixtureRuns(ctx) {
+  return ctx.luminaires.map((f) => ({ ...f, center: { x: f.x, y: f.z }, space: ctx.planLight.spaceAt(f.x, f.z) }));
 }
 
 /** Before each render of a scene from setupEnvironment(): aim every built plan's daylight at the camera. */
@@ -2673,8 +2786,11 @@ function daylightRuns(ctx) {
     const N = { x: F.n.x * w.side, y: F.n.y * w.side }, T = { x: -N.y, y: N.x };
     const P = (s) => ({ x: F.o.x + F.d.x * s + F.n.x * w.u, y: F.o.y + F.d.y * s + F.n.y * w.u });
     const ta = dot(P(w.s0), T), tb = dot(P(w.s1), T), off = dot(P(w.s0), N);
-    const key = `${N.x.toFixed(2)}|${N.y.toFixed(2)}|${Math.round(off / 0.05)}|${w.y0.toFixed(2)}|${w.y1.toFixed(2)}|${w.weight}`;
-    if (!lines.has(key)) lines.set(key, { N, T, off, y0: w.y0, y1: w.y1, weight: w.weight, spans: [] });
+    // Runs never cross from one space into the next.
+    const mid = P((w.s0 + w.s1) / 2), ht = w.info.w.thickness / 2 + 0.3;
+    const space = ctx.planLight.spaceAt(mid.x + N.x * (ht - w.u * w.side), mid.y + N.y * (ht - w.u * w.side));
+    const key = `${N.x.toFixed(2)}|${N.y.toFixed(2)}|${Math.round(off / 0.05)}|${w.y0.toFixed(2)}|${w.y1.toFixed(2)}|${w.weight}|${space}`;
+    if (!lines.has(key)) lines.set(key, { N, T, off, y0: w.y0, y1: w.y1, weight: w.weight, space, spans: [] });
     lines.get(key).spans.push([Math.min(ta, tb), Math.max(ta, tb)]);
   }
   const runs = [];
@@ -2687,7 +2803,7 @@ function daylightRuns(ctx) {
       runs.push({
         center: { x: line.N.x * line.off + line.T.x * tm, y: line.N.y * line.off + line.T.y * tm },
         normal: line.N, width: run.t1 - run.t0, height: h, y0: line.y0, y1: line.y1,
-        glass: run.glass * h, area: (run.t1 - run.t0) * h, weight: line.weight, ...sunSide(line.N),
+        glass: run.glass * h, area: (run.t1 - run.t0) * h, weight: line.weight, space: line.space, ...sunSide(line.N),
       });
     };
     for (const [t0, t1] of line.spans) {
@@ -2739,6 +2855,484 @@ function environmentProbe(ctx) {
   }
   const b = ctx.bounds;
   return { x: (b.minX + b.maxX) / 2, y: Math.min(PROBE_HEIGHT, ctx.settings.wallHeight - 0.3), z: (b.minY + b.maxY) / 2 };
+}
+
+// ---- Plan light map -------------------------------------------------------------
+
+/**
+ * The diffuse light over the floor plate, on a grid of cells over the building. Each cell holds the
+ * light it receives at PLAN_LIGHT.height from the fixtures and windows that see it, as a scalar
+ * irradiance S and a vector irradiance E (shaders light a surface with normal n by
+ * shade[0] * S + shade[1] * n.E), the daylight share of it, the light bounced around it, whether it
+ * is indoors and which space it belongs to. Visibility: a cell sees an emitter in its own space
+ * (rooms are close to convex); otherwise a ray across the grid decides, through doorways and glass
+ * but not walls. Uploaded as two half float textures (see planPatch).
+ */
+function buildPlanLight(ctx) {
+  const t0 = performance.now();
+  const __ph = {}; let __t = t0;
+  const { mask } = ctx;
+  const minX = mask.minX, minY = mask.minY, W = mask.nx * mask.c, H = mask.ny * mask.c;
+  const g = Math.max(PLAN_LIGHT.cell, Math.sqrt((W * H) / PLAN_LIGHT.maxCells));
+  const nx = Math.max(2, Math.ceil(W / g)), ny = Math.max(2, Math.ceil(H / g)), n = nx * ny;
+  const cx = (i) => minX + (i + 0.5) * g, cy = (j) => minY + (j + 0.5) * g;
+  const cell = (x, y) => {
+    const i = Math.floor((x - minX) / g), j = Math.floor((y - minY) / g);
+    return i < 0 || j < 0 || i >= nx || j >= ny ? -1 : j * nx + i;
+  };
+  // Space per cell: room index, then untraced patches after the rooms, -1 outdoors.
+  const spaceOf = (x, y) => {
+    const k = mask.index(x, y);
+    if (k < 0 || !mask.inside[k]) return -1;
+    return mask.room[k] >= 0 ? mask.room[k] : mask.free[k] >= 0 ? ctx.rooms.length + mask.free[k] : -1;
+  };
+  const space = new Int32Array(n);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) space[j * nx + i] = spaceOf(cx(i), cy(j));
+
+  // Walls on the grid: 2 blocks light, 1 is glass. Doorways stay open; windows in exterior walls stay
+  // solid (their daylight is added as a source), interior windows pass light like glass.
+  const occ = new Uint8Array(n);
+  const stamp = (F, half, s0, s1, value) => {
+    const pad = 0.35 * g, reach = half + g;
+    const ax = F.o.x + F.d.x * s0, ay = F.o.y + F.d.y * s0, bx = F.o.x + F.d.x * s1, by = F.o.y + F.d.y * s1;
+    const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - reach - minX) / g)), i1 = Math.min(nx - 1, Math.floor((Math.max(ax, bx) + reach - minX) / g));
+    const j0 = Math.max(0, Math.floor((Math.min(ay, by) - reach - minY) / g)), j1 = Math.min(ny - 1, Math.floor((Math.max(ay, by) + reach - minY) / g));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const px = cx(i) - F.o.x, py = cy(j) - F.o.y;
+        const s = px * F.d.x + py * F.d.y, u = px * F.n.x + py * F.n.y;
+        if (s < s0 - pad || s > s1 + pad || Math.abs(u) > half) continue;
+        const k = j * nx + i;
+        if (occ[k] < value) occ[k] = value;
+      }
+    }
+  };
+  for (const info of ctx.walls) {
+    const { w, F, L, ext, spans, inner } = info;
+    if (w.kind === 'partial') continue;
+    const value = w.kind === 'glass' ? 1 : 2, half = w.thickness / 2 + 0.6 * g;
+    let cursor = -ext.a;
+    for (const sp of spans) {
+      if (OPENING_TYPES[sp.o.type].passable) {
+        stamp(F, half, cursor, sp.start, value);
+        cursor = sp.end;
+      } else if (sp.o.type === 'window' && inner === 0 && value === 2) {
+        stamp(F, half, cursor, sp.start, value);
+        stamp(F, half, sp.start, sp.end, 1);
+        cursor = sp.end;
+      }
+    }
+    stamp(F, half, cursor, L + ext.b, value);
+  }
+
+  __ph.grid = performance.now() - __t; __t = performance.now();
+  // Transmittance along a ray from plan point (x, y) to the center of cell (i, j), in half-cell steps.
+  let budget = PLAN_LIGHT.budget;
+  const reaches = (x, y, i, j) => {
+    const fx = (x - minX) / g, fy = (y - minY) / g, dx = i + 0.5 - fx, dy = j + 0.5 - fy;
+    const steps = Math.ceil(Math.hypot(dx, dy) * 2);
+    // Past the work budget (absurdly large plans) light stays within its own space.
+    if ((budget -= steps) < 0) return 0;
+    let t = 1, glass = false;
+    for (let s = 1; s < steps; s++) {
+      const o = occ[Math.floor(fy + (dy * s) / steps) * nx + Math.floor(fx + (dx * s) / steps)];
+      if (o === 2) return 0;
+      if (o === 1 && !glass) t *= PLAN_LIGHT.glass;
+      glass = o === 1;
+    }
+    return t;
+  };
+
+  // Spaces that touch through open cells: by how many cell edges without a wall or glass, and
+  // whether through glass at all. Daylight crosses any such link (doorways, glass partitions);
+  // fixture light only open boundaries (rooms traced without a wall between them), since every room
+  // has its own fixtures. Rays are cast only across links.
+  const links = new Map();
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const k = j * nx + i, a = space[k];
+      if (a < 0 || occ[k] === 2) continue;
+      for (const q of [i + 1 < nx ? k + 1 : -1, j + 1 < ny ? k + nx : -1]) {
+        const b = q >= 0 ? space[q] : -1;
+        if (b < 0 || b === a || occ[q] === 2) continue;
+        const key = a < b ? a * 65536 + b : b * 65536 + a;
+        links.set(key, (links.get(key) || 0) + (occ[k] === 0 && occ[q] === 0 ? 1 : 0.001));
+      }
+    }
+  }
+  const pair = (a, b) => (a < 0 ? 0 : links.get(a < b ? a * 65536 + b : b * 65536 + a) || 0);
+  const OPEN_EDGES = 2.4 / g;
+
+  const S = new Float32Array(n), EX = new Float32Array(n), EY = new Float32Array(n), EZ = new Float32Array(n), D = new Float32Array(n);
+  const Y = PLAN_LIGHT.height;
+  const X = Float64Array.from({ length: nx }, (_, i) => cx(i)), Z = Float64Array.from({ length: ny }, (_, j) => cy(j));
+  // Cells within R of (x, y), optionally only on the side a unit normal N faces.
+  const box = (x, y, R, N = null) => [
+    Math.max(0, Math.floor((x - (N && N.x > 0.5 ? g : R) - minX) / g)), Math.min(nx - 1, Math.floor((x + (N && N.x < -0.5 ? g : R) - minX) / g)),
+    Math.max(0, Math.floor((y - (N && N.y > 0.5 ? g : R) - minY) / g)), Math.min(ny - 1, Math.floor((y + (N && N.y < -0.5 ? g : R) - minY) / g)),
+  ];
+
+  // Ceiling fixtures: downward emitters with a cos^cone intensity falloff.
+  const RF = PLAN_LIGHT.reach.fixture;
+  for (const e of ctx.emitters) {
+    const dh = e.h - Y, own = spaceOf(e.x, e.y);
+    if (dh < 0.2 || cell(e.x, e.y) < 0) continue;
+    const [i0, i1, j0, j1] = box(e.x, e.y, RF);
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const k = j * nx + i, sp = space[k];
+        if (sp < 0 || occ[k] === 2) continue;
+        const dx = e.x - X[i], dy = e.y - Z[j], h2 = dx * dx + dy * dy;
+        if (h2 > RF * RF) continue;
+        const v = sp === own ? 1 : pair(own, sp) >= OPEN_EDGES ? reaches(e.x, e.y, i, j) : 0;
+        if (!v) continue;
+        const r2 = h2 + dh * dh, r = Math.sqrt(r2), c = dh / r;
+        const s = (v * e.power * (e.cone === 2 ? c * c : c)) / r2;
+        S[k] += s;
+        EX[k] += (s * dx) / r;
+        EY[k] += (s * dh) / r;
+        EZ[k] += (s * dy) / r;
+      }
+    }
+  }
+
+  __ph.fixtures = performance.now() - __t; __t = performance.now();
+  // Windows: vertical strips up to 0.5 m wide, integrated exactly over the glass height.
+  const RW = PLAN_LIGHT.reach.window;
+  for (const win of ctx.windows) {
+    const { info, s0, s1, y0, y1, side, weight } = win;
+    const { F } = info, ht = info.w.thickness / 2;
+    if (s1 - s0 < 0.1 || y1 - y0 < 0.1) continue;
+    const N = { x: F.n.x * side, y: F.n.y * side };
+    const strips = Math.ceil((s1 - s0) / 0.5), sw = (s1 - s0) / strips;
+    const L = PLAN_LIGHT.sky * weight * sunSide(N).sun * sw;
+    const t0 = y0 - Y, t1 = y1 - Y;
+    for (let q = 0; q < strips; q++) {
+      const s = s0 + (q + 0.5) * sw;
+      // The strip at the inner wall face, and a start for rays just inside the room.
+      const fx = F.o.x + F.d.x * s + N.x * ht, fy = F.o.y + F.d.y * s + N.y * ht;
+      const rx = fx + N.x * 0.7 * g, ry = fy + N.y * 0.7 * g;
+      if (cell(rx, ry) < 0) continue;
+      const own = spaceOf(fx + N.x * 0.3, fy + N.y * 0.3);
+      const [i0, i1, j0, j1] = box(fx, fy, RW, N);
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          const k = j * nx + i, sp = space[k];
+          if (sp < 0 || occ[k] === 2) continue;
+          const vx = X[i] - fx, vy = Z[j] - fy, f = vx * N.x + vy * N.y;
+          if (f <= 0) continue;
+          const r2 = vx * vx + vy * vy;
+          if (r2 > RW * RW) continue;
+          const rho = Math.sqrt(r2), cw = f / rho;
+          if (cw < 0.02) continue;
+          const v = sp === own ? 1 : pair(own, sp) > 0 ? reaches(rx, ry, i, j) : 0;
+          if (!v) continue;
+          const p = Math.max(rho, 0.3), p2 = p * p, q0 = p2 + t0 * t0, q1 = p2 + t1 * t1;
+          const k0 = v * L * cw;
+          const sv = k0 * (t1 / (p * Math.sqrt(q1)) - t0 / (p * Math.sqrt(q0)));
+          const eh = k0 * (t1 / (2 * q1) + Math.atan(t1 / p) / (2 * p) - t0 / (2 * q0) - Math.atan(t0 / p) / (2 * p));
+          const ev = k0 * (p / (2 * q0) - p / (2 * q1));
+          S[k] += sv;
+          D[k] += sv;
+          EX[k] -= (eh * vx) / rho;
+          EZ[k] -= (eh * vy) / rho;
+          EY[k] += ev;
+        }
+      }
+    }
+  }
+
+  __ph.windows = performance.now() - __t; __t = performance.now();
+  // A diffusion over the open cells that walls stop: `iterations` passes spread a field about
+  // g * sqrt(iterations) meters.
+  const open = (k) => space[k] >= 0 && occ[k] < 2;
+  let scratch = new Float32Array(n);
+  const diffuse = (field, iterations) => {
+    let cur = field, next = scratch;
+    for (let it = 0; it < iterations; it++) {
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          const k = j * nx + i;
+          if (!open(k)) { next[k] = 0; continue; }
+          let sum = cur[k], count = 1;
+          if (i > 0 && open(k - 1)) { sum += cur[k - 1]; count++; }
+          if (i < nx - 1 && open(k + 1)) { sum += cur[k + 1]; count++; }
+          if (j > 0 && open(k - nx)) { sum += cur[k - nx]; count++; }
+          if (j < ny - 1 && open(k + nx)) { sum += cur[k + nx]; count++; }
+          next[k] = sum / count;
+        }
+      }
+      [cur, next] = [next, cur];
+    }
+    if (cur !== field) {
+      field.set(cur);
+      scratch = cur;
+    }
+    return field;
+  };
+  // Soften the edges of light let through doorways (penumbras the grid cannot resolve).
+  for (const f of [S, EX, EY, EZ, D]) diffuse(f, 3);
+  // Bounce: the direct light spread locally plus the space's average.
+  const cur = diffuse(S.slice(), clamp(Math.round((PLAN_LIGHT.bounce.spread / g) ** 2), 1, 60));
+  const spaces = ctx.rooms.length + ctx.generals.length;
+  const sum = new Float64Array(spaces + 1), count = new Float64Array(spaces + 1);
+  for (let k = 0; k < n; k++) {
+    if (!open(k)) continue;
+    sum[space[k]] += S[k];
+    count[space[k]]++;
+  }
+  const B = new Float32Array(n);
+  // Open ceilings take more: pendants send part of their light up onto the deck.
+  const room = [...ctx.rooms, ...ctx.generals].map((sp) => PLAN_LIGHT.bounce.room + (sp.ceiling === 'open' ? PLAN_LIGHT.bounce.uplight : 0));
+  for (let k = 0; k < n; k++) if (open(k)) B[k] = PLAN_LIGHT.bounce.local * cur[k] + (room[space[k]] * sum[space[k]]) / count[space[k]];
+
+  __ph.bounce = performance.now() - __t; __t = performance.now();
+  // Adaptation, as a photographer exposes each room: every space's light is pulled toward the
+  // reference level by `adapt` (in log terms), so sunny rooms stay brighter than windowless ones
+  // without washing out. The scale is softened across doorways.
+  const { reference, adapt, range } = PLAN_LIGHT.exposure;
+  const gain = new Float32Array(n);
+  for (let k = 0; k < n; k++) {
+    if (!open(k)) continue;
+    const avg = (sum[space[k]] / count[space[k]]) * (1 + PLAN_LIGHT.bounce.room) + 1e-3;
+    gain[k] = clamp(Math.pow(reference / avg, adapt), range[0], range[1]);
+  }
+  diffuse(gain, 6);
+  for (const f of [S, EX, EY, EZ, D, B]) for (let k = 0; k < n; k++) f[k] *= gain[k];
+
+  __ph.adapt = performance.now() - __t; __t = performance.now();
+  // Cells under walls take their open neighbors' light, so surfaces near walls never sample black.
+  const inside = new Float32Array(n);
+  for (let k = 0; k < n; k++) inside[k] = open(k) ? 1 : 0;
+  const fields = [S, EX, EY, EZ, D, B];
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const k = j * nx + i;
+      if (open(k)) continue;
+      let m = 0, first = -1;
+      const acc = [0, 0, 0, 0, 0, 0];
+      for (let dj = -1; dj <= 1; dj++) {
+        for (let di = -1; di <= 1; di++) {
+          const ii = i + di, jj = j + dj, q = jj * nx + ii;
+          if (ii < 0 || jj < 0 || ii >= nx || jj >= ny || !open(q)) continue;
+          fields.forEach((f, c) => { acc[c] += f[q]; });
+          if (first < 0) first = q;
+          m++;
+        }
+      }
+      if (!m) continue;
+      fields.forEach((f, c) => { f[k] = acc[c] / m; });
+      inside[k] = 1;
+      space[k] = space[first];
+    }
+  }
+
+  __ph.fill = performance.now() - __t; __t = performance.now();
+  const half = THREE.DataUtils.toHalfFloat;
+  const a = new Uint16Array(n * 4), b = new Uint16Array(n * 4);
+  for (let k = 0; k < n; k++) {
+    a[k * 4] = half(S[k]);
+    a[k * 4 + 1] = half(EX[k]);
+    a[k * 4 + 2] = half(EY[k]);
+    a[k * 4 + 3] = half(EZ[k]);
+    b[k * 4] = half(S[k] > 1e-4 ? D[k] / S[k] : 0);
+    b[k * 4 + 1] = half(B[k]);
+    b[k * 4 + 2] = half(inside[k]);
+    // Space ids up to 2048 are exact in half floats; beyond that a rare shared id only loosens the gating.
+    b[k * 4 + 3] = half(space[k] % 2048);
+  }
+  const texture = (data) => {
+    const t = new THREE.DataTexture(data, nx, ny, THREE.RGBAFormat, THREE.HalfFloatType);
+    t.magFilter = t.minFilter = THREE.LinearFilter;
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    t.generateMipmaps = false;
+    t.needsUpdate = true;
+    return t;
+  };
+  const maps = [texture(a), texture(b)];
+  return {
+    maps,
+    cell: g, size: [nx, ny], origin: { x: minX, y: minY },
+    ms: performance.now() - t0,
+    phases: __ph, budget,
+    /** Space id at plan (x, y), -1 outdoors. */
+    spaceAt: (x, y) => {
+      const k = cell(x, y);
+      return k < 0 || !inside[k] ? -1 : space[k] % 2048;
+    },
+    /** Diffuse light level at plan (x, y): direct plus bounce, 0 outdoors. */
+    levelAt: (x, y) => {
+      const k = cell(x, y);
+      return k < 0 ? 0 : S[k] + B[k];
+    },
+    dispose() {
+      for (const t of maps) t.dispose();
+    },
+  };
+}
+
+/** The light map uniforms shared by every plan-lit material of a kit; the newest build fills them. */
+function planUniforms(kit) {
+  const store = sharedStore(kit);
+  if (!store.plan) {
+    const tint = (hex) => {
+      const c = new THREE.Color(hex);
+      return c.multiplyScalar(1 / (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b));
+    };
+    const { shade, hemi, ibl, colors } = PLAN_LIGHT;
+    store.plan = {
+      planMapA: { value: null },
+      planMapB: { value: null },
+      planBox: { value: new THREE.Vector4(0, 0, 1, 1) },
+      planSize: { value: new THREE.Vector2(1, 1) },
+      planShade: { value: new THREE.Vector4(shade[0], shade[1], hemi, ibl) },
+      planFixColor: { value: tint(colors.fixture) },
+      planDayColor: { value: tint(colors.day) },
+      planBounceColor: { value: tint(colors.bounce) },
+      planEnvRef: { value: 1 },
+      planScale: { value: 1 },
+      planOffset: { value: 0.22 },
+      planRectSpace: { value: new Float32Array(1) },
+    };
+  }
+  return store.plan;
+}
+
+/** Point the shared uniforms at a build's light map; probe is where the environment is captured. */
+function usePlanLight(kit, light, probe, rectSpace) {
+  const U = planUniforms(kit);
+  U.planMapA.value = light.maps[0];
+  U.planMapB.value = light.maps[1];
+  const [nx, ny] = light.size;
+  U.planBox.value.set(light.origin.x, light.origin.y, 1 / (nx * light.cell), 1 / (ny * light.cell));
+  U.planSize.value.set(nx, ny);
+  // Sample wall faces a cell and a bit in front of them, clear of the wall's own cells.
+  U.planOffset.value = 1.1 * light.cell;
+  U.planEnvRef.value = Math.max(0.3, light.levelAt(probe.x, probe.z));
+  U.planRectSpace.value = rectSpace;
+}
+
+// GLSL for the light map, spliced into standard and physical materials by planPatch().
+const PLAN_PARS = /* glsl */`
+uniform sampler2D planMapA;
+uniform sampler2D planMapB;
+uniform vec4 planBox;
+uniform vec2 planSize;
+uniform vec4 planShade;
+uniform vec3 planFixColor;
+uniform vec3 planDayColor;
+uniform vec3 planBounceColor;
+uniform float planEnvRef;
+uniform float planScale;
+uniform float planOffset;
+#if NUM_RECT_AREA_LIGHTS > 0
+uniform float planRectSpace[ NUM_RECT_AREA_LIGHTS ];
+#endif
+varying vec3 vPlanWorld;`;
+
+// Window area lights add their reflection only (the light map carries their diffuse light), also on
+// clearcoats, so polished floors mirror the windows.
+const PLAN_RECT = /* glsl */`
+#if NUM_RECT_AREA_LIGHTS > 0
+void planRectSpecular( const in RectAreaLight light, const in vec3 position, const in vec3 normal, const in vec3 viewDir, const in vec3 clearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
+  vec3 rectCoords[ 4 ];
+  rectCoords[ 0 ] = light.position + light.halfWidth - light.halfHeight;
+  rectCoords[ 1 ] = light.position - light.halfWidth - light.halfHeight;
+  rectCoords[ 2 ] = light.position - light.halfWidth + light.halfHeight;
+  rectCoords[ 3 ] = light.position + light.halfWidth + light.halfHeight;
+  vec2 uv = LTC_Uv( normal, viewDir, material.roughness );
+  vec4 t1 = texture2D( ltc_1, uv );
+  vec4 t2 = texture2D( ltc_2, uv );
+  mat3 mInv = mat3( vec3( t1.x, 0, t1.y ), vec3( 0, 1, 0 ), vec3( t1.z, 0, t1.w ) );
+  vec3 fresnel = material.specularColor * t2.x + ( vec3( 1.0 ) - material.specularColor ) * t2.y;
+  reflectedLight.directSpecular += light.color * fresnel * LTC_Evaluate( normal, viewDir, position, mInv, rectCoords );
+  #ifdef USE_CLEARCOAT
+    uv = LTC_Uv( clearcoatNormal, viewDir, material.clearcoatRoughness );
+    t1 = texture2D( ltc_1, uv );
+    t2 = texture2D( ltc_2, uv );
+    mInv = mat3( vec3( t1.x, 0, t1.y ), vec3( 0, 1, 0 ), vec3( t1.z, 0, t1.w ) );
+    vec3 ccFresnel = material.clearcoatF0 * t2.x + ( material.clearcoatF90 - material.clearcoatF0 ) * t2.y;
+    clearcoatSpecularDirect += light.color * ccFresnel * LTC_Evaluate( clearcoatNormal, viewDir, position, mInv, rectCoords );
+  #endif
+}
+#endif`;
+
+// Before the lights: where this surface samples the map (a little in front of it), and its space.
+const PLAN_SAMPLE = /* glsl */`
+  vec3 planN = inverseTransformDirection( normal, viewMatrix );
+  vec2 planUV = ( vPlanWorld.xz + planN.xz * planOffset - planBox.xy ) * planBox.zw;
+  vec4 planA = texture2D( planMapA, planUV );
+  vec4 planB = texture2D( planMapB, planUV );
+  vec2 planEdge = step( vec2( 0.0 ), planUV ) * step( planUV, vec2( 1.0 ) );
+  float planIn = clamp( planB.z, 0.0, 1.0 ) * planEdge.x * planEdge.y;
+  float planSpace = planIn > 0.0 ? texture2D( planMapB, ( floor( planUV * planSize ) + 0.5 ) / planSize ).w : - 1.0;`;
+
+// After the lights: the map's diffuse light in place of the uniform fill, indoors.
+const PLAN_IRRADIANCE = /* glsl */`
+#if defined( RE_IndirectDiffuse )
+  float planE = max( 0.0, planShade.x * planA.x + planShade.y * dot( planN, planA.yzw ) );
+  vec3 planIrr = planScale * ( planE * mix( planFixColor, planDayColor, clamp( planB.x, 0.0, 1.0 ) ) + planB.y * planBounceColor );
+  irradiance = mix( irradiance, planIrr + irradiance * planShade.z, planIn );
+#endif`;
+
+// After the environment maps: image based light scaled to this spot's light level against the probe's.
+const PLAN_ENV = /* glsl */`
+  float planEnv = mix( 1.0, clamp( planScale * ( planA.x + planB.y ) / planEnvRef, 0.08, 1.6 ), planIn );
+#if defined( RE_IndirectDiffuse )
+  iblIrradiance *= planEnv * mix( 1.0, planShade.w, planIn );
+#endif
+#if defined( RE_IndirectSpecular )
+  radiance *= planEnv;
+  clearcoatRadiance *= planEnv;
+#endif`;
+
+const RECT_CALL = 'RE_Direct_RectArea( rectAreaLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );';
+const RECT_GATED = 'if ( abs( planRectSpace[ i ] - planSpace ) < 0.5 ) planRectSpecular( rectAreaLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );';
+
+function planPatch(shader, U) {
+  Object.assign(shader.uniforms, U);
+  const begin = THREE.ShaderChunk.lights_fragment_begin;
+  const gated = begin.includes(RECT_CALL) ? begin.replace(RECT_CALL, RECT_GATED) : begin;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vPlanWorld;')
+    .replace('#include <project_vertex>', `#include <project_vertex>
+  vec4 planWorld = vec4( transformed, 1.0 );
+  #ifdef USE_INSTANCING
+    planWorld = instanceMatrix * planWorld;
+  #endif
+  vPlanWorld = ( modelMatrix * planWorld ).xyz;`);
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', `#include <common>\n${PLAN_PARS}`)
+    .replace('#include <lights_physical_pars_fragment>', `#include <lights_physical_pars_fragment>\n${PLAN_RECT}`)
+    .replace('#include <lights_fragment_begin>', `${PLAN_SAMPLE}\n${gated}\n${PLAN_IRRADIANCE}`)
+    .replace('#include <lights_fragment_maps>', `#include <lights_fragment_maps>\n${PLAN_ENV}`);
+}
+
+/**
+ * The plan-lit twin of an interior material: same look, lit by the light map. Made once per kit and
+ * source material; outdoor and unlit materials stay as they are. `planSource` names the original.
+ */
+function planMaterial(kit, m) {
+  if (!m?.isMeshStandardMaterial || m.userData.outdoor || m.planSource) return m;
+  const store = sharedStore(kit);
+  let p = store.lit.get(m);
+  if (!p) {
+    p = m.clone();
+    Object.defineProperty(p, 'planSource', { value: m });
+    const U = planUniforms(kit);
+    const base = m.onBeforeCompile, key = m.customProgramCacheKey;
+    p.onBeforeCompile = function (shader, renderer) {
+      base.call(this, shader, renderer);
+      planPatch(shader, U);
+    };
+    p.customProgramCacheKey = function () {
+      return `${key.call(this)}|plan-light`;
+    };
+    store.lit.set(m, p);
+    store.owned.materials.push(p);
+  }
+  p.envMapIntensity = m.envMapIntensity;
+  return p;
 }
 
 // ---- Items ---------------------------------------------------------------------

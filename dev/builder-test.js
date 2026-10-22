@@ -486,7 +486,36 @@ window.testEnv = { THREE, renderer, scene, camera, kit, env, fx, capture, buildP
 document.getElementById('stats').textContent = `${stats.buildMs} ms build · ${stats.captureMs} ms capture · ${stats.calls} draw calls · ${(stats.triangles / 1000).toFixed(0)}k triangles · ${stats.lights} window lights · ${catalog}`;
 console.log('builder-test', JSON.stringify(stats));
 if (params.has('checks')) showChecks(await runChecks());
+if (params.get('light') === 'map') showLightMap(built);
 window.testReady = true;
+
+/**
+ * &light=map: the plan light map over the view, as seen from above: brightness is the diffuse light
+ * level (direct plus bounce, white at 6), outdoors is dark green.
+ */
+function showLightMap(b) {
+  const L = b.planLight;
+  if (!L) return;
+  const [nx, ny] = L.size;
+  const map = document.createElement('canvas');
+  map.width = nx;
+  map.height = ny;
+  Object.assign(map.style, { position: 'fixed', left: '16px', top: '60px', width: `${Math.min(900, nx * 4)}px`, imageRendering: 'pixelated', boxShadow: '0 2px 12px rgba(1, 42, 45, 0.18)' });
+  const g = map.getContext('2d'), img = g.createImageData(nx, ny);
+  const x0 = b.bounds.minX, y0 = b.bounds.minY;
+  // The map covers the building plus a margin; sample cell centers from its own origin.
+  const ox = L.origin?.x ?? x0, oy = L.origin?.y ?? y0;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const x = ox + (i + 0.5) * L.cell, y = oy + (j + 0.5) * L.cell, k = (j * nx + i) * 4;
+      const inside = L.spaceAt(x, y) >= 0;
+      const v = Math.round(255 * Math.min(1, Math.sqrt(L.levelAt(x, y) / 6)));
+      img.data.set(inside ? [v, v, v, 255] : [1, 42, 45, 255], k);
+    }
+  }
+  g.putImageData(img, 0, 0);
+  document.body.append(map);
+}
 
 /** Regression checks for the builder, on small plans built in code and one sample. Returns [{ name, pass, detail }]. */
 async function runChecks() {
@@ -618,8 +647,9 @@ async function runChecks() {
   });
   check('Raised ceilings meet painted walls', () => {
     const h = hits(bs.root, [6, 3.15, 9], [0, 0, 1])[0];
+    // Indoor surfaces carry the light map's twin of the kit material; planSource names the original.
     const m = h?.object.material;
-    return [m === kit.paintMaterial('#efece6'), `wall face between the 3.0 m wall top and the 3.3 m ceiling: ${m ? m.name || m.type : 'nothing'}`];
+    return [(m?.planSource || m) === kit.paintMaterial('#efece6'), `wall face between the 3.0 m wall top and the 3.3 m ceiling: ${m ? m.name || m.type : 'nothing'}`];
   });
   bs.dispose();
 
@@ -694,7 +724,7 @@ async function runChecks() {
     let bad = 0, total = 0;
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3(), f = new THREE.Vector3();
     suite.root.traverse((o) => {
-      if (!o.isMesh || o.material !== kit.material('#b9bdbf', { roughness: 0.34, metalness: 0.65 })) return;
+      if (!o.isMesh || (o.material.planSource || o.material) !== kit.material('#b9bdbf', { roughness: 0.34, metalness: 0.65 })) return;
       const p = o.geometry.attributes.position, nr = o.geometry.attributes.normal, idx = o.geometry.index.array;
       for (let i = 0; i < idx.length; i += 3) {
         a.fromBufferAttribute(p, idx[i]);
@@ -721,7 +751,66 @@ async function runChecks() {
     const bluer = col.getZ(top) - col.getX(top) > col.getZ(low) - col.getX(low);
     return [bluer && col.getX(low) < 1, `zenith bluer than the horizon: ${bluer}; horizon kept in display range: ${col.getX(low) < 1}`];
   });
+  check('Indoor surfaces are lit by the light map, outdoor ones are not', () => {
+    let indoor = 0, lit = 0, outdoorLit = 0;
+    suite.root.traverse((o) => {
+      if (!o.isMesh || !o.material.isMeshStandardMaterial) return;
+      const group = ['structure', 'furnishings', 'ceilings'].find((n) => o.parent.name === n);
+      if (group && !o.material.userData.outdoor) {
+        indoor++;
+        if (o.material.planSource) lit++;
+      } else if (o.parent.name === 'exterior' && o.material.planSource) {
+        outdoorLit++;
+      }
+    });
+    return [indoor > 0 && lit === indoor && outdoorLit === 0, `${lit} of ${indoor} indoor meshes use the light map, ${outdoorLit} outdoor meshes do`];
+  });
+  check('Area lights reflect only in their own room', () => {
+    const g = suite.root.getObjectByName('daylight');
+    const spaces = suite.root.userData.planUniforms.planRectSpace.value;
+    const ok = g.children.every((l, i) => {
+      const run = g.userData.pools.find((pool) => pool.lights.includes(l)).runs[l.userData.run];
+      return run && spaces[i] === run.space && run.space >= 0;
+    });
+    const fixtures = g.children.filter((l) => l.name === 'fixture-light').length;
+    return [ok && fixtures > 0 && suite.lights.length <= 12, `${g.children.length - fixtures} window and ${fixtures} fixture lights, each gated to its run's space: ${ok}`];
+  });
   suite.dispose();
+
+  check('Walls block the light map, doorways let some through', () => {
+    // Two 6 x 5 m rooms side by side, with or without a window in the west room and a doorway between.
+    const make = (window, door) => {
+      const plan = createPlan({ settings: { wallHeight: 2.9, ceiling: 'drywall', exterior: 'none' } });
+      const [w0] = shell(plan, [P(0, 0), P(12, 0), P(12, 5), P(0, 5)]);
+      if (window) addOpening(plan, w0.id, 'window', 3, { width: 3 });
+      const mid = addWall(plan, P(6, 0), P(6, 5), { kind: 'interior' });
+      if (door) addOpening(plan, mid.id, 'opening', 1.5, { width: 1.2 });
+      addRoom(plan, [P(0, 0), P(6, 0), P(6, 5), P(0, 5)], { ceiling: 'drywall' });
+      addRoom(plan, [P(6, 0), P(12, 0), P(12, 5), P(6, 5)], { ceiling: 'drywall' });
+      const b = build(plan);
+      const L = b.planLight;
+      const out = { west: L.levelAt(3, 1.2), east: L.levelAt(9, 2.5), door: L.levelAt(6.6, 1.5), spaces: [L.spaceAt(3, 2.5), L.spaceAt(9, 2.5)] };
+      b.dispose();
+      return out;
+    };
+    const dark = make(false, false), solid = make(true, false), dim = make(false, true), open = make(true, true);
+    const blocked = Math.abs(solid.east - dark.east) < 0.01 && Math.abs(solid.door - dark.door) < 0.01;
+    const pass = solid.west > dark.west * 1.3 && blocked && open.door > dim.door + 0.05 && solid.spaces[0] !== solid.spaces[1];
+    const f = (v) => v.toFixed(2);
+    return [pass, `west room ${f(dark.west)} without its window, ${f(solid.west)} with it; east room behind the solid wall ${f(dark.east)} and ${f(solid.east)}; past a doorway ${f(dim.door)} and ${f(open.door)}`];
+  });
+
+  check('Windowless rooms are lit evenly by their fixtures', () => {
+    const plan = createPlan({ settings: { wallHeight: 2.9, ceiling: 'tile', exterior: 'none' } });
+    shell(plan, [P(0, 0), P(6, 0), P(6, 4), P(0, 4)]);
+    addRoom(plan, [P(0, 0), P(6, 0), P(6, 4), P(0, 4)], { ceiling: 'tile' });
+    const b = build(plan);
+    const L = b.planLight, levels = [];
+    for (let x = 0.8; x < 5.4; x += 0.4) for (let y = 0.8; y < 3.4; y += 0.4) levels.push(L.levelAt(x, y));
+    b.dispose();
+    const lo = Math.min(...levels), hi = Math.max(...levels);
+    return [lo > 1 && hi / lo < 1.8, `light level ${lo.toFixed(2)} to ${hi.toFixed(2)} across the room's middle (${b.planLight.ms.toFixed(0)} ms light map)`];
+  });
 
   const medical = await (await import('../src/samples/index.js')).SAMPLES.find((x) => x.id === 'medical-office').build();
   check('Collinear wall shading does not double up', () => {

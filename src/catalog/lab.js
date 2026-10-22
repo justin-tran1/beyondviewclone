@@ -84,12 +84,13 @@ function palette(kit, color) {
 const TINTS = new WeakMap();
 
 /**
- * `base` in `color` (or in its own color times f), keeping its maps, roughness and sheen. Textured
- * kit maps are normalized to a mean of 0.8, so the color becomes the surface's mean albedo. Plain
- * materials come back as kit.material, which the builder still merges by color.
+ * `base` in `color` (or in its own color times f), keeping its maps, roughness and sheen (or a new
+ * sheen strength). Textured kit maps are normalized to a mean of 0.8, so the color becomes the
+ * surface's mean albedo. Plain materials come back as kit.material, which the builder still merges
+ * by color.
  */
-export function tint(kit, base, color, f = 1) {
-  if (!isColor(color) && f === 1) return base;
+export function tint(kit, base, color, f = 1, { sheen } = {}) {
+  if (!isColor(color) && f === 1 && sheen === undefined) return base;
   const T = kit.THREE;
   const c = isColor(color) ? new T.Color(color) : base.color.clone().multiplyScalar(f);
   if (!base.map) return kit.material(`#${c.getHexString()}`, { roughness: base.roughness, metalness: base.metalness });
@@ -104,7 +105,7 @@ export function tint(kit, base, color, f = 1) {
       dispose();
     };
   }
-  const key = `${base.uuid}|${color}|${f}`;
+  const key = `${base.uuid}|${color}|${f}|${sheen}`;
   let m = cache.get(key);
   if (!m) {
     m = base.clone();
@@ -116,6 +117,7 @@ export function tint(kit, base, color, f = 1) {
       c.multiplyScalar(1.25);
     }
     m.color.copy(c);
+    if (sheen !== undefined && m.sheen) m.sheen = sheen;
     m.name = `${base.name || 'finish'}-tint`;
     cache.set(key, m);
   }
@@ -151,11 +153,11 @@ function place(kit, g, geometry, mat, x, y, z, shadows = true) {
  * +z face (axis 'z') crowned `crown` meters at the middle and easing to flat at the rounds (both
  * faces along that axis when `both`, like a pillow). Normals are analytic, so shading stays smooth.
  */
-function cushionGeometry(T, w, h, d, r, crown, axis, both) {
+function cushionGeometry(T, w, h, d, r, crown, axis, both, mid = null, k = 2) {
   const ext = [w, h, d], half = ext.map((v) => v / 2);
   r = Math.max(0.001, Math.min(r, ...half.map((v) => v * 0.98)));
-  const k = 2;
-  const seg = ext.map((v) => 2 * k + (v > 0.3 ? 4 : v > 0.12 ? 2 : 1));
+  // mid: segments across the flat middle per axis (more where a warp bends the part).
+  const seg = ext.map((v, j) => 2 * k + (mid ? mid[j] : v > 0.3 ? 4 : v > 0.12 ? 2 : 1));
   const g = new T.BoxGeometry(w, h, d, ...seg);
   g.clearGroups();
   const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv;
@@ -200,13 +202,57 @@ function cushionGeometry(T, w, h, d, r, crown, axis, both) {
   return g;
 }
 
-/** Upholstered block over the extents with rounded edges (r) and a crowned top or front. */
-export function cushion(kit, g, mat, x0, x1, y0, y1, z0, z1, { r = 0.03, crown = 0, axis = 'y', both = false } = {}) {
+/**
+ * Upholstered block over the extents with rounded edges (r) and a crowned top or front. warp
+ * ({ key, fn }) then bends it: fn(v) moves a point given relative to the block's center (a
+ * THREE.Vector3, changed in place), for bowed backs, waterfall seat fronts and tapered legs; key
+ * names the bend for the geometry cache. mid sets the segments across each axis's flat middle
+ * and k the segments per round.
+ */
+export function cushion(kit, g, mat, x0, x1, y0, y1, z0, z1, { r = 0.03, crown = 0, axis = 'y', both = false, warp = null, mid = null, k = 2 } = {}) {
   const w = x1 - x0, h = y1 - y0, d = z1 - z0;
-  // Without a crown the kit's rounded box is the same shape at a fraction of the triangles.
-  if (!(crown > 0)) return kit.block(g, mat, x0, x1, y0, y1, z0, z1, true, { bevel: Math.max(0.0015, Math.min(r, w * 0.45, h * 0.45, d * 0.45)) });
-  const geo = shape(`c|${q4(w)}|${q4(h)}|${q4(d)}|${q4(r)}|${q4(crown)}|${axis}|${both}`, () => cushionGeometry(kit.THREE, w, h, d, r, crown, axis, both));
+  // Without a crown or a bend the kit's rounded box is the same shape at a fraction of the triangles.
+  if (!(crown > 0) && !warp) return kit.block(g, mat, x0, x1, y0, y1, z0, z1, true, { bevel: Math.max(0.0015, Math.min(r, w * 0.45, h * 0.45, d * 0.45)) });
+  const key = `c|${q4(w)}|${q4(h)}|${q4(d)}|${q4(r)}|${q4(crown)}|${axis}|${both}|${warp ? warp.key : ''}|${mid || ''}|${k}`;
+  const geo = shape(key, () => {
+    const c = cushionGeometry(kit.THREE, w, h, d, r, crown, axis, both, mid, k);
+    if (warp) bend(kit.THREE, c, warp.fn);
+    return c;
+  });
   return place(kit, g, geo, mat, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+}
+
+/**
+ * Deform a geometry in place by fn (see cushion). Normals follow the deformation through its
+ * inverse transpose, estimated by central differences, so bent parts stay smoothly shaded.
+ */
+export function bend(T, geo, fn) {
+  const pos = geo.attributes.position, nor = geo.attributes.normal, e = 1e-4;
+  const p = new T.Vector3(), a = new T.Vector3(), b = new T.Vector3(), n = new T.Vector3();
+  const cols = [new T.Vector3(), new T.Vector3(), new T.Vector3()], J = new T.Matrix3();
+  for (let i = 0; i < pos.count; i++) {
+    p.fromBufferAttribute(pos, i);
+    for (let j = 0; j < 3; j++) {
+      a.copy(p).setComponent(j, p.getComponent(j) + e);
+      b.copy(p).setComponent(j, p.getComponent(j) - e);
+      fn(a);
+      fn(b);
+      cols[j].subVectors(a, b).divideScalar(2 * e);
+    }
+    J.set(cols[0].x, cols[1].x, cols[2].x, cols[0].y, cols[1].y, cols[2].y, cols[0].z, cols[1].z, cols[2].z);
+    if (nor && Math.abs(J.determinant()) > 1e-9) {
+      J.invert().transpose();
+      n.fromBufferAttribute(nor, i).applyMatrix3(J).normalize();
+      nor.setXYZ(i, n.x, n.y, n.z);
+    }
+    fn(p);
+    pos.setXYZ(i, p.x, p.y, p.z);
+  }
+  pos.needsUpdate = true;
+  if (nor) nor.needsUpdate = true;
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+  return geo;
 }
 
 /**
@@ -262,11 +308,11 @@ export function slabTop(kit, g, mat, x0, x1, y0, y1, z0, z1, { corner = 0.05, ed
   return place(kit, g, geo, mat, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
 }
 
-/** Tube of radius r through the points ([x, y, z]), for bent frames, spouts and cords. */
-export function bent(kit, g, mat, points, r, { segments = 24, radial = 10 } = {}) {
+/** Tube of radius r through the points ([x, y, z]), for bent frames, spouts and cords; closed loops back. */
+export function bent(kit, g, mat, points, r, { segments = 24, radial = 10, closed = false } = {}) {
   const T = kit.THREE;
-  const curve = new T.CatmullRomCurve3(points.map((p) => new T.Vector3(...p)), false, 'centripetal');
-  const geo = new T.TubeGeometry(curve, segments, r, radial, false);
+  const curve = new T.CatmullRomCurve3(points.map((p) => new T.Vector3(...p)), closed, 'centripetal');
+  const geo = new T.TubeGeometry(curve, segments, r, radial, closed);
   const uv = geo.attributes.uv, len = curve.getLength();
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * len, uv.getY(i) * 2 * Math.PI * r);
   return place(kit, g, geo, mat, 0, 0, 0);
@@ -274,33 +320,35 @@ export function bent(kit, g, mat, points, r, { segments = 24, radial = 10 } = {}
 
 /**
  * Leaves as one mesh: each is a folded, two-sided oval of `size` meters set at pose(i) =
- * { x, y, z, yaw, pitch, roll, size }. Flat shaded, so every leaf catches the light on its own.
+ * { x, y, z, yaw, pitch, roll, size, width?, droop?, base? } (width and droop scale the outline and
+ * the tip's fall, base widens the stalk end; narrow, stiff blades make grasses and sansevieria).
  */
 export function leaves(kit, g, mat, count, pose) {
   const T = kit.THREE;
   // Midrib stations and half widths of the outline, for a unit leaf along +z.
   const S = [0, 0.3, 0.68, 1], W = [0, 0.4, 0.33, 0];
-  const out = [];
+  const pos = [], index = [];
   const m = new T.Matrix4(), e = new T.Euler(), v = new T.Vector3();
   for (let i = 0; i < count; i++) {
     const p = pose(i);
     if (!p) continue;
-    const L = p.size, fold = 0.12 * L, droop = 0.18 * L;
-    const pt = (s, side) => [side * W[S.indexOf(s)] * L * 0.62, (side ? 0 : fold) - droop * s * s, s * L];
-    const B = pt(0, 0), M1 = pt(0.3, 0), M2 = pt(0.68, 0), Tp = pt(1, 0);
-    const L1 = pt(0.3, -1), L2 = pt(0.68, -1), R1 = pt(0.3, 1), R2 = pt(0.68, 1);
-    const tris = [[B, M1, L1], [B, R1, M1], [M1, M2, L2], [M1, L2, L1], [M1, R1, R2], [M1, R2, M2], [M2, Tp, L2], [M2, R2, Tp]];
+    const L = p.size, fold = 0.12 * L, droop = (p.droop ?? 0.18) * L, wide = p.width ?? 0.62, base = p.base ?? W[0];
+    const half = (j) => (j ? W[j] : base) * L * wide;
     m.makeRotationFromEuler(e.set(p.pitch || 0, p.yaw || 0, p.roll || 0, 'YXZ')).setPosition(p.x, p.y, p.z);
-    for (const [a, b, c] of tris) {
-      for (const q of [a, b, c, a, c, b]) {
-        v.set(...q).applyMatrix4(m);
-        out.push(v.x, v.y, v.z);
-      }
+    // Vertices: midrib 0..3, left 4..6 and right 7..9 at the first three stations; once per side,
+    // so each side shades smoothly across the folded midrib.
+    for (let side = 0; side < 2; side++) {
+      const o = pos.length / 3;
+      for (let j = 0; j < 4; j++) pos.push(...v.set(0, fold - droop * S[j] * S[j], S[j] * L).applyMatrix4(m).toArray());
+      for (const sx of [-1, 1]) for (let j = 0; j < 3; j++) pos.push(...v.set(sx * half(j), -droop * S[j] * S[j], S[j] * L).applyMatrix4(m).toArray());
+      const tris = [[0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 6], [0, 7, 8], [0, 8, 1], [1, 8, 9], [1, 9, 2], [2, 9, 3]];
+      for (const [a, b, c] of tris) index.push(o + a, o + (side ? c : b), o + (side ? b : c));
     }
   }
   const geo = new T.BufferGeometry();
-  geo.setAttribute('position', new T.Float32BufferAttribute(out, 3));
-  geo.setAttribute('uv', new T.Float32BufferAttribute(new Float32Array((out.length / 3) * 2), 2));
+  geo.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new T.Float32BufferAttribute(new Float32Array((pos.length / 3) * 2), 2));
+  geo.setIndex(index);
   geo.computeVertexNormals();
   return place(kit, g, geo, mat, 0, 0, 0);
 }
@@ -402,6 +450,134 @@ export function roundSeat(kit, g, mat, R, h, x, y0, z, { crown = 0.012, rim = 0.
   const rr = Math.min(rim, h * 0.45, R * 0.3);
   const arc = [0, 30, 60, 90].map((deg) => [R - rr + rr * Math.cos((deg * Math.PI) / 180), h - rr + rr * Math.sin((deg * Math.PI) / 180)]);
   return turned(kit, g, mat, [[0, 0], [R - rr * 0.6, 0], [R - rr * 0.1, rr * 0.25], [R, rr * 0.7], ...arc, [R * 0.55, h + crown * 0.8], [0, h + crown]], x, y0, z, { segments: 36 });
+}
+
+/** A warp for cushion() written in the caller's frame: fn sees points offset by the part's center. */
+export function warpAt(key, cx, cy, cz, fn) {
+  return {
+    key: `${key}@${q4(cx)},${q4(cy)},${q4(cz)}`,
+    fn(v) {
+      v.x += cx; v.y += cy; v.z += cz;
+      fn(v);
+      v.x -= cx; v.y -= cy; v.z -= cz;
+    },
+  };
+}
+
+export const smooth01 = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+
+// ---- Shared seating -----------------------------------------------------------------
+
+const CHAIR_SEAT = 0.475; // seat height at the front of the cushion crown
+
+/**
+ * Office swivel chair at (x, z) facing local +z turned by yaw. A five-star base with tapered,
+ * sloping legs on hooded twin-wheel casters (or glides), a gas lift, a contoured seat with a
+ * waterfall front over a molded shell, and a back bowed around the sitter with a lumbar curve:
+ * upholstered on a shell, or (mesh) a dark mesh in a molded frame. arms adds T arms (loop arms on
+ * glides). Merged into one assembly per variant, so a table of twelve stays light.
+ */
+export function officeChair(kit, g, x, z, yaw, { fabric = kit.mat.fabricCharcoal, back = 0.47, casters = true, base = kit.mat.black, arms = true, mesh = false } = {}) {
+  const black = kit.mat.black, rubber = kit.mat.rubber, chrome = kit.mat.chrome;
+  const key = `office-chair|${fabric.uuid}|${base.uuid}|${back}|${casters}|${arms}|${mesh}`;
+  const c = assembly(kit, key, (a) => {
+    const legY = casters ? 0.066 : 0.018, reach = 0.29;
+    // Base: turned hub, five legs that taper and slope toward the casters.
+    turned(kit, a, base, [[0, 0], [0.05, 0], [0.055, 0.008], [0.052, 0.036], [0.038, 0.056], [0, 0.056]], 0, legY - 0.004, 0, { segments: 15 });
+    const legWarp = warpAt('chair-leg', 0.16, 0, 0, (v) => {
+      const t = clamp((v.x - 0.03) / (reach - 0.03), 0, 1);
+      v.z *= 1 - 0.3 * t;
+      v.y = v.y * (1 - 0.28 * t) - 0.02 * t;
+    });
+    for (let i = 0; i < 5; i++) {
+      const leg = sub(kit, a, 0, 0, 0, { yaw: (i * Math.PI * 2) / 5 + Math.PI / 2 });
+      cushion(kit, sub(kit, leg, 0.16, legY + 0.024, 0), base, -0.13, reach - 0.16, -0.017, 0.017, -0.021, 0.021, { r: 0.009, warp: legWarp, mid: [1, 1, 1], k: 1 });
+      if (casters) {
+        kit.block(leg, black, reach - 0.024, reach + 0.022, 0.034, 0.062, -0.019, 0.019, true, { bevel: 0.008 });
+        for (const s of [-1, 1]) kit.cyl(leg, rubber, 0.026, 0.012, reach - 0.002, 0.026, s * 0.011, { axis: 'z', segments: 10 });
+      } else {
+        turned(kit, leg, rubber, [[0, 0], [0.02, 0], [0.013, 0.016], [0, 0.016]], reach - 0.004, 0, 0, { segments: 10 });
+      }
+    }
+    // Gas lift: a black shroud and the chrome piston up to the tilt mechanism.
+    turned(kit, a, black, [[0.031, 0], [0.031, 0.17], [0.028, 0.185], [0.016, 0.188], [0, 0.188]], 0, legY + 0.05, 0, { segments: 18 });
+    kit.cyl(a, chrome, 0.0145, 0.36 - legY - 0.22, 0, legY + 0.22, 0, { segments: 14 });
+    kit.block(a, black, -0.1, 0.1, 0.355, 0.398, -0.13, 0.1);
+    kit.cyl(a, black, 0.02, 0.028, 0, 0.372, 0.1, { axis: 'z', segments: 12, bevel: false });
+    bent(kit, a, black, [[0.09, 0.37, 0.03], [0.17, 0.362, 0.04], [0.215, 0.352, 0.07]], 0.006, { segments: 6, radial: 6 });
+    // Seat: shell and cushion share one contour, saddled at the sides and rolled down at the front.
+    const seatContour = (v) => {
+      const t = smooth01((v.z - 0.06) / 0.18);
+      v.y += 0.007 * (v.x / 0.25) ** 4 - 0.03 * t * t;
+      v.z -= 0.012 * t * t;
+      v.x *= 1 - 0.05 * clamp(-v.z / 0.24, 0, 1);
+    };
+    cushion(kit, a, black, -0.238, 0.238, 0.392, 0.414, -0.23, 0.22, { r: 0.009, warp: warpAt('chair-seat', 0, 0.403, -0.005, seatContour), mid: [3, 1, 3], k: 1 });
+    cushion(kit, a, fabric, -0.25, 0.25, 0.408, CHAIR_SEAT - 0.012, -0.238, 0.238, { r: 0.032, crown: 0.012, warp: warpAt('chair-seat', 0, 0.4355, 0, seatContour), mid: [3, 1, 3] });
+    // Back: a spine from the mechanism, then the back itself, reclined a little.
+    const spineTop = mesh ? [0, 0.545, -0.243] : [0, 0.6, -0.279];
+    bent(kit, a, black, [[0, 0.38, -0.1], [0, 0.385, -0.21], [0, 0.45, -0.262], spineTop], 0.017, { segments: 8, radial: 8 });
+    const bk = sub(kit, a, 0, 0.53, -0.235, { pitch: -0.08 });
+    // Tapered toward the top with its corners rounded in elevation, bowed around the sitter,
+    // pushed forward at the lumbar and leaning back toward the shoulders.
+    const backContour = (v) => {
+      const u = clamp(v.y / back, 0, 1), ux = clamp(v.x / 0.24, -1, 1), uy = 2 * u - 1;
+      const top = uy > 0 ? uy : 0, low = uy < 0 ? -uy : 0;
+      v.x *= 1 - 0.07 * u * u - 0.1 * top ** 6 - 0.04 * low ** 6;
+      v.y += (-0.035 * top * top + 0.012 * low * low) * ux ** 6;
+      v.z += (v.x * v.x) / (2 * 0.62) + 0.024 * Math.exp(-(((v.y - 0.13) / 0.1) ** 2)) - 0.03 * u * u;
+    };
+    if (mesh) {
+      // Molded frame around a taut mesh panel.
+      cushion(kit, bk, fabric, -0.226, 0.226, 0.012, back - 0.012, -0.004, 0.004, { r: 0.003, warp: warpAt(`chair-mesh-${back}`, 0, back / 2, 0, backContour), mid: [4, 4, 1], k: 1 });
+      const ring = [];
+      for (let i = 0; i < 20; i++) {
+        const t = (i / 20) * Math.PI * 2, cx = Math.cos(t), cy = Math.sin(t);
+        const v = new kit.THREE.Vector3(0.232 * Math.sign(cx) * Math.abs(cx) ** 0.25, back / 2 + (back / 2 - 0.006) * Math.sign(cy) * Math.abs(cy) ** 0.25, 0);
+        backContour(v);
+        ring.push([v.x, v.y, v.z]);
+      }
+      bent(kit, bk, black, ring, 0.011, { segments: 32, radial: 6, closed: true });
+    } else {
+      cushion(kit, bk, black, -0.238, 0.238, -0.004, back + 0.004, -0.04, -0.018, { r: 0.009, warp: warpAt(`chair-shell-${back}`, 0, back / 2, -0.029, backContour), mid: [4, 4, 1], k: 1 });
+      cushion(kit, bk, fabric, -0.228, 0.228, 0.006, back - 0.006, -0.024, 0.036, { r: 0.026, crown: 0.012, axis: 'z', warp: warpAt(`chair-back-${back}`, 0, back / 2, 0.006, backContour), mid: [4, 4, 1] });
+    }
+    if (!arms) return;
+    for (const s of [-1, 1]) {
+      if (casters) {
+        // T arm: a bracket under the seat, an upright and a soft pad.
+        bent(kit, a, black, [[s * 0.07, 0.386, -0.05], [s * 0.2, 0.386, -0.055], [s * 0.268, 0.41, -0.06]], 0.012, { segments: 6, radial: 6 });
+        kit.block(a, black, s * 0.268 - 0.013, s * 0.268 + 0.013, 0.405, 0.64, -0.082, -0.04);
+        cushion(kit, a, black, s * 0.268 - 0.032, s * 0.268 + 0.032, 0.635, 0.664, -0.165, 0.09, { r: 0.013 });
+      } else {
+        // Loop arm in polished metal from the seat back up, forward and down to the seat front.
+        bent(kit, a, base, [[s * 0.215, 0.41, -0.17], [s * 0.255, 0.55, -0.19], [s * 0.262, 0.64, -0.1], [s * 0.262, 0.645, 0.06], [s * 0.255, 0.55, 0.13], [s * 0.225, 0.42, 0.15]], 0.011, { segments: 16, radial: 6 });
+        cushion(kit, a, black, s * 0.262 - 0.022, s * 0.262 + 0.022, 0.643, 0.662, -0.11, 0.06, { r: 0.009 });
+      }
+    }
+  });
+  c.position.set(x, 0, z);
+  c.rotation.y = yaw;
+  g.add(c);
+  return c;
+}
+
+/**
+ * Item definitions whose every surface receives shadows. Thin overlays (labels, reveals, tape,
+ * screens) are built with shadows off so they cast none, but a surface that skips receiving them
+ * stays sunlit inside a shaded room and glows.
+ */
+export function shaded(defs) {
+  return defs.map((def) => ({
+    ...def,
+    build(kit, o) {
+      const obj = def.build(kit, o);
+      obj?.traverse?.((m) => {
+        if (m.isMesh) m.receiveShadow = true;
+      });
+      return obj;
+    },
+  }));
 }
 
 // ---- 3D helpers ---------------------------------------------------------------------
@@ -1425,7 +1601,7 @@ function drawAutoclave(ctx, o) {
 
 // ---- Registration -------------------------------------------------------------------
 
-registerItems([
+registerItems(shaded([
   {
     type: 'lab-bench-island', name: 'Island lab bench', category: 'lab',
     w: 3.66, d: 1.52, h: 2.13, resizable: true,
@@ -1498,4 +1674,4 @@ registerItems([
     tags: ['sterilizer', 'steam', 'glass wash', 'equipment'],
     build: buildAutoclave, draw2d: drawAutoclave,
   }),
-]);
+]));

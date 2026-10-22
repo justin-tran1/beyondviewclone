@@ -2,7 +2,7 @@
 // warehouse equipment (pallet racking, pallets, forklift, workbench, bollards, floor markings).
 // Local frame: x = width, y = up, z = depth with the front facing +z (plan +y).
 import { registerItems } from './registry.js';
-import { tint, cushion, turned, bent, assembly, barPull } from './lab.js';
+import { tint, cushion, turned, bent, assembly, barPull, warpAt, shaded } from './lab.js';
 
 const OUT = 1.25;       // plan outline weight in px
 const FINE = 0.75;      // plan detail weight in px
@@ -49,7 +49,7 @@ function shade(kit, mat, f) {
 /** Painted steel (powder coat) in a color. */
 const painted = (kit, hex, roughness = 0.4) => kit.paintMaterial(hex, { roughness });
 const fabric = (kit, hex) => tint(kit, kit.mat.fabricGrey, hex);
-const packaging = (kit, hex) => kit.material(hex, { roughness: 0.62 });
+const packaging = (kit, hex) => kit.material(hex, { roughness: 0.55 });
 const glow = (kit, hex, intensity = 1) => kit.material(hex, { roughness: 0.4, emissive: hex, emissiveIntensity: intensity });
 
 // ---- 3D helpers ---------------------------------------------------------------------
@@ -201,29 +201,111 @@ function shelfMats(kit, color) {
     panel: painted(kit, isColor(color) ? `#${new kit.THREE.Color(color).multiplyScalar(0.85).getHexString()}` : '#d2d5d2', 0.5),
     channel: tint(kit, kit.mat.plastic, '#57646a'),
     tag: kit.material('#f3f3ef', { roughness: 0.5 }),
+    lid: tint(kit, kit.mat.steel, '#c9cccd'),
   };
 }
 
-/** Product facings (one block per SKU run) filling a shelf from x0 to x1. */
-function stockShelf(kit, g, rnd, { x0, x1, y, clear, zb, s, dep }) {
+const LIDS = ['#e9e7e1', '#2b3033', '#a8562e', '#3b6178', '#b8962e'];
+// Packaging by weight: printed cartons, plastic bottles, cans and glass jars. Shelves near the
+// floor or overhead carry cartons only, where round packs would cost triangles nobody sees.
+const STOCK = [['box', 0.6], ['bottle', 0.15], ['can', 0.12], ['jar', 0.13]];
+const BOTTLE = [[0, 0], [0.9, 0], [1, 0.03], [1, 0.6], [0.82, 0.72], [0.4, 0.82], [0.4, 0.9]];
+const BOTTLE_BACK = [[0, 0], [1, 0], [1, 0.6], [0.4, 0.82], [0.4, 1], [0, 1]];
+const JAR = [[0, 0], [0.94, 0], [1, 0.05], [1, 0.84], [0.88, 0.9], [0, 0.9]];
+
+function stockKind(rnd) {
+  let t = rnd();
+  for (const [k, p] of STOCK) if ((t -= p) < 0) return k;
+  return 'box';
+}
+
+/**
+ * Product facings filling a shelf from x0 to x1, faced up to the shelf edge: each run is one
+ * product, as a row of cartons with label panels, or as bottles, cans or jars. A price tag sits on
+ * the shelf edge under each run. Shelf depth runs from zb in direction s.
+ */
+function stockShelf(kit, g, m, rnd, { x0, x1, y, clear, zb, s, dep }) {
   // Facings widen on shelves longer than any real bay (only runs past the bay cap have those).
   const k = Math.max(1, (x1 - x0) / (2 * SHELF.bay));
+  // Only shelves well below eye height show what stands behind the front row.
+  const round = y > 0.3 && y < 1.45;
+  const deep = y < 0.75;
   let x = x0 + 0.015;
   while (x < x1 - 0.08) {
-    const pw = Math.min(x1 - 0.015 - x, (0.08 + rnd() * 0.2) * k);
-    if (pw < 0.05) break;
+    const run = Math.min(x1 - 0.015 - x, (0.16 + rnd() * 0.3) * k);
+    if (run < 0.06) break;
     if (rnd() < 0.05) {
-      x += pw + 0.012;
+      x += run + 0.012;
       continue;
     }
-    const ph = Math.min(0.34, clear * (0.42 + rnd() * 0.42));
-    const back = 0.025 + rnd() * 0.04, front = 0.02 + rnd() * 0.015;
-    const face = zb + s * (dep - front);
-    blk(kit, g, packaging(kit, pick(rnd, PRODUCTS)), x, x + pw, y, y + ph, zb + s * back, face);
-    // Most packs carry a printed label panel on the face toward the shopper.
-    const tag = Math.floor(x * 997) % 4;
-    if (tag && pw > 0.06) blk(kit, g, packaging(kit, LABELS[tag - 1]), x + pw * 0.14, x + pw * 0.86, y + ph * 0.42, y + ph * 0.78, face, face + s * 0.0015, false, false);
-    x += pw + (0.008 + rnd() * 0.012) * k;
+    const color = pick(rnd, PRODUCTS), label = pick(rnd, LABELS);
+    const face = zb + s * (dep - 0.006 - rnd() * 0.012);
+    let kind = round ? stockKind(rnd) : 'box';
+    if (kind !== 'box' && clear < 0.16) kind = 'box';
+    if (kind === 'box') cartons(kit, g, rnd, { x, run, y, clear, zb, s, face, color, label, k });
+    else rounds(kit, g, m, rnd, kind, { x, run, y, clear, s, face, dep, deep, color, label });
+    const tx = x + Math.min(0.03, run * 0.2), edge = zb + s * (dep + 0.012);
+    blk(kit, g, m.tag, tx, tx + 0.045, y - SHELF.t - 0.004, y + 0.012, edge, edge + s * 0.002, false, false);
+    x += run + (0.008 + rnd() * 0.01) * k;
+  }
+}
+
+/** A run of printed cartons standing side by side, each turned a hair off square. */
+function cartons(kit, g, rnd, { x, run, y, clear, zb, s, face, color, label, k }) {
+  const uw = Math.min(run, (0.055 + rnd() * 0.09) * k), gap = 0.004;
+  const n = Math.max(1, Math.floor((run + gap) / (uw + gap))), bw = (run - (n - 1) * gap) / n;
+  const ph = Math.min(0.34, clear * (0.45 + rnd() * 0.4));
+  const back = zb + s * (0.025 + rnd() * 0.04), d = Math.abs(face - back), zc = (face + back) / 2;
+  const body = packaging(kit, color), print = rnd() < 0.8 ? packaging(kit, label) : null;
+  const band = rnd() < 0.4;
+  for (let i = 0; i < n; i++) {
+    const u = sub(kit, g, x + bw / 2 + i * (bw + gap), y, zc, { yaw: (rnd() - 0.5) * 0.03 });
+    blk(kit, u, body, -bw / 2, bw / 2, 0, ph, -d / 2, d / 2);
+    if (!print || bw < 0.045) continue;
+    const zf = s * (d / 2), [lx, ly0, ly1] = band ? [0.5, 0.62, 0.8] : [0.36, 0.4, 0.74];
+    blk(kit, u, print, -bw * lx, bw * lx, ph * ly0, ph * ly1, zf, zf + s * 0.0015, false, false);
+  }
+}
+
+/** A run of round packs (bottles, cans or jars): one row deep, two on low shelves. */
+function rounds(kit, g, m, rnd, kind, { x, run, y, clear, s, face, dep, deep, color, label }) {
+  const T = (v) => Math.min(clear * 0.88, v);
+  const spec = kind === 'bottle' ? { r: 0.026 + rnd() * 0.016, h: T(0.17 + rnd() * 0.13) }
+    : kind === 'can' ? { r: 0.032, h: 0.118 }
+      : { r: 0.034 + rnd() * 0.014, h: T(0.09 + rnd() * 0.06) };
+  const { r, h } = spec, pitch = 2 * r + 0.005;
+  const n = Math.max(1, Math.floor((run + 0.005) / pitch));
+  const rows = deep && dep > 4 * r + 0.06 ? 2 : 1;
+  const stack = kind === 'can' && clear > 2 * h + 0.04 ? 2 : 1;
+  const body = kind === 'can' ? kit.material(color, { roughness: 0.3, metalness: 0.35 })
+    : kit.material(color, { roughness: kind === 'jar' ? 0.12 : 0.24 });
+  const print = packaging(kit, label), lid = kind === 'can' ? m.lid : kit.material(pick(rnd, LIDS), { roughness: 0.35 });
+  const x0 = x + (run - n * pitch + 0.005) / 2 + r;
+  for (let i = 0; i < n; i++) {
+    const cx = x0 + i * pitch;
+    for (let j = 0; j < rows; j++) {
+      const cz = face - s * (r + 0.002 + j * pitch);
+      if (j) {
+        // Rows behind the front one are simple silhouettes in the product's color.
+        if (kind === 'bottle') turned(kit, g, body, BOTTLE_BACK.map(([u, v]) => [u * r, v * h]), cx, y, cz, { segments: 6 });
+        else kit.cyl(g, body, r, h * stack, cx, y, cz, { segments: 6, bevel: false });
+        continue;
+      }
+      if (kind === 'bottle') {
+        turned(kit, g, body, BOTTLE.map(([u, v]) => [u * r, v * h]), cx, y, cz, { segments: 8 });
+        kit.cyl(g, lid, r * 0.44, h * 0.1, cx, y + h * 0.9, cz, { segments: 8, bevel: false });
+        kit.cyl(g, print, r * 1.012, h * 0.3, cx, y + h * 0.2, cz, { segments: 8, bevel: false });
+      } else if (kind === 'can') {
+        for (let t = 0; t < stack; t++) {
+          kit.cyl(g, body, r, h - 0.002, cx, y + t * h, cz, { segments: 8 });
+          kit.cyl(g, lid, r * 0.86, 0.002, cx, y + (t + 1) * h - 0.002, cz, { segments: 8, bevel: false });
+        }
+      } else {
+        turned(kit, g, body, JAR.map(([u, v]) => [u * r, v * h]), cx, y, cz, { segments: 8 });
+        kit.cyl(g, lid, r * 0.92, h * 0.16, cx, y + h * 0.86, cz, { segments: 8 });
+        kit.cyl(g, print, r * 1.012, h * 0.42, cx, y + h * 0.24, cz, { segments: 8, bevel: false });
+      }
+    }
   }
 }
 
@@ -236,23 +318,21 @@ function shelfFace(kit, g, m, { w, zb, s, depth, levels, h, seed }) {
   const bw = w / bays;
   const upper = Math.min(0.45, depth * 0.8);
   const rnd = seq(seed);
-  levels.forEach((y, li) => {
-    const dep = li === 0 ? depth : upper;
-    const next = li < levels.length - 1 ? levels[li + 1] - SHELF.t - 0.03 : h - 0.02;
-    const e = SHELF.post / 2;
-    blk(kit, g, m.frame, -w / 2 + e, w / 2 - e, y - SHELF.t, y, zb + s * 0.004, zb + s * (dep - 0.012));
-    blk(kit, g, m.channel, -w / 2 + e, w / 2 - e, y - SHELF.t - 0.012, y + 0.018, zb + s * (dep - 0.012), zb + s * dep);
-    // Price tags and product facings merge into one mesh per color.
-    g.add(assembly(kit, null, (a) => {
+  const e = SHELF.post / 2;
+  // Shelves, price tags and product facings of the whole face merge into one mesh per material.
+  g.add(assembly(kit, null, (a) => {
+    levels.forEach((y, li) => {
+      const dep = li === 0 ? depth : upper;
+      const next = li < levels.length - 1 ? levels[li + 1] - SHELF.t - 0.03 : h - 0.02;
+      blk(kit, a, m.frame, -w / 2 + e, w / 2 - e, y - SHELF.t, y, zb + s * 0.004, zb + s * (dep - 0.012));
+      blk(kit, a, m.channel, -w / 2 + e, w / 2 - e, y - SHELF.t - 0.012, y + 0.018, zb + s * (dep - 0.012), zb + s * dep);
       for (let b = 0; b < bays; b++) {
         const x0 = -w / 2 + b * bw + (b === 0 ? e : 0.003);
         const x1 = -w / 2 + (b + 1) * bw - (b === bays - 1 ? e : 0.003);
-        const tx = x0 + 0.08 + rnd() * 0.2;
-        blk(kit, a, m.tag, tx, tx + 0.05, y - SHELF.t - 0.004, y + 0.012, zb + s * dep, zb + s * (dep + 0.002), false);
-        stockShelf(kit, a, rnd, { x0, x1, y, clear: next - y, zb, s, dep: dep - 0.012 });
+        stockShelf(kit, a, m, rnd, { x0, x1, y, clear: next - y, zb, s, dep: dep - 0.012 });
       }
-    }));
-  });
+    });
+  }));
 }
 
 /** Posts at every bay line, z0..z1 deep, full height. */
@@ -557,7 +637,16 @@ function buildClothingRack(kit, { w, d, h, color }) {
         const sh = sub(kit, f, 0, top - 0.035, s * gm.half * 0.45, { pitch: s * 0.32 });
         cushion(kit, sh, mat, -gm.t * 0.45, gm.t * 0.45, -0.025, 0.025, -gm.half * 0.475, gm.half * 0.475, { r: 0.012 });
       }
-      cushion(kit, f, mat, -gm.t / 2, gm.t / 2, top - gm.len, top - 0.04, -gm.half, gm.half, { r: Math.min(0.014, gm.t * 0.4) });
+      // The body hangs in soft vertical folds that deepen toward the hem, which flares a little.
+      const y0 = top - gm.len, y1 = top - 0.04, cy = (y0 + y1) / 2, ph = gm.x * 37;
+      cushion(kit, f, mat, -gm.t / 2, gm.t / 2, y0, y1, -gm.half, gm.half, {
+        r: Math.min(0.012, gm.t * 0.35), k: 1, mid: [1, 2, 6],
+        warp: warpAt(`garment-${Math.round(ph * 10)}`, 0, cy, 0, (v) => {
+          const down = clamp((y1 - v.y) / gm.len, 0, 1);
+          v.x += gm.t * (0.18 + 0.32 * down) * Math.sin(v.z * 46 + ph);
+          v.z *= 1 + 0.06 * down * down;
+        }),
+      });
     }
   }));
   return g;
@@ -1146,7 +1235,7 @@ function drawFloorZone(ctx, o) {
 
 // ---- Registration -------------------------------------------------------------------
 
-registerItems([
+registerItems(shaded([
   {
     type: 'gondola-shelving', name: 'Gondola shelving', category: 'retail',
     w: 2.44, d: 1.22, h: 1.6, resizable: true,
@@ -1231,4 +1320,4 @@ registerItems([
     build: buildFloorZone,
     draw2d: drawFloorZone,
   },
-]);
+]));

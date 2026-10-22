@@ -1,7 +1,7 @@
 // Medical office catalog: exam rooms, reception and waiting, patient care and imaging.
 // Local frame: x = width, y = up, z = depth with the front facing +z (plan +y).
 import { registerItems } from './registry.js';
-import { tint, cushion, turned, bent, assembly, barPull, roundSeat } from './lab.js';
+import { tint, cushion, turned, bent, assembly, barPull, roundSeat, officeChair, warpAt, smooth01, shaded } from './lab.js';
 
 const TOP = 0.9;        // casework counter height
 const DESK = 0.74;      // work surface height
@@ -20,6 +20,7 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const repeats = (n, min = 1) => clamp(n, min, MAX_REPEAT);
 const custom = (color) => (typeof color === 'string' && color ? color : null);
 const span = (a, b) => (a < b ? [a, b] : [b, a]);
+const q = (v) => Math.round(v * 1e4);
 
 // ---- Materials ----------------------------------------------------------------------
 
@@ -150,28 +151,9 @@ function starBase(kit, g, m, reach, r = 0.025) {
   }
 }
 
-/** Office task chair facing +z, centered at (x, z); one merged assembly per fabric. */
+/** Office task chair facing +z, centered at (x, z) (officeChair in lab.js). */
 function taskChair(kit, g, m, fabric, x, z) {
-  const c = assembly(kit, `medical-task|${fabric.uuid}`, (a) => {
-    starBase(kit, a, m, 0.29);
-    kit.cyl(a, m.black, 0.032, 0.16, 0, 0.09, 0, { segments: 14 });
-    kit.cyl(a, m.chrome, 0.022, 0.16, 0, 0.25, 0, { segments: 14 });
-    kit.block(a, m.black, -0.11, 0.11, 0.4, 0.44, -0.13, 0.1);
-    cushion(kit, a, m.black, -0.23, 0.23, 0.425, 0.45, -0.21, 0.22, { r: 0.01 });
-    cushion(kit, a, fabric, -0.24, 0.24, 0.44, 0.5, -0.22, 0.24, { r: 0.03, crown: 0.012 });
-    kit.block(a, m.black, -0.035, 0.035, 0.4, 0.62, -0.28, -0.24);
-    kit.block(a, m.black, -0.035, 0.035, 0.4, 0.44, -0.24, -0.12);
-    const back = sub(kit, a, 0, 0.56, -0.25, { pitch: -0.1 });
-    cushion(kit, back, m.black, -0.225, 0.225, 0, 0.46, -0.04, -0.016, { r: 0.012 });
-    cushion(kit, back, fabric, -0.22, 0.22, 0.01, 0.45, -0.025, 0.03, { r: 0.028, crown: 0.012, axis: 'z' });
-    for (const s of [-1, 1]) {
-      kit.block(a, m.black, s * 0.215 - 0.014, s * 0.215 + 0.014, 0.44, 0.645, -0.08, -0.04);
-      cushion(kit, a, m.black, s * 0.215 - 0.03, s * 0.215 + 0.03, 0.638, 0.668, -0.17, 0.11, { r: 0.012, crown: 0.004 });
-    }
-  });
-  c.position.set(x, 0, z);
-  g.add(c);
-  return c;
+  return officeChair(kit, g, x, z, 0, { fabric });
 }
 
 /** Flat-panel monitor on a stand, screen facing its local +z. */
@@ -555,19 +537,40 @@ function buildSideChair(kit, { w, d, h, color }) {
   const wood = kit.mat.oak;
   const fabric = finish(kit, color, kit.mat.fabricSage);
   const { hx, hz, t, seatY, armY } = sideChairLayout(w, d);
+  // Solid oak frame with softened edges; legs taper toward the floor glides.
+  const ease = { bevel: 0.006 };
+  const taper = (y1) => warpAt(`side-leg-${q(y1)}`, 0, y1 / 2, 0, (v) => {
+    const k = 1 - 0.22 * clamp(1 - v.y / y1, 0, 1);
+    v.x *= k;
+    v.z *= k;
+  });
   for (const s of [-1, 1]) {
     const x = s * hx;
-    kit.block(g, wood, x - t, x + t, 0, armY, hz - t, hz + t);
-    kit.block(g, wood, x - t, x + t, 0, h - 0.01, -hz - t, -hz + t);
-    kit.block(g, wood, x - 0.03, x + 0.03, armY, armY + 0.026, -hz - t, hz + t + 0.012);
-    kit.block(g, wood, x - 0.016, x + 0.016, seatY - 0.09, seatY - 0.03, -hz, hz);
-    kit.block(g, wood, x - 0.012, x + 0.012, 0.14, 0.17, -hz, hz);
+    cushion(kit, sub(kit, g, x, 0, hz), wood, -t, t, 0, armY, -t, t, { r: 0.006, warp: taper(armY), mid: [1, 2, 1], k: 1 });
+    cushion(kit, sub(kit, g, x, 0, -hz), wood, -t, t, 0, h - 0.01, -t, t, { r: 0.006, warp: taper(h - 0.01), mid: [1, 2, 1], k: 1 });
+    cushion(kit, g, wood, x - 0.03, x + 0.03, armY, armY + 0.028, -hz - t, hz + t + 0.012, { r: 0.012 });
+    kit.block(g, wood, x - 0.016, x + 0.016, seatY - 0.09, seatY - 0.03, -hz, hz, true, ease);
+    kit.block(g, wood, x - 0.012, x + 0.012, 0.14, 0.17, -hz, hz, true, ease);
+    for (const z of [-hz, hz]) kit.cyl(g, kit.mat.black, 0.014, 0.004, x, 0, z, { segments: 10 });
   }
-  kit.block(g, wood, -hx, hx, seatY - 0.09, seatY - 0.03, hz - 0.016, hz + 0.016);
-  kit.block(g, wood, -hx, hx, seatY - 0.09, seatY - 0.03, -hz - 0.016, -hz + 0.016);
-  pad(kit, g, fabric, -hx + t, hx - t, seatY - 0.03, seatY + 0.04, -hz + t, hz + 0.02);
-  kit.block(g, wood, -hx, hx, h - 0.06, h - 0.01, -hz - 0.016, -hz + 0.016);
-  pad(kit, g, fabric, -hx + t, hx - t, seatY + 0.07, h - 0.07, -hz - 0.012, -hz + 0.035, 'z');
+  kit.block(g, wood, -hx, hx, seatY - 0.09, seatY - 0.03, hz - 0.016, hz + 0.016, true, ease);
+  kit.block(g, wood, -hx, hx, seatY - 0.09, seatY - 0.03, -hz - 0.016, -hz + 0.016, true, ease);
+  // Seat rolled down at the front edge; back padded and gently bowed.
+  const z0 = -hz + t, z1 = hz + 0.02;
+  cushion(kit, g, fabric, -hx + t, hx - t, seatY - 0.03, seatY + 0.03, z0, z1, {
+    r: 0.026, crown: 0.012, mid: [3, 1, 3],
+    warp: warpAt(`side-seat-${q(z1)}`, 0, seatY, (z0 + z1) / 2, (v) => {
+      const k = smooth01((v.z - z1 + 0.12) / 0.11);
+      v.y -= 0.016 * k * k;
+    }),
+  });
+  kit.block(g, wood, -hx, hx, h - 0.06, h - 0.01, -hz - 0.016, -hz + 0.016, true, ease);
+  cushion(kit, g, fabric, -hx + t, hx - t, seatY + 0.07, h - 0.07, -hz - 0.012, -hz + 0.025, {
+    r: 0.02, crown: 0.01, axis: 'z', mid: [3, 3, 1],
+    warp: warpAt(`side-back-${q(hx)}`, 0, (seatY + h) / 2, -hz + 0.0065, (v) => {
+      v.z += (v.x * v.x) / (2 * 0.9);
+    }),
+  });
   return g;
 }
 
@@ -630,8 +633,7 @@ function buildDesk(kit, { w, d, h, color }, variant) {
 
   kit.block(g, m.plinth, -w / 2 + 0.015, w / 2 - 0.015, 0, 0.08, L.inner + 0.01, fz - 0.025);
   kit.block(g, m.laminate, -w / 2, w / 2, 0.08, ledgeY, L.inner, fz - 0.02);
-  kit.block(g, face, -w / 2, w / 2, 0.08, ledgeY, fz - 0.02, fz);
-  variant.dress(kit, g, m, w, fz, ledgeY);
+  variant.dress(kit, g, m, w, fz, ledgeY, face);
   kit.block(g, m.quartz, -w / 2, w / 2, ledgeY, h, L.ledge0, L.front);
   kit.block(g, m.led, -w / 2 + 0.06, w / 2 - 0.06, ledgeY - 0.006, ledgeY, L.ledge0 + 0.02, L.ledge0 + 0.04, false);
   const brackets = repeats(Math.round(w / 0.9) + 1, 2);
@@ -687,27 +689,36 @@ function drawDesk(ctx, o, variant) {
 const RECEPTION = {
   pitch: 1.5,
   face: (kit) => kit.mat.oak,
-  dress(kit, g, m, w, fz, ledgeY) {
-    const n = clamp(Math.round(w / 0.16), 2, 20);
-    for (let i = 1; i < n; i++) {
-      const x = -w / 2 + (i * w) / n;
-      kit.block(g, m.reveal, x - 0.003, x + 0.003, 0.08, ledgeY, fz - 0.001, fz + 0.0012, false, { bevel: false });
-    }
-    kit.block(g, kit.mat.cbreGreen, -w / 2, w / 2, 0.08, 0.1, fz - 0.002, fz + 0.004, false);
+  /** Vertical oak slats with dark shadow gaps over a recessed backer, wrapping the ends. */
+  dress(kit, g, m, w, fz, ledgeY, face) {
+    // A dark stained backer keeps the gaps reading as shadow without the hard contrast that
+    // shimmers when the desk is seen from across a room.
+    const backer = kit.material('#43372c', { roughness: 0.8 });
+    kit.block(g, backer, -w / 2 + 0.006, w / 2 - 0.006, 0.08, ledgeY, fz - 0.02, fz - 0.012);
+    const n = clamp(Math.round((w - 0.02) / 0.076), 2, MAX_REPEAT), p = (w - 0.02) / n, sw = p - 0.013;
+    g.add(assembly(kit, `reception-slats|${face.uuid}|${q(w)}|${q(ledgeY)}`, (a) => {
+      for (let i = 0; i < n; i++) {
+        const x = -w / 2 + 0.01 + (i + 0.5) * p;
+        kit.block(a, face, x - sw / 2, x + sw / 2, 0.09, ledgeY - 0.006, fz - 0.012, fz + 0.006);
+      }
+      for (const s of [-1, 1]) kit.block(a, face, ...span(s * w / 2, s * (w / 2 - 0.02)), 0.09, ledgeY - 0.006, fz - 0.24, fz + 0.006);
+    }));
   },
 };
 
 const NURSE = {
   pitch: 1.2,
   face: (kit) => tint(kit, kit.mat.laminate, '#5b7e7c'),
-  dress(kit, g, m, w, fz, ledgeY) {
+  /** Laminate panels with vertical reveals under a white solid surface band with a steel reveal. */
+  dress(kit, g, m, w, fz, ledgeY, face) {
+    kit.block(g, face, -w / 2, w / 2, 0.08, ledgeY, fz - 0.02, fz);
     const n = repeats(Math.round(w / 0.8));
     for (let i = 1; i < n; i++) {
       const x = -w / 2 + (i * w) / n;
       kit.block(g, m.reveal, x - 0.003, x + 0.003, 0.08, ledgeY - 0.2, fz - 0.001, fz + 0.0012, false, { bevel: false });
     }
     kit.block(g, m.white, -w / 2, w / 2, ledgeY - 0.2, ledgeY, fz - 0.002, fz + 0.006);
-    kit.block(g, m.reveal, -w / 2, w / 2, ledgeY - 0.206, ledgeY - 0.2, fz, fz + 0.007, false, { bevel: false });
+    kit.block(g, m.steel, -w / 2, w / 2, ledgeY - 0.208, ledgeY - 0.2, fz - 0.001, fz + 0.004, false, { bevel: false });
   },
 };
 
@@ -739,15 +750,27 @@ function buildWaitingChairs(kit, { w, d, color }) {
     kit.block(g, frame, x - 0.022, x + 0.022, 0.012, 0.045, -L.foot, L.foot);
     for (const z of [-L.foot + 0.02, L.foot - 0.02]) kit.block(g, m.rubber, x - 0.02, x + 0.02, 0, 0.012, z - 0.02, z + 0.02);
   }
+  // Seats roll down at the front edge; backs bow around the sitter with a soft lumbar.
+  const zf = L.seatZ1;
+  const seatContour = (v) => {
+    const t = smooth01((v.z - zf + 0.13) / 0.12);
+    v.y -= 0.022 * t * t;
+    v.z -= 0.008 * t * t;
+  };
+  const backContour = (v) => {
+    v.z += (v.x * v.x) / (2 * 0.75) + 0.014 * Math.exp(-(((v.y - 0.1) / 0.09) ** 2));
+  };
   for (let i = 0; i < L.n; i++) {
-    const x0 = L.arms[i] + L.armT / 2 + 0.008, x1 = L.arms[i + 1] - L.armT / 2 - 0.008, cx = (x0 + x1) / 2;
+    const x0 = L.arms[i] + L.armT / 2 + 0.008, x1 = L.arms[i + 1] - L.armT / 2 - 0.008, cx = (x0 + x1) / 2, hw = (x1 - x0) / 2;
+    const mid = [4, 1, 4];
     kit.block(g, frame, cx - 0.16, cx + 0.16, 0.36, 0.4, L.seatZ0 + 0.04, L.seatZ1 - 0.06);
-    pad(kit, g, fabric, x0, x1, 0.4, 0.47, L.seatZ0, L.seatZ1);
+    cushion(kit, g, frame, x0 + 0.005, x1 - 0.005, 0.392, 0.41, L.seatZ0 + 0.005, L.seatZ1 - 0.01, { r: 0.007, warp: warpAt('wait-shell', 0, 0.401, (L.seatZ0 + L.seatZ1 - 0.005) / 2, seatContour), mid, k: 1 });
+    cushion(kit, g, fabric, x0, x1, 0.405, 0.458, L.seatZ0, L.seatZ1, { r: 0.026, crown: 0.012, warp: warpAt('wait-seat', 0, 0.4315, (L.seatZ0 + L.seatZ1) / 2, seatContour), mid });
     kit.block(g, frame, cx - 0.02, cx + 0.02, 0.3, 0.34, L.backZ, bz - 0.03);
     kit.block(g, frame, cx - 0.02, cx + 0.02, 0.3, 0.56, L.backZ - 0.04, L.backZ);
     const back = sub(kit, g, cx, 0.5, L.backZ + 0.005, { pitch: -0.14 });
-    kit.block(back, frame, -(x1 - x0) / 2 + 0.01, (x1 - x0) / 2 - 0.01, 0.0, 0.32, -0.035, -0.015);
-    pad(kit, back, fabric, -(x1 - x0) / 2, (x1 - x0) / 2, 0.01, 0.34, -0.015, 0.04, 'z');
+    cushion(kit, back, frame, -hw + 0.008, hw - 0.008, 0, 0.32, -0.035, -0.015, { r: 0.007, warp: warpAt('wait-back-shell', 0, 0.16, -0.025, backContour), mid: [4, 4, 1], k: 1 });
+    cushion(kit, back, fabric, -hw, hw, 0.01, 0.34, -0.018, 0.03, { r: 0.022, crown: 0.01, axis: 'z', warp: warpAt('wait-back', 0, 0.175, 0.006, backContour), mid: [4, 4, 1] });
   }
   return g;
 }
@@ -1181,7 +1204,7 @@ function drawSupplyCart(ctx, o) {
 
 // ---- Registration -------------------------------------------------------------------
 
-registerItems([
+registerItems(shaded([
   fixed({
     type: 'exam-table', name: 'Exam table', category: 'medical', colorable: true,
     w: 1.83, d: 0.71, h: 1.0,
@@ -1254,4 +1277,4 @@ registerItems([
     tags: ['cart', 'supplies', 'drawers', 'mobile'],
     build: buildSupplyCart, draw2d: drawSupplyCart,
   }),
-]);
+]));

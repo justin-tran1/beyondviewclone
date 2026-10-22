@@ -31,7 +31,19 @@ const REBUILD_DELAY = 300;
 const SLOW_BUILD = 120;
 const POSE_INTERVAL = 100;
 const SLOW_FRAME = 40;
-const SLOW_QUALITY_FRAMES = 8; // sustained slow frames before the quality steps down
+// The frame governor judges the median of the last GOVERNOR_FRAMES motion frames (or of fewer, once
+// they span GOVERNOR_SPAN ms), so a hitch or two, such as a garbage collection, never changes the level.
+const GOVERNOR_FRAMES = 20;
+const GOVERNOR_MIN_FRAMES = 5;
+const GOVERNOR_SPAN = 1000;
+// Frame times left out after work that has nothing to do with moving (the first render of a motion,
+// compiling shaders, redrawing the shadow map): the browser can report its cost a frame late.
+const SKIP_FRAMES = 2;
+// Motion time (ms) with three frames in four under HEADROOM_FRAME before a lowered level steps back
+// up one notch. It doubles each time a raised level turns out too slow within STEP_UP_TRIAL.
+const HEADROOM_FRAME = 24;
+const STEP_UP_AFTER = 3000;
+const STEP_UP_TRIAL = 10000;
 const MIN_RATIO = 0.5;
 // AgX keeps highlights from clipping and shadows from crushing, and the post grade adds the contrast
 // back. Calibrated against the plan light map over every sample's saved views: on average a little
@@ -518,7 +530,9 @@ export class Walkthrough extends EventTarget {
     this._world = collisionWorld([], []);
     this._occluders = new Grid();
     this._ringHit = false;
-    this._perf = { avg: 0, n: 0, skip: 0 };
+    // Frame governor state: recent motion frame times, frames to leave out, motion time with headroom,
+    // the headroom needed before stepping up, and the motion time since the last step up.
+    this._perf = { win: [], skip: 0, calm: 0, upAfter: STEP_UP_AFTER, since: Infinity };
     this._restore = {};
 
     this._setupDom();
@@ -554,8 +568,11 @@ export class Walkthrough extends EventTarget {
     if (!QUALITIES.includes(quality)) throw new Error(`Unknown walkthrough quality "${quality}"`);
     const chosenChanged = quality !== this._chosenQuality;
     this._chosenQuality = quality;
-    // A deliberate choice starts the automatic step-down over, from full motion resolution.
+    // A deliberate choice starts the automatic changes over, from full motion resolution.
     this._motionRatio = this._baseRatio;
+    this._perf.upAfter = STEP_UP_AFTER;
+    this._perf.since = Infinity;
+    this._resetGovernor(0);
     if (quality !== this._quality || chosenChanged) this._applyQuality(quality, false);
   }
 
@@ -631,6 +648,8 @@ export class Walkthrough extends EventTarget {
     }
     this._layoutMinimap();
     this._poseChanged();
+    // The build and the shadow map redraw it asks for land in the next frame times.
+    this._skipFrames();
     this._invalidate();
   }
 
@@ -726,6 +745,8 @@ export class Walkthrough extends EventTarget {
     if (this._size !== before) {
       this._layoutMinimap();
       if (this._canRender() && !this._raf) this._render();
+      // New buffers, and perhaps a frame drawn here: not the cost of moving.
+      this._skipFrames();
     }
     this._invalidate();
   }
@@ -1095,7 +1116,8 @@ export class Walkthrough extends EventTarget {
     this._last = now;
     this._inFrame = true;
     this._again = false;
-    let active = false;
+    const programs = this._renderer.info.programs;
+    let active = false, heavy = false;
     try {
       active = this._update(dt);
       const ratio = active || this._look?.moved || this._pinch ? this._motionRatio : this._baseRatio;
@@ -1103,51 +1125,107 @@ export class Walkthrough extends EventTarget {
         this._renderer.setPixelRatio(ratio);
         this._applySize();
       }
-      if (active || this._dirty) this._render();
+      if (active || this._dirty) {
+        const compiled = programs.length;
+        heavy = this._renderer.shadowMap.needsUpdate;
+        this._render();
+        heavy ||= programs.length > compiled;
+      }
     } finally {
       this._inFrame = false;
     }
     if (active) {
       this._governor(frameMs);
+      // Compiling shaders or redrawing the shadow map is not the cost of moving.
+      if (heavy) this._skipFrames();
     } else {
       this._last = 0;
-      this._perf.n = 0;
+      // The first frames of the next motion carry the work of starting it.
+      this._skipFrames();
     }
     if (active || this._again) this._kick();
   }
 
   /**
-   * When moving stays slow, first steps the quality down one level at a time (never above the
-   * chosen level), and once at 'fast' lowers the pixel ratio used while moving. Idle frames keep
-   * the full pixel ratio.
+   * While moving stays slow, steps the quality down one level at a time (never above the chosen
+   * level), and once at 'fast' lowers the pixel ratio used while moving. After a few seconds of
+   * moving with headroom it undoes those steps one at a time, the pixel ratio first. Idle frames
+   * keep the full pixel ratio.
    */
   _governor(frameMs) {
     if (!frameMs || frameMs > 5000) return;
     const g = this._perf;
-    // Skip the frames right after a quality change: they include compiling the new shaders.
     if (g.skip > 0) {
       g.skip--;
       return;
     }
     const ms = Math.min(frameMs, 250);
-    g.avg = g.n ? g.avg * 0.8 + ms * 0.2 : ms;
-    g.n++;
-    if (g.avg <= SLOW_FRAME) return;
-    const lower = QUALITIES[QUALITIES.indexOf(this._quality) + 1];
-    if (lower) {
-      if (g.n >= SLOW_QUALITY_FRAMES) this._applyQuality(lower, true);
-    } else if (g.n >= 5 && this._motionRatio > MIN_RATIO) {
-      this._motionRatio = Math.max(MIN_RATIO, Math.round(this._motionRatio * 80) / 100);
-      g.n = 0;
+    g.since += ms;
+    const win = g.win;
+    win.push(ms);
+    if (win.length > GOVERNOR_FRAMES) win.shift();
+    if (win.length < GOVERNOR_FRAMES && (win.length < GOVERNOR_MIN_FRAMES || win.reduce((a, b) => a + b, 0) < GOVERNOR_SPAN)) return;
+    const sorted = win.slice().sort((a, b) => a - b);
+    // The lower median: more than half of the frames have to be slow.
+    if (sorted[(sorted.length - 1) >> 1] > SLOW_FRAME) {
+      g.calm = 0;
+      this._stepDown();
+    } else if (sorted[Math.ceil(sorted.length * 0.75) - 1] < HEADROOM_FRAME && this._lowered()) {
+      g.calm += ms;
+      if (g.calm >= g.upAfter) this._stepUp();
+    } else {
+      g.calm = 0;
     }
+  }
+
+  /** True while the governor has lowered the quality or the motion pixel ratio. */
+  _lowered() {
+    return this._quality !== this._chosenQuality || this._motionRatio < this._baseRatio;
+  }
+
+  _stepDown() {
+    const g = this._perf;
+    const lower = QUALITIES[QUALITIES.indexOf(this._quality) + 1];
+    if (!lower && this._motionRatio <= MIN_RATIO) return;
+    // A step up that did not hold: wait twice as long before the next try, so the level settles.
+    if (g.since < STEP_UP_TRIAL) g.upAfter *= 2;
+    g.since = Infinity;
+    if (lower) this._applyQuality(lower, true);
+    else this._setMotionRatio(Math.max(MIN_RATIO, Math.round(this._motionRatio * 80) / 100));
+  }
+
+  _stepUp() {
+    this._perf.since = 0;
+    // The pixel ratio comes back in one step; if that is too much, it steps down again in small ones.
+    if (this._motionRatio < this._baseRatio) this._setMotionRatio(this._baseRatio);
+    else this._applyQuality(QUALITIES[QUALITIES.indexOf(this._quality) - 1], true);
+  }
+
+  _setMotionRatio(ratio) {
+    this._motionRatio = ratio;
+    // The next frame reallocates the buffers at the new size.
+    this._resetGovernor(SKIP_FRAMES);
+  }
+
+  /** Forget the frames measured so far: they say nothing about a new level or pixel ratio. */
+  _resetGovernor(skip) {
+    const g = this._perf;
+    g.win.length = 0;
+    g.calm = 0;
+    g.skip = Math.max(g.skip, skip);
+  }
+
+  /** Leave the next frame times out: they carry work that is not the cost of moving. */
+  _skipFrames() {
+    this._perf.skip = Math.max(this._perf.skip, SKIP_FRAMES);
   }
 
   _applyQuality(quality, auto) {
     const changed = quality !== this._quality;
     this._quality = quality;
     this._postfx.setQuality(quality);
-    this._perf.n = 0;
-    this._perf.skip = changed ? 2 : 0;
+    // The first frames at a new level compile its shaders.
+    this._resetGovernor(changed ? SKIP_FRAMES : 0);
     this.dispatchEvent(new CustomEvent('quality', { detail: { quality, chosen: this._chosenQuality, auto } }));
     this._invalidate();
   }

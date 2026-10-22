@@ -291,15 +291,20 @@ export class Walkthrough extends EventTarget {
   // Events: 'pose' {x, y, yaw, pitch}, 'mode' {mode},
   //         'camera' {id, arriving}: heading to a saved view (arriving true), arrived (false),
   //                                  or the trip was cut short (id null)
-  //         'quality' {quality, chosen, auto}: auto is true when the walkthrough lowered it itself
+  //         'quality' {quality, chosen, auto}: auto is true when the walkthrough changed it itself
+  //                                            (lowered it, or raised it back toward the chosen level)
 }
 ```
 
 Rendering: AgX tone mapping at exposure 1.8 (`EXPOSURE`; keep `PHOTO_EXPOSURE` equal), PCF soft shadows updated
 only when the scene changes, and frames drawn only when something moved or changed. While moving
-stays slower than 40 ms a frame, the walkthrough steps the quality down one level at a time (never
-above the chosen level), then lowers the pixel ratio used while moving; idle frames keep the full
-pixel ratio. After each build it fits the sun to the plan, captures the interior for reflections
+stays slower than 40 ms a frame (the median of the last 20 motion frames, leaving out the first
+frames of each motion and frames that compile shaders or redraw the shadow map), the walkthrough
+steps the quality down one level at a time (never above the chosen level), then lowers the pixel
+ratio used while moving; idle frames keep the full pixel ratio. After 3 s of moving with three
+frames in four under 24 ms it steps back up one notch toward the chosen level, the pixel ratio
+first; a step up that turns out too slow within 10 s doubles that wait. After each build it fits
+the sun to the plan, captures the interior for reflections
 (`captureEnvironment`, when builder3d.js offers it) and limits AO to the building. It owns one kit
 for its whole life: rebuilds release only what each build made (`built.dispose()` plus the canvas
 textures items drew), and `dispose()` calls `kit.dispose()`, releases the builder's shared

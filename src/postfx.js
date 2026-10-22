@@ -22,21 +22,24 @@ import { CopyShader } from 'three/addons/shaders/CopyShader.js';
 export const QUALITIES = ['high', 'balanced', 'fast'];
 
 /**
- * Per-level settings. msaa is the scene pass's sample count. AO radius and thickness are meters;
- * denoise.depthPhi is the plane tolerance per meter (see onPlane).
+ * Per-level settings. msaa is the scene pass's sample count. AO radius and thickness are meters:
+ * thickness is the view-space depth gap within which a sample still counts as an occluder, fading
+ * out over its upper half, so a sofa a meter from the wall or a stool in front of a booth's back
+ * panel leaves no dark outline on it while contact shading stays. denoise.depthPhi is the plane
+ * tolerance per meter (see onPlane).
  */
 const LEVELS = {
   high: {
     msaa: 4,
     aoScale: 1,
-    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 1, scale: 1.7, samples: 16, distanceFallOff: 1 },
+    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, scale: 1.7, samples: 16, distanceFallOff: 1 },
     denoise: { depthPhi: 0.05, normalPhi: 8 },
     bloom: true,
   },
   balanced: {
     msaa: 2,
     aoScale: 0.5,
-    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 1, scale: 1.7, samples: 8, distanceFallOff: 1 },
+    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, scale: 1.7, samples: 8, distanceFallOff: 1 },
     denoise: { depthPhi: 0.05, normalPhi: 8 },
     bloom: false,
   },
@@ -235,7 +238,10 @@ const NormalFromDepthShader = {
  * magic square, so a box of exactly that size averages every rotation and cancels the pattern on
  * flat surfaces, where a randomly rotated kernel leaves grain. Neighbors off the pixel's plane
  * (depthPhi: tolerance per meter between them, see onPlane) or facing elsewhere (normalPhi) are
- * left out, so AO never bleeds across edges.
+ * left out, so AO never bleeds across silhouettes or outside edges. Inside corners (a wall meeting
+ * the ceiling, a leg meeting the floor) are blended on purpose: occlusion is continuous there, and
+ * the multisampled scene pass gives each crease pixel a color mixed from both faces, so AO taken
+ * from one face alone stepped with the edge's pixel stairs into a dashed dark line.
  */
 const BoxDenoiseShader = {
   uniforms: {
@@ -270,13 +276,18 @@ const BoxDenoiseShader = {
       }
       vec3 n = unpackRGBToNormal(texelFetch(tNormal, c, 0).rgb);
       vec3 p = viewAt(uv0, depth);
+      // The size of one texel at this depth: the reach of an inside corner within the window.
+      float foot = length(viewAt(uv0 + vec2(1.0 / resolution.x, 0.0), depth) - p);
       float sum = 0.0, weight = 0.0;
       for (int y = -2; y <= 2; y++) {
         for (int x = -2; x <= 2; x++) {
           ivec2 q = clamp(c + ivec2(x, y), ivec2(0), size - 1);
           vec2 uv = depthUv((vec2(q) + 0.5) / resolution);
           vec3 nq = unpackRGBToNormal(texelFetch(tNormal, q, 0).rgb);
-          float w = onPlane(p, n, viewAt(uv, textureLod(tDepth, uv, 0.0).x), depthPhi) * pow(max(dot(n, nq), 0.0), normalPhi);
+          vec3 pq = viewAt(uv, textureLod(tDepth, uv, 0.0).x);
+          float w = onPlane(p, n, pq, depthPhi) * pow(max(dot(n, nq), 0.0), normalPhi);
+          // Inside corner: q is close, in front of p's plane, and p in front of q's.
+          w = max(w, step(length(pq - p), 6.0 * foot) * step(0.0, dot(pq - p, n)) * step(0.0, dot(p - pq, nq)));
           sum += texelFetch(tDiffuse, q, 0).r * w;
           weight += w;
         }
@@ -357,6 +368,10 @@ const AOUpsampleShader = {
  * texel are skipped (they carry no horizon), and samples off screen count as open instead of
  * repeating the border.
  */
+// Occlusion from a sample fades out over the upper half of the thickness, instead of stopping at a
+// hard cutoff that draws a ring wherever an object stands exactly that far in front of a surface.
+const GTAO_FADE = 'distanceFallOff) * (1. - smoothstep(0.5 * thickness, thickness, abs(viewDelta.z))));';
+
 const GTAO_POINTS = /* glsl */`
 		vec2 depthTexelUv(const in vec2 uv) {
 			vec2 size = vec2(textureSize(tDepth, 0));
@@ -379,9 +394,10 @@ function patchGTAO(fs) {
   const out = fs
     .replace(/vec3 getSceneUvAndDepth\(vec3 sampleViewPos\) \{[\s\S]*?return vec3\(sampleUv, sampleSceneDepth\);\s*\}/, GTAO_POINTS)
     .replace('float depth = getDepth(vUv.xy);', 'vec2 centerUv = depthTexelUv(vUv);\n\t\t\tgtaoCenterUv = centerUv;\n\t\t\tfloat depth = getDepth(centerUv);')
-    .replace('vec3 viewPos = getViewPosition(vUv, depth);', 'vec3 viewPos = getViewPosition(centerUv, depth);');
-  if (!out.includes('centerUv, depth') || !out.includes('depthTexelUv(sampleUv)')) {
-    console.warn('postfx: the GTAO shader changed, so its sample reconstruction was not patched');
+    .replace('vec3 viewPos = getViewPosition(vUv, depth);', 'vec3 viewPos = getViewPosition(centerUv, depth);')
+    .replaceAll('distanceFallOff));', GTAO_FADE);
+  if (!out.includes('centerUv, depth') || !out.includes('depthTexelUv(sampleUv)') || out.split(GTAO_FADE).length !== 3) {
+    console.warn('postfx: the GTAO shader changed, so its sample reconstruction and thickness fade were not patched');
     return fs;
   }
   return out;

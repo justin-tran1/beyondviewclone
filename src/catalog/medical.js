@@ -790,82 +790,131 @@ function drawWaitingChairs(ctx, o) {
 
 // ---- Hospital bed -------------------------------------------------------------------
 
-const BED = { pivot: -0.3, deck: 0.56, mT: 0.14, tilt: 0.42, headLen: 0.7, fold: 0.1 };
+const BED = { pivot: -0.3, deck: 0.56, mT: 0.15, tilt: 0.42, headLen: 0.7, fold: 0.1, rail: 0.016 };
+
+/**
+ * Side rails: the head pair rides on the backrest (local y and z on the head section), the foot
+ * pair on the frame. Plan z spans of each, for the symbol, follow from the backrest's tilt.
+ */
+function bedLayout(w) {
+  const { pivot, tilt, headLen } = BED;
+  const head = { y0: 0.04, y1: 0.27, z0: -0.46, z1: -0.05 };
+  const at = (y, z) => pivot + y * Math.sin(tilt) + z * Math.cos(tilt);
+  return {
+    rx: w / 2 - 0.025, head, foot: { y0: 0.6, y1: 0.92, z0: 0.03, z1: 0.68 },
+    headPlan: [at(head.y0, head.z0), at(head.y1, head.z1)],
+  };
+}
+
+/**
+ * Molded side rail in the plane x: a rounded loop of tube split by an upright, and with `pod` a
+ * control pod filling the upper window toward z1, its keypad facing outward (side s).
+ */
+function bedRail(kit, g, m, mat, x, { y0, y1, z0, z1 }, { pod = false, s = 1 } = {}) {
+  const cy = (y0 + y1) / 2, cz = (z0 + z1) / 2, hy = (y1 - y0) / 2, hz = (z1 - z0) / 2, r = BED.rail;
+  const ring = [];
+  for (let i = 0; i < 24; i++) {
+    const t = (i / 24) * Math.PI * 2, c = Math.cos(t), sn = Math.sin(t);
+    ring.push([x, cy + hy * Math.sign(sn) * Math.abs(sn) ** 0.3, cz + hz * Math.sign(c) * Math.abs(c) ** 0.3]);
+  }
+  bent(kit, g, mat, ring, r, { segments: 32, radial: 6, closed: true });
+  const zm = z0 + (z1 - z0) * 0.42;
+  kit.cyl(g, mat, r * 0.8, 2 * hy - 2 * r, x, y0 + r, zm, { segments: 8, bevel: false });
+  if (pod) {
+    const py0 = y0 + (y1 - y0) * 0.38, py1 = y1 - r * 0.5, pz0 = zm, pz1 = z1 - r * 1.5;
+    cushion(kit, g, mat, x - 0.012, x + 0.012, py0, py1, pz0, pz1, { r: 0.01 });
+    const f = x + s * 0.012, f1 = f + s * 0.002;
+    kit.block(g, m.screen, ...span(f, f1), py0 + 0.05, py1 - 0.03, pz0 + 0.03, pz0 + 0.12, false, { bevel: false });
+    for (let i = 0; i < 2; i++) kit.block(g, m.slot, ...span(f, f1), py0 + 0.03 + i * 0.05, py0 + 0.06 + i * 0.05, pz1 - 0.09, pz1 - 0.03, false, { bevel: false });
+  }
+  return zm;
+}
 
 function buildHospitalBed(kit, { w, d, h, color }) {
-  const g = kit.group();
   const m = palette(kit);
   const blanket = finish(kit, color, kit.mat.fabricCeladon);
-  const mattress = tint(kit, kit.mat.vinylBlue, '#45606e');
-  const board = tint(kit, kit.mat.plastic, '#e4e7e6');
-  const hz = d / 2, bx = w / 2 - 0.06, mx = w / 2 - 0.07;
+  // The parts merge into one mesh per material, cached per finish (the bed is a fixed size).
+  return assembly(kit, `hospital-bed|${blanket.uuid}`, (a) => bedParts(kit, a, m, blanket, w, d, h));
+}
+
+function bedParts(kit, g, m, blanket, w, d, h) {
+  const mattress = tint(kit, kit.mat.vinylBlue, '#4b6470');
+  const board = tint(kit, kit.mat.plastic, '#e6e8e6');
+  const base = tint(kit, kit.mat.plastic, '#b3b8b8');
+  const hz = d / 2, bx = w / 2 - 0.05, mx = w / 2 - 0.075;
   const { pivot, deck, mT, tilt, headLen, fold } = BED;
+  const L = bedLayout(w);
   const top = deck + mT;
 
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) caster(kit, g, m, sx * 0.36, sz * (hz - 0.2), 0.065);
-  kit.block(g, m.darkSteel, -0.4, 0.4, 0.15, 0.2, -hz + 0.12, hz - 0.12);
-  kit.block(g, m.shell, -0.34, 0.34, 0.2, 0.3, -hz + 0.3, hz - 0.3);
-  for (const z of [-0.5, 0.5]) kit.block(g, m.darkSteel, -0.1, 0.1, 0.3, deck - 0.06, z - 0.08, z + 0.08);
-  kit.block(g, m.shell, -mx + 0.01, mx - 0.01, deck - 0.06, deck, -hz + 0.1, hz - 0.07);
+  // Low base: a steel frame on four twin-wheel casters under a molded shroud, wall bumpers at the
+  // head, and two lift columns in telescoping covers.
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) caster(kit, g, m, sx * 0.37, sz * (hz - 0.17), 0.062);
+  for (const sx of [-1, 1]) cushion(kit, g, m.darkSteel, sx * 0.37 - 0.03, sx * 0.37 + 0.03, 0.15, 0.19, -hz + 0.1, hz - 0.1, { r: 0.012 });
+  for (const sz of [-1, 1]) cushion(kit, g, m.darkSteel, -0.4, 0.4, 0.15, 0.19, sz * (hz - 0.17) - 0.035, sz * (hz - 0.17) + 0.035, { r: 0.012 });
+  cushion(kit, g, base, -0.33, 0.33, 0.17, 0.25, -hz + 0.3, hz - 0.3, { r: 0.03, crown: 0.005 });
+  for (const sx of [-1, 1]) kit.cyl(g, m.rubber, 0.034, 0.07, sx * 0.39, 0.16, -hz + 0.07, { segments: 16 });
+  for (const z of [-0.5, 0.5]) {
+    cushion(kit, g, base, -0.11, 0.11, 0.26, 0.4, z - 0.085, z + 0.085, { r: 0.03 });
+    cushion(kit, g, board, -0.095, 0.095, 0.4, deck - 0.07, z - 0.07, z + 0.07, { r: 0.025 });
+    kit.block(g, m.darkSteel, -0.1, 0.1, 0.398, 0.41, z - 0.075, z + 0.075, false);
+  }
+  cushion(kit, g, m.darkSteel, -mx + 0.03, mx - 0.03, deck - 0.075, deck - 0.05, pivot, hz - 0.12, { r: 0.008 });
+  cushion(kit, g, board, -mx, mx, deck - 0.05, deck, pivot + 0.02, hz - 0.06, { r: 0.016 });
 
   // Mattress in a fitted sheet, a blanket draped over the foot and a folded sheet cuff.
-  cushion(kit, g, mattress, -mx, mx, deck, top - 0.006, pivot, hz - 0.08, { r: 0.03 });
-  cushion(kit, g, m.linen, -mx + 0.004, mx - 0.004, top - 0.02, top + 0.002, pivot, fold + 0.03, { r: 0.008 });
-  cushion(kit, g, blanket, -mx - 0.012, mx + 0.012, top - 0.014, top + 0.014, fold, hz - 0.075, { r: 0.012, crown: 0.006 });
-  for (const s of [-1, 1]) cushion(kit, g, blanket, ...span(s * (mx - 0.004), s * (mx + 0.012)), deck + 0.03, top + 0.004, fold, hz - 0.075, { r: 0.006 });
-  cushion(kit, g, blanket, -mx - 0.012, mx + 0.012, deck + 0.03, top + 0.014, hz - 0.087, hz - 0.071, { r: 0.006 });
+  cushion(kit, g, mattress, -mx, mx, deck, top - 0.006, pivot, hz - 0.075, { r: 0.045, crown: 0.006 });
+  cushion(kit, g, m.linen, -mx + 0.004, mx - 0.004, top - 0.02, top + 0.002, pivot, fold + 0.03, { r: 0.01 });
+  cushion(kit, g, blanket, -mx - 0.012, mx + 0.012, top - 0.014, top + 0.016, fold, hz - 0.07, { r: 0.014, crown: 0.008 });
+  for (const s of [-1, 1]) cushion(kit, g, blanket, ...span(s * (mx - 0.004), s * (mx + 0.014)), deck + 0.03, top + 0.004, fold, hz - 0.07, { r: 0.007 });
+  cushion(kit, g, blanket, -mx - 0.012, mx + 0.012, deck + 0.03, top + 0.016, hz - 0.084, hz - 0.066, { r: 0.007 });
   kit.cyl(g, m.linen, 0.026, 2 * mx + 0.02, 0, top + 0.012, fold + 0.012, { axis: 'x', segments: 18 });
 
+  // Backrest: deck, mattress, sheet and pillow raised together; its rails ride along.
   const hs = sub(kit, g, 0, deck, pivot, { pitch: tilt });
-  kit.block(hs, m.shell, -mx + 0.01, mx - 0.01, -0.04, 0, -headLen, 0);
-  cushion(kit, hs, mattress, -mx, mx, 0, mT - 0.006, -headLen, 0.02, { r: 0.03 });
-  cushion(kit, hs, m.linen, -mx + 0.004, mx - 0.004, mT - 0.02, mT + 0.002, -headLen + 0.004, 0.02, { r: 0.008 });
-  const p0 = -headLen + 0.06, p1 = -headLen + 0.36, pr = 0.05;
-  cushion(kit, hs, m.linen, -0.28, 0.28, mT - 0.004, mT + 2 * pr - 0.04, p0, p1, { r: 0.04, crown: 0.02, both: true });
+  cushion(kit, hs, board, -mx, mx, -0.05, 0, -headLen + 0.02, 0, { r: 0.016 });
+  cushion(kit, hs, mattress, -mx, mx, 0, mT - 0.006, -headLen, 0.02, { r: 0.045, crown: 0.006 });
+  cushion(kit, hs, m.linen, -mx + 0.004, mx - 0.004, mT - 0.02, mT + 0.002, -headLen + 0.004, 0.02, { r: 0.01 });
+  cushion(kit, hs, m.linen, -0.28, 0.28, mT - 0.004, mT + 0.05, -headLen + 0.06, -headLen + 0.36, { r: 0.04, crown: 0.02, both: true });
 
-  kit.block(g, board, -bx, bx, 0.4, h - 0.03, -hz + 0.004, -hz + 0.04);
-  kit.cyl(g, board, 0.028, 2 * bx, 0, h - 0.03, -hz + 0.03, { axis: 'x', segments: 14 });
-  for (const s of [-1, 1]) kit.block(g, m.slot, ...span(s * 0.14, s * 0.32), h - 0.13, h - 0.09, -hz + 0.003, -hz + 0.041, false);
-  const fy = 0.86;
-  kit.block(g, board, -bx, bx, 0.45, fy, hz - 0.045, hz - 0.012);
-  kit.cyl(g, board, 0.028, 2 * bx, 0, fy, hz - 0.0285, { axis: 'x', segments: 14 });
-  kit.block(g, m.trim, -0.16, 0.16, 0.66, 0.8, hz - 0.012, hz - 0.006);
-  kit.block(g, m.screen, -0.13, 0.05, 0.69, 0.77, hz - 0.006, hz - 0.004, false);
-  kit.block(g, m.status, 0.08, 0.1, 0.75, 0.765, hz - 0.006, hz - 0.003, false);
+  // Molded head and foot boards; the foot board carries the caregiver panel.
+  cushion(kit, g, board, -bx, bx, 0.42, h - 0.01, -hz + 0.004, -hz + 0.05, { r: 0.024, crown: 0.006, axis: 'z' });
+  for (const s of [-1, 1]) kit.block(g, m.slot, ...span(s * 0.14, s * 0.32), h - 0.12, h - 0.08, -hz + 0.05, -hz + 0.052, false, { bevel: false });
+  const fy = 0.88;
+  cushion(kit, g, board, -bx, bx, 0.46, fy, hz - 0.05, hz - 0.008, { r: 0.022, crown: 0.006, axis: 'z' });
+  kit.block(g, m.trim, -0.17, 0.17, 0.64, 0.8, hz - 0.006, hz - 0.002);
+  kit.block(g, m.screen, -0.14, 0.05, 0.68, 0.77, hz - 0.002, hz, false);
+  for (let i = 0; i < 3; i++) kit.block(g, m.slot, 0.08, 0.14, 0.68 + i * 0.03, 0.7 + i * 0.03, hz - 0.002, hz, false, { bevel: false });
+  kit.block(g, m.status, 0.08, 0.1, 0.77, 0.78, hz - 0.002, hz + 0.001, false);
 
-  const rails = [[-hz + 0.14, -hz + 0.72], [0.02, 0.68]];
+  // Split side rails on dark latch brackets; the head rails carry the patient controls.
   for (const s of [-1, 1]) {
-    const x0 = s * (w / 2 - 0.035), x1 = s * (w / 2 - 0.005);
-    for (const [k, [z0, z1]] of rails.entries()) {
-      kit.block(g, board, ...span(x0, x1), 0.88, 0.93, z0, z1);
-      kit.block(g, board, ...span(x0, x1), 0.6, 0.64, z0, z1);
-      for (const z of [z0, (z0 + z1) / 2, z1 - 0.04]) kit.block(g, board, ...span(x0, x1), 0.64, 0.88, z, z + 0.04);
-      const zm = (z0 + z1) / 2;
-      kit.block(g, m.darkSteel, ...span(s * (mx - 0.02), x0), 0.52, 0.6, zm - 0.05, zm + 0.05);
-      if (k === 0) kit.block(g, m.screen, ...span(x1, x1 + s * 0.003), 0.72, 0.82, z0 + 0.08, z0 + 0.2, false);
-    }
+    const x = s * L.rx;
+    let zm = bedRail(kit, hs, m, board, x, L.head, { pod: true, s });
+    kit.block(hs, m.darkSteel, ...span(s * (mx - 0.03), x - s * BED.rail), -0.03, L.head.y0 + 0.02, zm - 0.04, zm + 0.04);
+    zm = bedRail(kit, g, m, board, x, L.foot);
+    kit.block(g, m.darkSteel, ...span(s * (mx - 0.03), x - s * BED.rail), deck - 0.07, L.foot.y0 + 0.02, zm - 0.04, zm + 0.04);
   }
-  return g;
 }
 
 function drawHospitalBed(ctx, o) {
-  const hz = o.d / 2, bx = o.w / 2 - 0.06, mx = o.w / 2 - 0.07;
+  const hz = o.d / 2, bx = o.w / 2 - 0.05, mx = o.w / 2 - 0.075;
   const { pivot, tilt, headLen, fold } = BED;
+  const L = bedLayout(o.w);
   const headEnd = pivot - headLen * Math.cos(tilt);
   pen(ctx, o, FINE);
   for (const s of [-1, 1]) {
-    const [x0, x1] = span(s * (o.w / 2 - 0.035), s * (o.w / 2 - 0.005));
-    for (const [z0, z1] of [[-hz + 0.14, -hz + 0.72], [0.02, 0.68]]) box(ctx, x0, z0, x1, z1);
+    const [x0, x1] = span(s * (L.rx - BED.rail), s * (L.rx + BED.rail));
+    for (const [z0, z1] of [L.headPlan, [L.foot.z0, L.foot.z1]]) box(ctx, x0, z0, x1, z1);
   }
-  box(ctx, -mx, headEnd, mx, hz - 0.08);
+  box(ctx, -mx, headEnd, mx, hz - 0.075);
   line(ctx, -mx, pivot, mx, pivot);
-  rounded(ctx, -0.3, headEnd + 0.04, 0.3, headEnd + 0.3, 0.06);
+  rounded(ctx, -0.28, headEnd + 0.06, 0.28, headEnd + 0.33, 0.06);
   line(ctx, -mx, fold, mx, fold);
   line(ctx, mx - 0.3, fold, mx, fold + 0.3);
   pen(ctx, o, OUT);
-  box(ctx, -bx, -hz, bx, -hz + 0.035, o.theme.light);
-  box(ctx, -bx, hz - 0.045, bx, hz - 0.012, o.theme.light);
-  box(ctx, -bx, -hz, bx, hz - 0.012);
+  box(ctx, -bx, -hz + 0.004, bx, -hz + 0.05, o.theme.light);
+  box(ctx, -bx, hz - 0.05, bx, hz - 0.008, o.theme.light);
+  box(ctx, -bx, -hz + 0.004, bx, hz - 0.008);
 }
 
 // ---- Treatment recliner -------------------------------------------------------------

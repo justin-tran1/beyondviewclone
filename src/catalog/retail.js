@@ -280,6 +280,8 @@ function rounds(kit, g, m, rnd, kind, { x, run, y, clear, s, face, dep, deep, co
   const body = kind === 'can' ? kit.material(color, { roughness: 0.3, metalness: 0.35 })
     : kit.material(color, { roughness: kind === 'jar' ? 0.12 : 0.24 });
   const print = packaging(kit, label), lid = kind === 'can' ? m.lid : kit.material(pick(rnd, LIDS), { roughness: 0.35 });
+  // Packs are open lathes where a cap would never show (bases on the shelf, sleeves over bodies).
+  const sleeve = (cx, y0, cz, sh) => turned(kit, g, print, [[r * 1.012, 0], [r * 1.012, sh]], cx, y0, cz, { segments: 8 });
   const x0 = x + (run - n * pitch + 0.005) / 2 + r;
   for (let i = 0; i < n; i++) {
     const cx = x0 + i * pitch;
@@ -288,22 +290,24 @@ function rounds(kit, g, m, rnd, kind, { x, run, y, clear, s, face, dep, deep, co
       if (j) {
         // Rows behind the front one are simple silhouettes in the product's color.
         if (kind === 'bottle') turned(kit, g, body, BOTTLE_BACK.map(([u, v]) => [u * r, v * h]), cx, y, cz, { segments: 6 });
-        else kit.cyl(g, body, r, h * stack, cx, y, cz, { segments: 6, bevel: false });
+        else turned(kit, g, body, [[r, 0], [r, h * stack], [0, h * stack]], cx, y, cz, { segments: 6 });
         continue;
       }
       if (kind === 'bottle') {
         turned(kit, g, body, BOTTLE.map(([u, v]) => [u * r, v * h]), cx, y, cz, { segments: 8 });
-        kit.cyl(g, lid, r * 0.44, h * 0.1, cx, y + h * 0.9, cz, { segments: 8, bevel: false });
-        kit.cyl(g, print, r * 1.012, h * 0.3, cx, y + h * 0.2, cz, { segments: 8, bevel: false });
+        turned(kit, g, lid, [[r * 0.44, 0], [r * 0.44, h * 0.1], [0, h * 0.1]], cx, y + h * 0.9, cz, { segments: 8 });
+        sleeve(cx, y + h * 0.2, cz, h * 0.3);
       } else if (kind === 'can') {
+        // Rolled rims top and bottom, a pull-tab end in brushed steel.
         for (let t = 0; t < stack; t++) {
-          kit.cyl(g, body, r, h - 0.002, cx, y + t * h, cz, { segments: 8 });
-          kit.cyl(g, lid, r * 0.86, 0.002, cx, y + (t + 1) * h - 0.002, cz, { segments: 8, bevel: false });
+          const yb = y + t * h;
+          turned(kit, g, body, [[r * 0.9, 0], [r, 0.006], [r, h - 0.008], [r * 0.9, h - 0.002]], cx, yb, cz, { segments: 8 });
+          turned(kit, g, lid, [[r * 0.9, 0], [0, 0.001]], cx, yb + h - 0.002, cz, { segments: 8 });
         }
       } else {
         turned(kit, g, body, JAR.map(([u, v]) => [u * r, v * h]), cx, y, cz, { segments: 8 });
-        kit.cyl(g, lid, r * 0.92, h * 0.16, cx, y + h * 0.86, cz, { segments: 8 });
-        kit.cyl(g, print, r * 1.012, h * 0.42, cx, y + h * 0.24, cz, { segments: 8, bevel: false });
+        turned(kit, g, lid, [[r * 0.92, 0], [r * 0.92, h * 0.16 - 0.004], [r * 0.88, h * 0.16], [0, h * 0.16]], cx, y + h * 0.86, cz, { segments: 8 });
+        sleeve(cx, y + h * 0.24, cz, h * 0.42);
       }
     }
   }
@@ -1196,8 +1200,18 @@ function buildFloorZone(kit, { w, d, color }) {
   const mark = kit.material('#23282b', { roughness: 0.45 });
   const t = Math.min(ZONE.tape, w / 6, d / 6);
   const c = Math.min(ZONE.corner, w / 4, d / 4);
-  const y0 = 0.0015, y1 = 0.004;
-  const strip = (mat, x0, x1, z0, z1) => blk(kit, g, mat, x0, x1, y0, y1, z0, z1, false);
+  // Tape is a fraction of a millimeter thick, so it is laid as flat decals just above the floor:
+  // raised strips would show side faces a fraction of a pixel tall at grazing angles, which
+  // rasterize as rows of dark dots along every line.
+  const T = kit.THREE;
+  const strip = (mat, x0, x1, z0, z1) => {
+    const [a, b] = x0 < x1 ? [x0, x1] : [x1, x0], [e, f] = z0 < z1 ? [z0, z1] : [z1, z0];
+    const mesh = new T.Mesh(new T.PlaneGeometry(b - a, f - e), mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set((a + b) / 2, 0.002, (e + f) / 2);
+    mesh.receiveShadow = true;
+    g.add(mesh);
+  };
   strip(tape, -w / 2, w / 2, -d / 2, -d / 2 + t);
   strip(tape, -w / 2, w / 2, d / 2 - t, d / 2);
   strip(tape, -w / 2, -w / 2 + t, -d / 2 + t, d / 2 - t);

@@ -33,9 +33,11 @@ const POSE_INTERVAL = 100;
 const SLOW_FRAME = 40;
 const SLOW_QUALITY_FRAMES = 8; // sustained slow frames before the quality steps down
 const MIN_RATIO = 0.5;
-// AgX keeps highlights from clipping and shadows from crushing. Calibrated so lit walls and floors
-// read as bright as they did with ACES at exposure 1, with the post grade adding the contrast back.
-const EXPOSURE = 1.65;
+// AgX keeps highlights from clipping and shadows from crushing, and the post grade adds the contrast
+// back. Calibrated against the plan light map over every sample's saved views: on average a little
+// brighter than the original ACES look (interiors read as well-lit offices, not dim ones), with sun
+// patches by the windows kept below clipping by the grade's shoulder. Keep photo.js PHOTO_EXPOSURE equal.
+const EXPOSURE = 1.8;
 const MAX_DT = 0.25;
 const TRANSITION = 1.1;
 const OVERVIEW_ELEVATION = 52;
@@ -319,25 +321,25 @@ const sceneKey = (plan) => JSON.stringify([plan.walls, plan.openings, plan.rooms
 
 // ---- Scene helpers --------------------------------------------------------------------
 
-/** createKit() wrapped so every shared material it hands out can be released on dispose. */
+/**
+ * createKit() with the canvas textures items draw tracked per build. The kit's own caches
+ * (materials, maps, rounded box geometry) live as long as the walkthrough and go with kit.dispose().
+ * The wrapper object stays the same for the walkthrough's life: builder3d.js keys its per-kit
+ * shared materials on it.
+ */
 function trackedKit() {
-  const kit = createKit();
-  const materials = new Set([kit.glass, kit.frostedGlass]);
+  const base = createKit();
   let textures = new Set();
-  const keep = (m) => (m && materials.add(m), m);
-  const mat = new Proxy({}, { get: (_, name) => keep(kit.mat[name]) });
-  return {
-    kit: {
-      ...kit,
-      mat,
-      material: (color, opts) => keep(kit.material(color, opts)),
-      floorMaterial: (key) => keep(kit.floorMaterial(key)),
-      canvasTexture: (...args) => {
-        const t = kit.canvasTexture(...args);
-        textures.add(t);
-        return t;
-      },
+  const kit = {
+    ...base,
+    canvasTexture: (...args) => {
+      const t = base.canvasTexture(...args);
+      textures.add(t);
+      return t;
     },
+  };
+  return {
+    kit,
     /** Textures items made during the last build; they belong to that build. */
     takeTextures() {
       const out = textures;
@@ -345,15 +347,27 @@ function trackedKit() {
       return out;
     },
     dispose() {
-      for (const m of materials) {
-        m.map?.dispose();
-        m.dispose();
-      }
       for (const t of textures) t.dispose();
-      materials.clear();
       textures.clear();
+      // Through the wrapper: catalog modules chain their own kit caches onto its dispose().
+      kit.dispose();
     },
   };
+}
+
+/** Materials under obj and the textures they hold (maps and texture uniforms). */
+function sceneResources(obj) {
+  const materials = new Set(), textures = new Set();
+  const take = (v) => { if (v?.isTexture) textures.add(v); };
+  obj.traverse((o) => {
+    for (const m of [].concat(o.material || [])) {
+      if (materials.has(m)) continue;
+      materials.add(m);
+      for (const v of Object.values(m)) take(v);
+      for (const u of Object.values(m.uniforms || {})) take(u?.value);
+    }
+  });
+  return { materials, textures };
 }
 
 function ringMesh() {
@@ -460,6 +474,7 @@ export class Walkthrough extends EventTarget {
     this._chosenQuality = quality;
     this._quality = quality;
     this._envCapture = null;
+    this._orphans = null;
     this.container = container;
     this.store = store;
     this._mode = 'walk';
@@ -583,6 +598,7 @@ export class Walkthrough extends EventTarget {
     const textures = this._kit.takeTextures();
     if (this._built) this._disposeBuilt();
     this._built = built;
+    this._orphans = null;
     this._buildTextures = textures;
     this._key = sceneKey(plan);
     this._stale = false;
@@ -725,11 +741,18 @@ export class Walkthrough extends EventTarget {
     for (const [target, type, fn, opts] of this._listeners) target.removeEventListener(type, fn, opts);
     this._listeners = [];
     this._controls.dispose();
+    // builder3d.js shares some materials (and their textures) across every build made with this
+    // kit and has no hook to release them, so whatever the last build used goes here too.
+    const shared = this._built ? sceneResources(this._built.root) : this._orphans;
     if (this._built) this._disposeBuilt();
     this._built = null;
     disposeTree(this._ring);
     disposeTree(this._figure);
     this._kit.dispose();
+    if (shared) {
+      for (const m of shared.materials) m.dispose();
+      for (const t of shared.textures) t.dispose();
+    }
     this._postfx.dispose();
     if (this._envCapture) {
       if (this._scene.environment === this._envCapture.texture) this._scene.environment = null;
@@ -967,7 +990,11 @@ export class Walkthrough extends EventTarget {
   _buildFailed(plan, err) {
     console.error('Could not build the 3D view', err);
     for (const t of this._kit.takeTextures()) t.dispose();
-    if (this._built) this._disposeBuilt();
+    if (this._built) {
+      // Kept for dispose(): the builder's shared materials the dropped scene used.
+      this._orphans = sceneResources(this._built.root);
+      this._disposeBuilt();
+    }
     this._built = null;
     this._key = sceneKey(plan);
     this._stale = false;

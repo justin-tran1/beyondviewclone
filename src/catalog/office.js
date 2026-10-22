@@ -1318,32 +1318,56 @@ function buildPlant(kit, { w, d, h, color }) {
   // Tapered planter with a rolled lip, soil just below it.
   turned(kit, g, pot, [[0, 0], [0.15, 0], [0.16, 0.012], [0.2, 0.39], [0.216, 0.4], [0.214, 0.43], [0.198, 0.43], [0.196, 0.405], [0, 0.405]], 0, 0, 0, { segments: 40 });
   turned(kit, g, kit.mat.soil, [[0, 0], [0.197, 0], [0.197, 0.008], [0, 0.012]], 0, 0.402, 0, { segments: 24 });
-  // Ficus: a trunk that forks into three leaders, leaves clustered along their upper reaches.
-  const bark = kit.material('#6e6152', { roughness: 0.9 });
-  const leaders = [
-    [[0, 0.4, 0], [0.01, 0.62, 0], [0.03, 0.85, -0.02], [0.02, 1.15, -0.03], [0.04, h - 0.12, -0.02]],
-    [[0.01, 0.62, 0], [-0.06, 0.82, 0.03], [-0.12, 1.02, 0.06], [-0.15, 1.18, 0.07]],
-    [[0.02, 0.74, -0.01], [0.08, 0.92, 0.02], [0.13, 1.08, 0.06], [0.15, 1.22, 0.05]],
-  ];
-  leaders.forEach((pts, i) => bent(kit, g, bark, pts, i ? 0.009 : 0.016, { segments: 16, radial: 7 }));
-  const rnd = seq(23);
-  const tones = ['#34552f', '#43663a', '#2b4729'].map((c) => kit.material(c, { roughness: 0.42 }));
-  const T = kit.THREE, curves = leaders.map((pts) => new T.CatmullRomCurve3(pts.map((p) => new T.Vector3(...p))));
-  const y0 = 0.62, yc = (y0 + h) / 2, hh = (h - y0) / 2;
-  const leafAt = () => {
-    // A point in the canopy (an ellipsoid inside the footprint), a leaf pointing out and down.
-    for (let tries = 0; tries < 6; tries++) {
-      const t = 0.35 + rnd() * 0.65, c = curves[(rnd() * 3) | 0].getPoint(t);
-      const a = rnd() * TAU, out = 0.04 + rnd() * 0.2;
-      const x = c.x + Math.cos(a) * out, z = c.z + Math.sin(a) * out, y = c.y + (rnd() - 0.4) * 0.16;
-      const k = Math.sqrt(Math.max(0, 1 - ((y - yc) / hh) ** 2));
-      if (Math.hypot(x, z) > (R - 0.17) * (0.3 + 0.7 * k) || y > h - 0.15) continue;
-      return { x, y, z, yaw: Math.atan2(x - c.x, z - c.z) + (rnd() - 0.5) * 0.6, pitch: 0.25 + rnd() * 0.7, roll: (rnd() - 0.5) * 0.8, size: 0.1 + rnd() * 0.07 };
-    }
-    return null;
-  };
-  for (const mat of tones) leaves(kit, g, mat, 55, leafAt);
+  // Weeping fig: a trunk forking into three leaders, each sending out arching twigs that carry
+  // dense, satin leaves, so the crown fills the footprint like a nursery-grown tree.
+  g.add(assembly(kit, `plant|${w}|${d}|${h}`, (a) => ficus(kit, a, R, h)));
   return g;
+}
+
+function ficus(kit, g, R, h) {
+  const T = kit.THREE, rnd = seq(23);
+  const bark = kit.material('#6b5f50', { roughness: 0.9 });
+  const leaders = [
+    [[0, 0.4, 0], [0.01, 0.62, 0], [0.03, 0.88, -0.02], [0.02, 1.15, -0.03], [0.03, h - 0.14, -0.02]],
+    [[0.01, 0.6, 0], [-0.07, 0.8, 0.03], [-0.13, 1.0, 0.06], [-0.16, 1.2, 0.08]],
+    [[0.02, 0.7, -0.01], [0.09, 0.9, 0.02], [0.14, 1.08, 0.06], [0.16, 1.24, 0.04]],
+  ];
+  leaders.forEach((pts, i) => bent(kit, g, bark, pts, i ? 0.01 : 0.017, { segments: 14, radial: 7 }));
+  const V = (p) => new T.Vector3(...p);
+  const curves = leaders.map((pts) => new T.CatmullRomCurve3(pts.map(V)));
+  // Twigs from the leaders' upper reaches, arching out and dipping, kept inside the crown.
+  const reach = R - 0.05, twigs = [];
+  curves.forEach((c, li) => {
+    const n = li ? 9 : 11;
+    for (let k = 0; k < n; k++) {
+      const p = c.getPoint(0.26 + ((k + 0.2 + rnd() * 0.6) / n) * 0.7);
+      const a = (k * 2.4 + li * 1.3 + rnd() * 0.8) % TAU, len = 0.14 + rnd() * 0.14;
+      let ex = p.x + Math.cos(a) * len, ez = p.z + Math.sin(a) * len;
+      const r = Math.hypot(ex, ez);
+      if (r > reach) [ex, ez] = [(ex * reach) / r, (ez * reach) / r];
+      const pts = [[p.x, p.y, p.z], [(p.x + ex) / 2, p.y + 0.045, (p.z + ez) / 2], [ex, p.y + 0.01 - rnd() * 0.06, ez]];
+      bent(kit, g, bark, pts, 0.0045, { segments: 6, radial: 4 });
+      twigs.push(new T.CatmullRomCurve3(pts.map(V)));
+    }
+  });
+  for (const c of curves) twigs.push(new T.CatmullRomCurve3([c.getPoint(0.86), c.getPoint(1)]));
+  // Leaves along the twigs, alternating sides and hanging a little, in deep greens with a few
+  // lighter new shoots toward the tips.
+  const tones = ['#2e4c29', '#3a5b31', '#466a39', '#58793f'].map((c) => kit.material(c, { roughness: 0.5 }));
+  const share = [0.3, 0.32, 0.26, 0.12], total = 400;
+  const tan = new T.Vector3();
+  tones.forEach((mat, ti) => leaves(kit, g, mat, Math.round(total * share[ti]), () => {
+    const c = twigs[(rnd() * twigs.length) | 0];
+    const t = ti === 3 ? 0.7 + rnd() * 0.3 : 0.12 + rnd() * 0.88;
+    const q = c.getPoint(t);
+    c.getTangent(t, tan);
+    const side = rnd() < 0.5 ? -1 : 1;
+    const yaw = Math.atan2(tan.x, tan.z) + side * (0.5 + rnd() * 0.7);
+    const size = (ti === 3 ? 0.065 : 0.085) + rnd() * 0.045;
+    const ex = q.x + Math.sin(yaw) * size, ez = q.z + Math.cos(yaw) * size;
+    if (Math.hypot(ex, ez) > R - 0.015 || q.y > h - 0.03) return null;
+    return { x: q.x, y: q.y, z: q.z, yaw, pitch: 0.15 + rnd() * 0.75, roll: (rnd() - 0.5) * 0.9, size, width: 0.55, droop: 0.22 };
+  }));
 }
 
 function drawPlant(ctx, o) {
@@ -1383,48 +1407,32 @@ function buildPlanter(kit, { w, d, h, color }) {
   kit.block(g, box, -w / 2, w / 2, bh - 0.02, bh, d / 2 - L.rim, d / 2);
   kit.block(g, box, -w / 2, -w / 2 + L.rim, bh - 0.02, bh, -d / 2 + L.rim, d / 2 - L.rim);
   kit.block(g, box, w / 2 - L.rim, w / 2, bh - 0.02, bh, -d / 2 + L.rim, d / 2 - L.rim);
-  kit.block(g, kit.mat.soil, -w / 2 + L.rim, w / 2 - L.rim, bh - 0.025, bh - 0.014, -d / 2 + L.rim, d / 2 - L.rim);
-  // Snake plants: clumps of stiff, upright, slightly twisted blades, each over a mound of trailing
-  // leaves that hides the soil and spills toward the rim, in a few deep, natural greens.
-  const tones = ['#33522f', '#47663c', '#2a4429', '#58723f'].map((c) => kit.material(c, { roughness: 0.5 }));
+  kit.block(g, kit.mat.soil, -w / 2 + L.rim, w / 2 - L.rim, bh - 0.025, bh - 0.012, -d / 2 + L.rim, d / 2 - L.rim);
+  // Snake plants: clumps of stiff, upright sword leaves, widest above the middle and cupped along
+  // the midrib, fanning out a little and turned every way, in a few deep greens.
+  const tones = ['#2f4c2c', '#3d5c35', '#4a6a3b'].map((c) => kit.material(c, { roughness: 0.46 }));
   const rnd = seq(31);
-  const x0 = -w / 2 + L.rim + 0.02, x1 = w / 2 - L.rim - 0.02, z0 = -d / 2 + L.rim + 0.02, z1 = d / 2 - L.rim - 0.02;
-  const soil = bh - 0.016, tall = Math.max(0.12, h - soil);
+  const x0 = -w / 2 + L.rim + 0.05, x1 = w / 2 - L.rim - 0.05, z0 = -d / 2 + L.rim + 0.04, z1 = d / 2 - L.rim - 0.04;
+  const soil = bh - 0.012, tall = Math.max(0.12, h - soil);
   const clumps = planterBushes(w, d, L).map((b) => ({
-    x: clamp(b.x, x0 + 0.04, x1 - 0.04), z: clamp(b.z, z0 + 0.03, z1 - 0.03), r: Math.min(b.r, (z1 - z0) / 2),
-    n: 5 + Math.floor(rnd() * 4), k: 0.7 + rnd() * 0.3,
+    x: clamp(b.x, x0, x1), z: clamp(b.z, z0, z1), n: 7 + Math.floor(rnd() * 4), k: 0.72 + rnd() * 0.28,
   }));
-  const at = (list, i) => {
-    for (const c of list) {
-      if (i < c.n) return c;
-      i -= c.n;
-    }
-    return null;
-  };
-  const blades = clumps.reduce((sum, c) => sum + c.n, 0), mound = 22;
-  const shrubs = assembly(kit, `planter|${w}|${d}|${h}`, (a) => {
+  const blades = clumps.flatMap((c) => Array.from({ length: c.n }, (_, j) => {
+    // Inner leaves stand tallest and straightest; outer ones lean out from the clump.
+    const out = j / c.n, ang = rnd() * TAU, spread = 0.008 + out * 0.03;
+    return {
+      x: c.x + Math.cos(ang) * spread, y: soil - 0.005, z: c.z + Math.sin(ang) * spread, yaw: ang + (rnd() - 0.5) * 0.9,
+      pitch: -1.52 + out * 0.32 + rnd() * 0.08, roll: (rnd() - 0.5) * 0.5,
+      size: tall * c.k * (1 - out * 0.35) * (0.82 + rnd() * 0.18), width: 0.12, shape: [0.16, 0.33, 0.4], droop: 0.015,
+      tone: Math.floor(rnd() * tones.length),
+    };
+  }));
+  g.add(assembly(kit, `planter|${w}|${d}|${h}`, (a) => {
     tones.forEach((mat, t) => {
-      if (t < 2) leaves(kit, a, mat, Math.ceil(blades / 2), (i) => {
-        const c = at(clumps, i * 2 + t);
-        if (!c) return null;
-        const ang = rnd() * TAU, spread = 0.01 + rnd() * 0.035;
-        return {
-          x: c.x + Math.cos(ang) * spread, y: soil, z: c.z + Math.sin(ang) * spread, yaw: ang + (rnd() - 0.5) * 1.2,
-          pitch: -1.18 - rnd() * 0.3, roll: (rnd() - 0.5) * 0.6, size: tall * c.k * (0.65 + rnd() * 0.35), width: 0.1, base: 0.3, droop: 0.03,
-        };
-      });
-      if (t !== 1) leaves(kit, a, mat, Math.ceil((clumps.length * mound) / 3), (i) => {
-        const c = clumps[Math.floor((i * 3 + (t ? t - 1 : 0)) / mound) % clumps.length];
-        const ang = rnd() * TAU, el = rnd() * 0.9, rr = c.r * (0.35 + rnd() * 0.65);
-        const x = clamp(c.x + Math.cos(ang) * Math.cos(el) * rr, x0, x1), z = clamp(c.z + Math.sin(ang) * Math.cos(el) * rr, z0 - 0.01, z1 + 0.01);
-        return {
-          x, y: soil + 0.01 + Math.sin(el) * rr * 0.45, z, yaw: Math.atan2(x - c.x, z - c.z) + (rnd() - 0.5) * 0.8,
-          pitch: 0.05 + rnd() * 0.55, roll: (rnd() - 0.5) * 0.9, size: 0.065 + rnd() * 0.05,
-        };
-      });
+      const mine = blades.filter((b) => b.tone === t);
+      leaves(kit, a, mat, mine.length, (i) => mine[i]);
     });
-  });
-  g.add(shrubs);
+  }));
   return g;
 }
 
@@ -1459,16 +1467,27 @@ function buildRug(kit, { w, d, h, color }) {
   const stripe = wool('#c4bd95');
   const R = rugLayout(w, d);
   const t = Math.max(0.004, h), b = R.band;
-  kit.block(g, field, -w / 2 + b, w / 2 - b, 0, t * 0.9, -d / 2 + b, d / 2 - b, false);
-  kit.block(g, border, -w / 2, w / 2, 0, t, -d / 2, -d / 2 + b, false);
-  kit.block(g, border, -w / 2, w / 2, 0, t, d / 2 - b, d / 2, false);
-  kit.block(g, border, -w / 2, -w / 2 + b, 0, t, -d / 2 + b, d / 2 - b, false);
-  kit.block(g, border, w / 2 - b, w / 2, 0, t, -d / 2 + b, d / 2 - b, false);
-  const s = R.line, k = 0.012;
-  kit.block(g, stripe, -w / 2 + s, w / 2 - s, 0, t * 0.95, -d / 2 + s, -d / 2 + s + k, false);
-  kit.block(g, stripe, -w / 2 + s, w / 2 - s, 0, t * 0.95, d / 2 - s - k, d / 2 - s, false);
-  kit.block(g, stripe, -w / 2 + s, -w / 2 + s + k, 0, t * 0.95, -d / 2 + s + k, d / 2 - s - k, false);
-  kit.block(g, stripe, w / 2 - s - k, w / 2 - s, 0, t * 0.95, -d / 2 + s + k, d / 2 - s - k, false);
+  // Field and border are woven flush; the border's outer edge is bound in a soft roll.
+  kit.block(g, field, -w / 2 + b, w / 2 - b, 0, t, -d / 2 + b, d / 2 - b, false, { bevel: false });
+  for (const [x0, x1, z0, z1] of [[-w / 2, w / 2, -d / 2, -d / 2 + b], [-w / 2, w / 2, d / 2 - b, d / 2], [-w / 2, -w / 2 + b, -d / 2 + b, d / 2 - b], [w / 2 - b, w / 2, -d / 2 + b, d / 2 - b]]) {
+    cushion(kit, g, border, x0, x1, 0, t, z0, z1, { r: t * 0.45 }).castShadow = false;
+  }
+  // The inlay is woven in, so it lies flush as a decal rather than a raised strip, whose sides a
+  // fraction of a pixel tall would alias into dotted lines at the grazing angles rugs are seen from.
+  const s = R.line, k = 0.02, T = kit.THREE;
+  const inlay = (x0, x1, z0, z1) => {
+    const geo = new T.PlaneGeometry(x1 - x0, z1 - z0), uv = geo.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, x0 + uv.getX(i) * (x1 - x0), z0 + uv.getY(i) * (z1 - z0));
+    const mesh = new T.Mesh(geo, stripe);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set((x0 + x1) / 2, t + 0.0004, (z0 + z1) / 2);
+    mesh.receiveShadow = true;
+    g.add(mesh);
+  };
+  inlay(-w / 2 + s, w / 2 - s, -d / 2 + s, -d / 2 + s + k);
+  inlay(-w / 2 + s, w / 2 - s, d / 2 - s - k, d / 2 - s);
+  inlay(-w / 2 + s, -w / 2 + s + k, -d / 2 + s + k, d / 2 - s - k);
+  inlay(w / 2 - s - k, w / 2 - s, -d / 2 + s + k, d / 2 - s - k);
   return g;
 }
 

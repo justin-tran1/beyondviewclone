@@ -368,25 +368,25 @@ function textureLibrary() {
         s.B[i] = lerp(dark[2], light[2], mix) * v;
         s.H[i] = 1.1 * loops[i] + 0.5 * line + 0.3 * yarn[i] - 1.0 * seam;
         s.Ro[i] = 0.9 + 0.1 * yarn[i];
-        }
-        }
-        // Even out each tile's mean so only the chosen dye-lot tone tells the tiles apart; otherwise
-        // the noise regions under turned and unturned tiles read as a loud checkerboard.
-        const sums = new Float64Array(n * n), counts = new Float64Array(n * n);
-        for (let i = 0; i < S * S; i++) {
-          const t = Math.floor(((i / S) | 0) / tp) * n + Math.floor((i % S) / tp);
-          sums[t] += s.G[i];
-          counts[t]++;
-        }
-        const mean = sums.reduce((a, v) => a + v, 0) / (S * S);
-        for (let i = 0; i < S * S; i++) {
-          const t = Math.floor(((i / S) | 0) / tp) * n + Math.floor((i % S) / tp), k = (mean * tone[t]) / (sums[t] / counts[t]);
-          s.R[i] *= k;
-          s.G[i] *= k;
-          s.B[i] *= k;
-        }
-        return s;
-        }
+      }
+    }
+    // Even out each tile's mean so only the chosen dye-lot tone tells the tiles apart; otherwise
+    // the noise regions under turned and unturned tiles read as a loud checkerboard.
+    const sums = new Float64Array(n * n), counts = new Float64Array(n * n);
+    for (let i = 0; i < S * S; i++) {
+      const t = Math.floor(((i / S) | 0) / tp) * n + Math.floor((i % S) / tp);
+      sums[t] += s.G[i];
+      counts[t]++;
+    }
+    const mean = sums.reduce((a, v) => a + v, 0) / (S * S);
+    for (let i = 0; i < S * S; i++) {
+      const t = Math.floor(((i / S) | 0) / tp) * n + Math.floor((i % S) / tp), k = (mean * tone[t]) / (sums[t] / counts[t]);
+      s.R[i] *= k;
+      s.G[i] *= k;
+      s.B[i] *= k;
+    }
+    return s;
+  }
 
   function concreteFloor(S, B, polished) {
     const s = surface(S), r = rng(polished ? 11 : 7), f = S / 1024;

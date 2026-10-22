@@ -10,6 +10,9 @@
 //   the walk view. For one item, &yaw= turns the camera around it (degrees, 0 = front, positive to
 //   its right), &dist= scales the camera distance and &eye= sets the camera height in meters;
 //   &fx=high|balanced|fast picks the post-processing level (high by default).
+//   Artifact hunting in room views: &ao=0 skips only the ambient occlusion pass (high, balanced), and
+//   &maps=0 drops the normal and roughness maps of the items' materials, so either cause can be ruled
+//   out with an otherwise identical frame.
 // Studio views use the walkthrough's tone curve and light levels too, so finishes read as in the app.
 import * as THREE from 'three';
 import { createKit } from '../src/kit3d.js';
@@ -400,6 +403,7 @@ function roomStage(canvas, plan, camera) {
   const kit = createKit();
   const built = builder.buildPlanScene(plan, { kit, quality: 'high' });
   scene.add(built.root);
+  if (params.get('maps') === '0') flatten(built.root.getObjectByName('furnishings') || built.root);
   env.fit(built.bounds);
   renderer.shadowMap.needsUpdate = true;
   if (typeof builder.captureEnvironment === 'function') {
@@ -413,11 +417,26 @@ function roomStage(canvas, plan, camera) {
   fx?.setSize(W, H, 1);
   const top = plan.settings.wallHeight + 1.2, b = built.bounds;
   fx?.setSceneBounds(new THREE.Box3(new THREE.Vector3(b.minX - 1, -1, b.minY - 1), new THREE.Vector3(b.maxX + 1, top, b.maxY + 1)));
+  const ready = fx ? fx.ready : Promise.resolve();
+  if (params.get('ao') === '0' && fx?.passes) fx.passes.ao.enabled = false;
   const draw = () => {
     if (fx) fx.render(camera);
     else renderer.render(scene, camera);
   };
-  return { renderer, scene, built, kit, draw, ready: fx ? fx.ready : Promise.resolve() };
+  window.previewStage = { renderer, scene, camera, built, fx };
+  return { renderer, scene, built, kit, draw, ready };
+}
+
+/** Drops normal and roughness maps under obj (in place: surfaces sharing a material lose them too). */
+function flatten(obj) {
+  obj.traverse((o) => {
+    if (!o.isMesh) return;
+    for (const m of [].concat(o.material)) {
+      if (!m.normalMap && !m.roughnessMap && !m.clearcoatNormalMap) continue;
+      m.normalMap = m.roughnessMap = m.clearcoatNormalMap = null;
+      m.needsUpdate = true;
+    }
+  });
 }
 
 /** Category showroom: the grid layout in a daylit room with its front wall and ceiling left out. */

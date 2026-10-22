@@ -483,7 +483,7 @@ if (view === 'stress') {
 window.testStats = stats;
 window.rerender = () => fx.render(camera);
 window.testEnv = { THREE, renderer, scene, camera, kit, env, fx, capture, buildPlanScene, captureEnvironment };
-document.getElementById('stats').textContent = `${stats.buildMs} ms build · ${stats.captureMs} ms capture · ${stats.calls} draw calls · ${(stats.triangles / 1000).toFixed(0)}k triangles · ${stats.lights} window lights · ${catalog}`;
+document.getElementById('stats').textContent = `${stats.buildMs} ms build · ${stats.captureMs} ms capture · ${stats.calls} draw calls · ${(stats.triangles / 1000).toFixed(0)}k triangles · ${stats.lights} area lights · ${catalog}`;
 console.log('builder-test', JSON.stringify(stats));
 if (params.has('checks')) showChecks(await runChecks());
 if (params.get('light') === 'map') showLightMap(built);
@@ -491,7 +491,7 @@ window.testReady = true;
 
 /**
  * &light=map: the plan light map over the view, as seen from above: brightness is the diffuse light
- * level (direct plus bounce, white at 6), outdoors is dark green.
+ * level (direct plus bounce, white at 10), outdoors is dark green.
  */
 function showLightMap(b) {
   const L = b.planLight;
@@ -502,14 +502,13 @@ function showLightMap(b) {
   map.height = ny;
   Object.assign(map.style, { position: 'fixed', left: '16px', top: '60px', width: `${Math.min(900, nx * 4)}px`, imageRendering: 'pixelated', boxShadow: '0 2px 12px rgba(1, 42, 45, 0.18)' });
   const g = map.getContext('2d'), img = g.createImageData(nx, ny);
-  const x0 = b.bounds.minX, y0 = b.bounds.minY;
   // The map covers the building plus a margin; sample cell centers from its own origin.
-  const ox = L.origin?.x ?? x0, oy = L.origin?.y ?? y0;
+  const { x: ox, y: oy } = L.origin;
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       const x = ox + (i + 0.5) * L.cell, y = oy + (j + 0.5) * L.cell, k = (j * nx + i) * 4;
       const inside = L.spaceAt(x, y) >= 0;
-      const v = Math.round(255 * Math.min(1, Math.sqrt(L.levelAt(x, y) / 6)));
+      const v = Math.round(255 * Math.min(1, Math.sqrt(L.levelAt(x, y) / 10)));
       img.data.set(inside ? [v, v, v, 255] : [1, 42, 45, 255], k);
     }
   }
@@ -688,13 +687,17 @@ async function runChecks() {
   // Lighting: the suite is a 20 x 14 m shell with windows on every side.
   const suite = buildPlanScene(suitePlan(), { kit });
   check('Window daylight shines into the rooms, within its budget', () => {
-    const inside = suite.lights.filter((l) => {
-      const p = new THREE.Vector3(0, 0, -1).applyQuaternion(l.quaternion).add(l.position);
+    // Window lights face into the suite; fixture lights face down from the ceiling.
+    const windows = suite.lights.filter((l) => l.name === 'window-light'), fixtures = suite.lights.filter((l) => l.name === 'fixture-light');
+    const facing = (l) => new THREE.Vector3(0, 0, -1).applyQuaternion(l.quaternion);
+    const inside = windows.filter((l) => {
+      const p = facing(l).add(l.position);
       return p.x > 0 && p.x < 20 && p.z > 0 && p.z < 14;
     }).length;
+    const down = fixtures.filter((l) => facing(l).y < -0.99).length;
     const overlay = suite.root.getObjectByName('daylight').userData.overlay === true;
-    return [suite.lights.length > 0 && suite.lights.length <= 10 && inside === suite.lights.length && overlay,
-      `${inside} of ${suite.lights.length} window lights face in; flagged as a real-time overlay: ${overlay}`];
+    return [windows.length > 0 && suite.lights.length <= 10 && inside === windows.length && down === fixtures.length && overlay,
+      `${inside} of ${windows.length} window lights face in, ${down} of ${fixtures.length} fixture lights face down; flagged as a real-time overlay: ${overlay}`];
   });
   check('Window daylight follows the viewer', () => {
     // The east facade's 3 m window sits at y = 3; after a render from beside it, a light covers it.
@@ -767,8 +770,11 @@ async function runChecks() {
   });
   check('Area lights reflect only in their own room', () => {
     const g = suite.root.getObjectByName('daylight');
-    const spaces = suite.root.userData.planUniforms.planRectSpace.value;
-    const ok = g.children.every((l, i) => {
+    // Binding the build points the kit's shared uniforms at its own light map and light spaces.
+    suite.root.userData.planLight.bind();
+    const spaces = g.userData.rectSpace, U = suite.root.userData.planUniforms;
+    const bound = U.planRectSpace.value === spaces;
+    const ok = bound && g.children.every((l, i) => {
       const run = g.userData.pools.find((pool) => pool.lights.includes(l)).runs[l.userData.run];
       return run && spaces[i] === run.space && run.space >= 0;
     });
@@ -833,6 +839,49 @@ async function runChecks() {
     });
     b.dispose();
     return [overlaps === 0, `${overlaps} overlapping shading strips`];
+  });
+
+  check('Rebuilding releases what each build made', () => {
+    // As the walkthrough does: textures items draw through the kit belong to the build, the rest
+    // of the kit's caches (and the builder's per-kit shared materials) outlive it.
+    let made = new Set();
+    const tracked = { ...kit, canvasTexture: (...args) => { const t = kit.canvasTexture(...args); made.add(t); return t; } };
+    const target = new THREE.WebGLRenderTarget(48, 30, { type: THREE.HalfFloatType });
+    const cam = new THREE.PerspectiveCamera(70, 1.6, 0.05, 2000);
+    const prev = renderer.getRenderTarget();
+    const memory = [], perBuild = [], stuck = [];
+    let previous = new Set();
+    for (let i = 0; i < 4; i++) {
+      const b = buildPlanScene(medical, { kit: tracked });
+      scene.add(b.root);
+      // Render from a saved view and from above, so every part has been uploaded once.
+      renderer.setRenderTarget(target);
+      for (const at of [{ x: medical.cameras[0].x, y: 1.6, z: medical.cameras[0].y }, { x: (b.bounds.minX + b.bounds.maxX) / 2, y: 40, z: (b.bounds.minY + b.bounds.maxY) / 2 }]) {
+        cam.position.set(at.x, at.y, at.z);
+        cam.lookAt(at.x + 1, at.y > 10 ? 0 : at.y, at.z + (at.y > 10 ? 0.01 : 1));
+        renderer.render(scene, cam);
+      }
+      renderer.setRenderTarget(prev);
+      const mats = new Set();
+      b.root.traverse((o) => { for (const m of [o.material].flat()) if (m) mats.add(m); });
+      const own = [...mats].filter((m) => !previous.has(m));
+      const released = new Set();
+      for (const m of own) m.addEventListener('dispose', () => released.add(m));
+      b.dispose();
+      for (const t of made) t.dispose();
+      made = new Set();
+      // From the second build on, materials the first did not use belong to this build alone.
+      if (i > 0) {
+        perBuild.push(own.length);
+        stuck.push(...own.filter((m) => !released.has(m)));
+      }
+      previous = mats;
+      memory.push({ ...renderer.info.memory });
+    }
+    target.dispose();
+    const level = memory.slice(1).every((m) => m.geometries === memory[1].geometries && m.textures === memory[1].textures);
+    const names = [...new Set(stuck.map((m) => m.name || m.type))].slice(0, 4).join(', ');
+    return [level && stuck.length === 0, `GPU geometries ${memory.map((m) => m.geometries).join(', ')}, textures ${memory.map((m) => m.textures).join(', ')} after builds 1 to 4; ${perBuild.join(', ')} per-build materials, ${stuck.length} not released${names ? ` (${names})` : ''}`];
   });
   return results;
 }

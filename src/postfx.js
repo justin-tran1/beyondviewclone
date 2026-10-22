@@ -17,18 +17,18 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 
 export const QUALITIES = ['high', 'balanced', 'fast'];
 
-/** Per-level settings. AO radius, thickness and the denoise plane tolerance are meters. */
+/** Per-level settings. AO radius and thickness are meters; denoise.depthPhi is the plane tolerance per meter (see onPlane). */
 const LEVELS = {
   high: {
     aoScale: 1,
     ao: { radius: 0.65, distanceExponent: 1.6, thickness: 1, scale: 1.7, samples: 16, distanceFallOff: 1 },
-    denoise: { depthPhi: 0.15, normalPhi: 8 },
+    denoise: { depthPhi: 0.05, normalPhi: 8 },
     bloom: true,
   },
   balanced: {
     aoScale: 0.5,
     ao: { radius: 0.65, distanceExponent: 1.6, thickness: 1, scale: 1.7, samples: 8, distanceFallOff: 1 },
-    denoise: { depthPhi: 0.15, normalPhi: 8 },
+    denoise: { depthPhi: 0.05, normalPhi: 8 },
     bloom: false,
   },
 };
@@ -42,15 +42,32 @@ const BLOOM = { strength: 0.16, radius: 0.45, threshold: 3, knee: 2 };
 // Values are in exposed scene-linear units (after toneMappingExposure). AgX spans about 16 stops,
 // far more than a daylit interior, so on its own it reads flat and grey; the log-space contrast and
 // toe below were fitted so lit walls and floors keep their brightness while shadows regain depth
-// without crushing (deep shadow about 14 percent, a white wall about 88 percent).
+// without crushing. Above the pivot the contrast rolls off (smoothly, its slope continuous) toward
+// `shoulder` stops, so sun patches on pale floors and the view through windows keep their texture
+// instead of clipping. 8-bit display values: deep shadow (0.02) 29, a lit white wall (0.6 to 1)
+// 178 to 207, a sun patch on a pale floor (4 to 8) 245 to 249, the view out of a window (20) 252.
 const GRADE = {
   balance: [1.04, 1, 0.94], // slight warmth, normalized below so it never changes brightness
   contrast: 1.5, // log-space contrast around the pivot
   pivot: 0.75, // a lit wall: contrast turns around it, so whites hold
+  shoulder: 4.5, // stops above the pivot that highlights approach (AgX white is about 4.4 above)
   toe: 0.012, // flare-like floor that keeps the deepest shadows open
   saturation: 1.08,
   vignette: 0.05, // barely there: about 3 percent at the far corners
 };
+
+// The grade's curve on luminance, shared by the post pass and the 'fast' tone mapping:
+// x = contrast * log2(y / pivot), above the pivot shoulder * tanh(x / shoulder).
+const GRADE_CURVE = /* glsl */`
+float interiorGradeLuma( float y, float pivot, float contrast, float shoulder, float toe ) {
+	float x = contrast * log2( y / pivot );
+	if ( x > 0.0 ) {
+		// tanh through exp2, kept finite for the brightest sky and fixture texels.
+		float t = exp2( 2.8853901 * min( x / shoulder, 8.0 ) );
+		x = shoulder * ( t - 1.0 ) / ( t + 1.0 );
+	}
+	return pivot * exp2( x ) + toe;
+}`;
 
 const LUMA = new THREE.Vector3(0.2126, 0.7152, 0.0722);
 
@@ -71,10 +88,11 @@ function installGradedToneMapping() {
   const b = balance();
   THREE.ShaderChunk.tonemapping_pars_fragment = chunk.replace(stub, /* glsl */`
 // InteriorGradeToneMapping: the walkthrough grade (src/postfx.js), then AgX.
+${GRADE_CURVE}
 vec3 CustomToneMapping( vec3 color ) {
 	vec3 c = max( color, vec3( 0.0 ) ) * toneMappingExposure * vec3( ${glsl(b.x)}, ${glsl(b.y)}, ${glsl(b.z)} );
 	float y = max( dot( c, vec3( 0.2126, 0.7152, 0.0722 ) ), 1e-7 );
-	float yc = ${glsl(GRADE.pivot)} * pow( y / ${glsl(GRADE.pivot)}, ${glsl(GRADE.contrast)} ) + ${glsl(GRADE.toe)};
+	float yc = interiorGradeLuma( y, ${glsl(GRADE.pivot)}, ${glsl(GRADE.contrast)}, ${glsl(GRADE.shoulder)}, ${glsl(GRADE.toe)} );
 	c *= yc / y;
 	c = max( mix( vec3( yc ), c, ${glsl(GRADE.saturation)} ), vec3( 0.0 ) );
 	return AgXToneMapping( c / toneMappingExposure );
@@ -99,6 +117,7 @@ const GradeShader = {
     pivot: { value: GRADE.pivot },
     toe: { value: GRADE.toe },
     contrast: { value: GRADE.contrast },
+    shoulder: { value: GRADE.shoulder },
     saturation: { value: GRADE.saturation },
     vignette: { value: GRADE.vignette },
     aspect: { value: new THREE.Vector2(1, 1) },
@@ -115,17 +134,19 @@ const GradeShader = {
     uniform float pivot;
     uniform float toe;
     uniform float contrast;
+    uniform float shoulder;
     uniform float saturation;
     uniform float vignette;
     uniform vec2 aspect;
     varying vec2 vUv;
     const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+    ${GRADE_CURVE}
     void main() {
       vec4 texel = texture2D(tDiffuse, vUv);
       vec3 c = max(texel.rgb, vec3(0.0)) * balance;
       // Contrast on luminance in log space, so hue and saturation hold and nothing clips here.
       float y = max(dot(c, LUMA), 1e-7);
-      float yc = pivot * pow(y / pivot, contrast) + toe;
+      float yc = interiorGradeLuma(y, pivot, contrast, shoulder, toe);
       c *= yc / y;
       c = max(mix(vec3(yc), c, saturation), vec3(0.0));
       // Gentle lens falloff, like a real wide lens, never a dark frame.
@@ -134,6 +155,48 @@ const GradeShader = {
       gl_FragColor = vec4(c, texel.a);
     }`,
 };
+
+// GLSL shared by the AO shaders (they declare tDepth and cameraProjectionMatrixInverse). The depth
+// texture is unfiltered, so positions are rebuilt at the center of the texel whose depth they use:
+// pairing another uv with that depth puts points on a grazing plane above or below it.
+const DEPTH_GLSL = /* glsl */`
+    vec3 viewAt(const in vec2 uv, const in float depth) {
+      vec4 p = cameraProjectionMatrixInverse * vec4(vec3(uv, depth) * 2.0 - 1.0, 1.0);
+      return p.xyz / p.w;
+    }
+    vec2 depthUv(const in vec2 uv) {
+      vec2 size = vec2(textureSize(tDepth, 0));
+      return (clamp(floor(uv * size), vec2(0.0), size - 1.0) + 0.5) / size;
+    }
+    float depthAt(const in ivec2 p) {
+      return texelFetch(tDepth, p, 0).x;
+    }
+    // View normal at depth texel p, each derivative taken from the side that continues the surface,
+    // so edges stay clean.
+    vec3 normalAt(ivec2 p) {
+      ivec2 size = textureSize(tDepth, 0);
+      p = clamp(p, ivec2(2), size - 3);
+      vec2 texel = 1.0 / vec2(size);
+      vec2 uv = (vec2(p) + 0.5) * texel;
+      float c0 = depthAt(p);
+      float l1 = depthAt(p - ivec2(1, 0)), l2 = depthAt(p - ivec2(2, 0));
+      float r1 = depthAt(p + ivec2(1, 0)), r2 = depthAt(p + ivec2(2, 0));
+      float b1 = depthAt(p - ivec2(0, 1)), b2 = depthAt(p - ivec2(0, 2));
+      float t1 = depthAt(p + ivec2(0, 1)), t2 = depthAt(p + ivec2(0, 2));
+      float dl = abs((2.0 * l1 - l2) - c0), dr = abs((2.0 * r1 - r2) - c0);
+      float db = abs((2.0 * b1 - b2) - c0), dt = abs((2.0 * t1 - t2) - c0);
+      vec3 ce = viewAt(uv, c0);
+      vec3 dpdx = dl < dr ? ce - viewAt(uv - vec2(texel.x, 0.0), l1) : viewAt(uv + vec2(texel.x, 0.0), r1) - ce;
+      vec3 dpdy = db < dt ? ce - viewAt(uv - vec2(0.0, texel.y), b1) : viewAt(uv + vec2(0.0, texel.y), t1) - ce;
+      return normalize(cross(dpdx, dpdy));
+    }
+    // 1 when q lies on the plane through p with normal n, falling to 0 at a tolerance that grows
+    // with their distance (slope: normal error) and with depth (depth precision), so parallel faces
+    // a centimeter apart, a drawer front under a worktop's edge, keep their own AO.
+    float onPlane(const in vec3 p, const in vec3 n, const in vec3 q, const in float slope) {
+      float tolerance = slope * length(q - p) + 0.002 * abs(p.z) + 1e-4;
+      return max(0.0, 1.0 - abs(dot(q - p, n)) / tolerance);
+    }`;
 
 /** Rebuilds view-space normals from the scene depth, so AO needs no second geometry pass. */
 const NormalFromDepthShader = {
@@ -147,30 +210,9 @@ const NormalFromDepthShader = {
     uniform mat4 cameraProjectionMatrixInverse;
     varying vec2 vUv;
     #include <packing>
-    vec3 viewAt(const in vec2 uv, const in float depth) {
-      vec4 p = cameraProjectionMatrixInverse * vec4(vec3(uv, depth) * 2.0 - 1.0, 1.0);
-      return p.xyz / p.w;
-    }
-    float depthAt(const in ivec2 p) {
-      return texelFetch(tDepth, p, 0).x;
-    }
+    ${DEPTH_GLSL}
     void main() {
-      ivec2 size = textureSize(tDepth, 0);
-      ivec2 p = clamp(ivec2(vUv * vec2(size)), ivec2(2), size - 3);
-      vec2 texel = 1.0 / vec2(size);
-      vec2 uv = (vec2(p) + 0.5) * texel;
-      float c0 = depthAt(p);
-      float l1 = depthAt(p - ivec2(1, 0)), l2 = depthAt(p - ivec2(2, 0));
-      float r1 = depthAt(p + ivec2(1, 0)), r2 = depthAt(p + ivec2(2, 0));
-      float b1 = depthAt(p - ivec2(0, 1)), b2 = depthAt(p - ivec2(0, 2));
-      float t1 = depthAt(p + ivec2(0, 1)), t2 = depthAt(p + ivec2(0, 2));
-      // Take each derivative from the side that continues the surface, so edges stay clean.
-      float dl = abs((2.0 * l1 - l2) - c0), dr = abs((2.0 * r1 - r2) - c0);
-      float db = abs((2.0 * b1 - b2) - c0), dt = abs((2.0 * t1 - t2) - c0);
-      vec3 ce = viewAt(uv, c0);
-      vec3 dpdx = dl < dr ? ce - viewAt(uv - vec2(texel.x, 0.0), l1) : viewAt(uv + vec2(texel.x, 0.0), r1) - ce;
-      vec3 dpdy = db < dt ? ce - viewAt(uv - vec2(0.0, texel.y), b1) : viewAt(uv + vec2(0.0, texel.y), t1) - ce;
-      gl_FragColor = vec4(packNormalToRGB(normalize(cross(dpdx, dpdy))), 1.0);
+      gl_FragColor = vec4(packNormalToRGB(normalAt(ivec2(vUv * vec2(textureSize(tDepth, 0))))), 1.0);
     }`,
 };
 
@@ -178,7 +220,8 @@ const NormalFromDepthShader = {
  * Cross-bilateral 5 x 5 box filter for the raw GTAO. GTAO rotates its sample directions with a 5 x 5
  * magic square, so a box of exactly that size averages every rotation and cancels the pattern on
  * flat surfaces, where a randomly rotated kernel leaves grain. Neighbors off the pixel's plane
- * (depthPhi, meters) or facing elsewhere (normalPhi) are left out, so AO never bleeds across edges.
+ * (depthPhi: tolerance per meter between them, see onPlane) or facing elsewhere (normalPhi) are
+ * left out, so AO never bleeds across edges.
  */
 const BoxDenoiseShader = {
   uniforms: {
@@ -187,7 +230,7 @@ const BoxDenoiseShader = {
     tDepth: { value: null },
     resolution: { value: new THREE.Vector2() },
     cameraProjectionMatrixInverse: { value: new THREE.Matrix4() },
-    depthPhi: { value: 0.15 },
+    depthPhi: { value: 0.05 },
     normalPhi: { value: 8 },
   },
   vertexShader: GradeShader.vertexShader,
@@ -201,14 +244,11 @@ const BoxDenoiseShader = {
     uniform float normalPhi;
     varying vec2 vUv;
     #include <packing>
-    vec3 viewAt(const in vec2 uv, const in float depth) {
-      vec4 p = cameraProjectionMatrixInverse * vec4(vec3(uv, depth) * 2.0 - 1.0, 1.0);
-      return p.xyz / p.w;
-    }
+    ${DEPTH_GLSL}
     void main() {
       ivec2 size = ivec2(resolution);
       ivec2 c = ivec2(vUv * resolution);
-      vec2 uv0 = (vec2(c) + 0.5) / resolution;
+      vec2 uv0 = depthUv((vec2(c) + 0.5) / resolution);
       float depth = textureLod(tDepth, uv0, 0.0).x;
       if (depth >= 1.0) {
         gl_FragColor = vec4(1.0);
@@ -216,17 +256,13 @@ const BoxDenoiseShader = {
       }
       vec3 n = unpackRGBToNormal(texelFetch(tNormal, c, 0).rgb);
       vec3 p = viewAt(uv0, depth);
-      // Plane tolerance grows with distance, where depth steps between pixels are larger.
-      float tolerance = depthPhi * (1.0 + 0.05 * abs(p.z));
       float sum = 0.0, weight = 0.0;
       for (int y = -2; y <= 2; y++) {
         for (int x = -2; x <= 2; x++) {
           ivec2 q = clamp(c + ivec2(x, y), ivec2(0), size - 1);
-          vec2 uv = (vec2(q) + 0.5) / resolution;
-          float d = textureLod(tDepth, uv, 0.0).x;
+          vec2 uv = depthUv((vec2(q) + 0.5) / resolution);
           vec3 nq = unpackRGBToNormal(texelFetch(tNormal, q, 0).rgb);
-          float plane = abs(dot(viewAt(uv, d) - p, n));
-          float w = max(0.0, 1.0 - plane / tolerance) * pow(max(dot(n, nq), 0.0), normalPhi);
+          float w = onPlane(p, n, viewAt(uv, textureLod(tDepth, uv, 0.0).x), depthPhi) * pow(max(dot(n, nq), 0.0), normalPhi);
           sum += texelFetch(tDiffuse, q, 0).r * w;
           weight += w;
         }
@@ -238,7 +274,8 @@ const BoxDenoiseShader = {
 /**
  * Multiplies the AO into the image. When AO runs below full resolution, each pixel takes the four
  * nearest AO texels weighted by how well they share its plane and facing (joint bilateral
- * upsampling), so creases and silhouettes stay crisp instead of stair-stepped.
+ * upsampling), so creases and silhouettes stay crisp instead of stair-stepped. A pixel none of them
+ * matches (a part thinner than an AO texel) takes the one nearest its plane rather than a blend.
  */
 const AOUpsampleShader = {
   uniforms: {
@@ -259,41 +296,82 @@ const AOUpsampleShader = {
     uniform float intensity;
     varying vec2 vUv;
     #include <packing>
-    vec3 viewAt(const in vec2 uv, const in float depth) {
-      vec4 p = cameraProjectionMatrixInverse * vec4(vec3(uv, depth) * 2.0 - 1.0, 1.0);
-      return p.xyz / p.w;
-    }
+    ${DEPTH_GLSL}
     void main() {
-      float depth = textureLod(tDepth, vUv, 0.0).x;
+      vec2 uv0 = depthUv(vUv);
+      float depth = textureLod(tDepth, uv0, 0.0).x;
       if (depth >= 1.0) {
         gl_FragColor = vec4(1.0);
         return;
       }
-      vec3 p = viewAt(vUv, depth);
-      vec3 n = normalize(cross(dFdx(p), dFdy(p)));
-      float tolerance = 0.04 * (1.0 + 0.05 * abs(p.z));
+      vec3 p = viewAt(uv0, depth);
+      vec3 n = normalAt(ivec2(vUv * vec2(textureSize(tDepth, 0))));
       ivec2 last = ivec2(aoResolution) - 1;
       vec2 st = vUv * aoResolution - 0.5;
       vec2 f = fract(st);
       ivec2 i0 = ivec2(floor(st));
-      float sum = 0.0, weight = 0.0, plain = 0.0;
+      float sum = 0.0, weight = 0.0, nearest = 1.0, gap = 1e9;
       for (int k = 0; k < 4; k++) {
         ivec2 o = ivec2(k & 1, k >> 1);
         ivec2 q = clamp(i0 + o, ivec2(0), last);
-        vec2 quv = (vec2(q) + 0.5) / aoResolution;
+        vec2 quv = depthUv((vec2(q) + 0.5) / aoResolution);
+        vec3 pq = viewAt(quv, textureLod(tDepth, quv, 0.0).x);
         float bilinear = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
         float ao = texelFetch(tDiffuse, q, 0).r;
         vec3 nq = unpackRGBToNormal(texelFetch(tNormal, q, 0).rgb);
-        float plane = abs(dot(viewAt(quv, textureLod(tDepth, quv, 0.0).x) - p, n));
-        float w = bilinear * max(0.0, 1.0 - plane / tolerance) * pow(max(dot(n, nq), 0.0), 8.0);
+        float w = bilinear * onPlane(p, n, pq, 0.03) * pow(max(dot(n, nq), 0.0), 8.0);
         sum += ao * w;
         weight += w;
-        plain += ao * bilinear;
+        float d = abs(dot(pq - p, n));
+        if (d < gap) {
+          gap = d;
+          nearest = ao;
+        }
       }
-      float ao = weight > 1e-4 ? sum / weight : plain;
+      float ao = weight > 1e-4 ? sum / weight : nearest;
       gl_FragColor = vec4(vec3(mix(1.0, ao, intensity)), 1.0);
     }`,
 };
+
+/**
+ * Point reconstruction for the stock GTAO shader (three r160), which pairs a sample's exact uv with
+ * the depth of the texel around it. On a grazing plane that puts the point above or below the plane
+ * by up to half a texel's depth step, and for the first, sub-texel steps the offset is a large angle:
+ * false horizons that follow the sample rotation pattern, a regular grid of dark dots on large flat
+ * tops and floors (worse below full resolution, where the pixel's own point is off too). Points are
+ * rebuilt at the center of the texel whose depth they read, samples that land on the pixel's own
+ * texel are skipped (they carry no horizon), and samples off screen count as open instead of
+ * repeating the border.
+ */
+const GTAO_POINTS = /* glsl */`
+		vec2 depthTexelUv(const in vec2 uv) {
+			vec2 size = vec2(textureSize(tDepth, 0));
+			return (clamp(floor(uv * size), vec2(0.0), size - 1.0) + 0.5) / size;
+		}
+
+		vec2 gtaoCenterUv;
+
+		vec3 getSceneUvAndDepth(vec3 sampleViewPos) {
+			vec4 sampleClipPos = cameraProjectionMatrix * vec4(sampleViewPos, 1.);
+			vec2 sampleUv = sampleClipPos.xy / sampleClipPos.w * 0.5 + 0.5;
+			if (any(lessThan(sampleUv, vec2(0.0))) || any(greaterThan(sampleUv, vec2(1.0)))) return vec3(sampleUv, 1.0);
+			sampleUv = depthTexelUv(sampleUv);
+			// A sample on the pixel's own texel says nothing about the horizon; depth 1 skips it.
+			if (sampleUv == gtaoCenterUv) return vec3(sampleUv, 1.0);
+			return vec3(sampleUv, getDepth(sampleUv));
+		}`;
+
+function patchGTAO(fs) {
+  const out = fs
+    .replace(/vec3 getSceneUvAndDepth\(vec3 sampleViewPos\) \{[\s\S]*?return vec3\(sampleUv, sampleSceneDepth\);\s*\}/, GTAO_POINTS)
+    .replace('float depth = getDepth(vUv.xy);', 'vec2 centerUv = depthTexelUv(vUv);\n\t\t\tgtaoCenterUv = centerUv;\n\t\t\tfloat depth = getDepth(centerUv);')
+    .replace('vec3 viewPos = getViewPosition(vUv, depth);', 'vec3 viewPos = getViewPosition(centerUv, depth);');
+  if (!out.includes('centerUv, depth') || !out.includes('depthTexelUv(sampleUv)')) {
+    console.warn('postfx: the GTAO shader changed, so its sample reconstruction was not patched');
+    return fs;
+  }
+  return out;
+}
 
 /**
  * GTAO that reads the depth the scene pass already wrote instead of rendering the scene again with
@@ -316,6 +394,7 @@ class InteriorAOPass extends GTAOPass {
     });
     this.gtaoMaterial.defines.NORMAL_VECTOR_TYPE = 1;
     this.gtaoMaterial.defines.DEPTH_SWIZZLING = 'x';
+    this.gtaoMaterial.fragmentShader = patchGTAO(this.gtaoMaterial.fragmentShader);
     this.gtaoMaterial.uniforms.tNormal.value = this.normalTarget.texture;
     this.gtaoMaterial.needsUpdate = true;
     // The stock Poisson denoiser is replaced; GTAOPass.render drives whatever pdMaterial is.

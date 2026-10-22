@@ -32,6 +32,15 @@ without a code change, run the workflow from the Actions tab.
    retail and industrial, general). Items snap flush to walls; `Q` and `E` rotate.
 5. **Walk**: switch to **Walk** or **Split**. Drag to look, `W A S D` to move, click the floor to
    walk there, save viewpoints, and use **Overview** for a dollhouse view. Save images of any view.
+6. **Render photo**: the camera button beside Save image path traces the current view into a
+   photographic still for client decks (1280 x 720 up to 4K; Draft, Standard or High quality). It
+   takes a minute or more on the graphics card while the 3D view keeps running; save the PNG when
+   it is done.
+
+The quality menu on the 3D view sets how it is drawn: **Realistic** (soft contact shadows, window
+glow, filmic color and smooth edges), **Balanced** (lighter shading for smoother movement) or
+**Fast** (plain shading for older computers). If moving gets slow, the view steps down on its own
+and the menu says so; it never goes above the level you picked.
 
 Plans save as `.cbreplan.json` files (the traced image is embedded) and autosave in the browser.
 Press `?` in the app for every keyboard shortcut.
@@ -49,8 +58,10 @@ index.html, assets/css/app.css   App shell and styles
 src/app.js, src/ui/              Wiring, panels, dialogs, file handling
 src/model.js, src/geometry.js    Plan data model, undo/redo, geometry and units
 src/editor2d.js, plan-render.js  2D tracing and layout editor
-src/builder3d.js, kit3d.js       Plan to 3D scene, shared materials and primitives
-src/walkthrough.js               First-person and overview viewer
+src/builder3d.js, kit3d.js       Plan to 3D scene and lighting, shared materials and primitives
+src/walkthrough.js, postfx.js    First-person and overview viewer, post-processing and quality
+src/photo.js, src/ui/photo.js    Ray-traced Render photo
+assets/vendor/                   Three.js r160, three-gpu-pathtracer and three-mesh-bvh
 src/catalog/                     Furniture and equipment library
 src/samples/                     Sample plans
 dev/                             Developer test pages and the smoke test
@@ -67,5 +78,8 @@ npm run smoke                    # opens every sample in Plan, Split and Walk; s
 node scripts/shot.mjs <url> <out.png> [--wait=expr]   # screenshot any page and report console errors
 ```
 
-Test pages: `dev/catalog.html?category=lab` (every item in 3D and plan form), `dev/editor-test.html`,
-`dev/builder-test.html?view=overview`, `dev/walkthrough-test.html` and `dev/samples-test.html?sample=lab-suite`.
+Test pages: `dev/catalog.html?category=lab` (every item in 3D and plan form; add `&view=room` for
+the walkthrough's lighting and post-processing), `dev/editor-test.html`, `dev/builder-test.html?view=overview`
+(`&checks=1` runs the builder checks), `dev/walkthrough-test.html`, `dev/materials-test.html` (every
+finish side by side), `dev/photo-test.html?realtime=1` (a photo beside the live view) and
+`dev/samples-test.html?sample=lab-suite`.

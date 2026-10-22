@@ -65,8 +65,9 @@ const SUN = { color: '#ffecd6', intensity: 11 };
 // Skylight on outdoor surfaces in shade, as emission of albedo times this (the fill light below
 // cannot tell outdoors from indoors, and must stay at interior level).
 const OUTDOOR_FILL = 1.6;
-// The fixture-lit baseline: strong from above (fixtures), weak from below (floor bounce), so floors
-// read brightest, walls mid and ceilings darker, as in a real office.
+// The uniform fill: strong from above, weak from below, so floors read brightest, walls mid and
+// ceilings darker. It lights the outdoors and anything the plan light map does not cover; indoors
+// the map takes over and keeps PLAN_LIGHT.hemi of it.
 const FILL = { sky: '#fff1df', ground: '#8f877c', intensity: 1.9 };
 // Sky light through the windows: radiance of the area lights at the glass, at most `max` of them
 // (aimed at the runs nearest the viewer), and the gap (m) under which windows in a row share one.
@@ -77,28 +78,33 @@ const FIXTURE_LIGHTS = 4;
 const LED = { color: '#fff3e4', troffer: 4.5, downlight: 7, pendant: 5, reflector: 0.28 };
 // The plan light map. cell: texel size (m), grown so the map stays under maxCells; height: where
 // light is evaluated (m above the floor). Emitter output is per fixture (per sample for pendant runs,
-// every `pendantStep` m), set so a grid of them gives about 3 on a desk (scene-linear irradiance).
-// sky: radiance of a window as seen from inside (sky above, sunlit ground below, through the glass).
-// reach: how far (m) fixtures and windows light. bounce: interreflection as a share of the direct
-// light, spread `spread` m locally and averaged over the room (plus `uplight` under open ceilings,
-// whose pendants light the deck). exposure: per room adaptation (see
-// buildPlanLight). shade: [isotropic, directional] split
-// of the irradiance model, hemi: share of the uniform fill kept indoors, ibl: share of the image
-// based diffuse light kept indoors (the bounce stands in for the rest).
+// every `pendantStep` m), set so a grid of them gives about 3 on a desk (scene-linear irradiance)
+// before adaptation.
+// sky: radiance of a window as seen from inside (sky above, sunlit ground below, through the glass),
+// integrated in strips up to `strip` m wide. reach: how far (m) fixtures and windows light.
+// bounce: interreflection as a share of the direct light, spread `spread` m locally and averaged
+// over the room (plus `uplight` under open ceilings, whose pendants light the deck); walls and
+// ceilings get most of their light from it, as in real offices, and `tilt` gives floors more of it
+// (they see the white ceiling) than ceilings (they see the darker floor). exposure: per room
+// adaptation toward `reference` (see buildPlanLight): daylit rooms stay brighter than the core, by
+// less than they would in a single exposure, as a photographer shooting each room would have it.
+// shade: [isotropic, directional] split of the irradiance model (windows light the wall opposite
+// them, not their own wall), hemi: share of the uniform fill kept indoors, ibl: share of the image
+// based diffuse light kept indoors (the bounce stands in for the rest). budget: ray steps per build.
 const PLAN_LIGHT = {
   cell: 0.25, maxCells: 32000, height: 0.6,
-  troffer: 4.8, downlight: 4, pendant: 1.7, pendantStep: 0.6,
-  sky: 2.8, glass: 0.8, reach: { fixture: 5.5, window: 11 },
-  bounce: { local: 0.18, room: 0.22, uplight: 0.25, spread: 1.1 },
-  exposure: { reference: 3, adapt: 0.5, range: [0.5, 1.6] },
-  shade: [0.15, 0.85], hemi: 0.12, ibl: 0.3,
+  troffer: 6.5, downlight: 5.5, pendant: 2.4, pendantStep: 0.6,
+  sky: 2.4, glass: 0.8, strip: 0.5, reach: { fixture: 5.5, window: 11 },
+  bounce: { local: 0.3, room: 0.25, uplight: 0.25, spread: 1.1, tilt: 0.3 },
+  exposure: { reference: 4.2, adapt: 0.6, range: [0.45, 1.7] },
+  shade: [0.2, 0.8], hemi: 0.12, ibl: 0.15,
   colors: { fixture: '#fff0de', day: '#f2f5f9', bounce: '#fbf3ea' },
   budget: 6e6,
 };
 // Image based lighting strength for every material once the interior has been captured.
 const ENV_INTENSITY = 0.75;
-// While capturing, room surfaces are lit this much less (bright windows and fixtures keep full
-// strength), so reflections stay vivid without the capture's ambient flattening every room.
+// While capturing, the fill and window lights are this much weaker (bright windows and fixtures keep
+// full strength, plan-lit surfaces their light map level), so reflections stay vivid.
 const CAPTURE_DIM = 0.4;
 // Cube face size for the base and captured environments; both match so shaders are shared.
 const ENV_SIZE = 128;
@@ -202,13 +208,18 @@ function buildScene(ctx) {
       o.material = Array.isArray(o.material) ? o.material.map((m) => planMaterial(ctx.kit, m)) : planMaterial(ctx.kit, o.material);
     });
   }
-  usePlanLight(ctx.kit, light, probe, daylight.userData.rectSpace);
+  // The kit's plan-lit materials share one set of uniforms: this build binds its light map now, and
+  // again before every render of a scene from setupEnvironment() that shows it (see aimSceneDaylight).
+  const U = planUniforms(ctx.kit);
+  const bind = () => usePlanLight(U, light, probe, daylight.userData.rectSpace);
+  bind();
 
   // The window lights come first, so their indices in the shaders match planRectSpace.
   root.add(daylight, exterior, structure, furnishings, shading, ceilings);
   root.userData.horizon = exterior.userData.horizon;
   root.userData.daylight = daylight;
-  root.userData.planUniforms = planUniforms(ctx.kit);
+  root.userData.planUniforms = U;
+  root.userData.planLight = { bind };
   root.updateMatrixWorld(true);
 
   return {
@@ -218,15 +229,18 @@ function buildScene(ctx) {
     obstacles: ctx.obstacles,
     ceilings: [ceilings],
     bounds: { ...ctx.bounds },
-    // Real-time lights the build created (window daylight); photo.js skips them via userData.overlay.
+    // Real-time lights the build created (window and fixture reflections); photo.js skips them via
+    // userData.overlay.
     lights: daylight.children.slice(),
     // Where captureEnvironment() looks from by default: the largest room's middle, at 1.5 m.
     probe,
-    // The diffuse light map: cell size (m), grid size, build time, and lookups by plan point.
-    planLight: { cell: light.cell, size: light.size, origin: light.origin, ms: light.ms, phases: light.phases, budget: light.budget, spaceAt: light.spaceAt, levelAt: light.levelAt },
+    // The diffuse light map: cell size (m), grid size and origin, build time, lookups by plan point.
+    planLight: { cell: light.cell, size: light.size, origin: light.origin, ms: light.ms, spaceAt: light.spaceAt, levelAt: light.levelAt },
     dispose() {
       root.removeFromParent();
       for (const l of daylight.children) l.dispose();
+      // Let go of the light map if this build is the one bound.
+      if (U.planMapA.value === light.maps[0]) usePlanLight(U, null);
       release(ctx.owned, ctx.loose);
     },
   };
@@ -387,21 +401,25 @@ export function captureEnvironment(renderer, scene, built, { position } = {}) {
   const prev = { target: renderer.getRenderTarget(), env: scene.environment };
   if (state) scene.environment = state.base.texture;
   // Aim the window lights at the probe; the scene hook would otherwise re-aim them for every face.
+  // Where they were is put back afterwards, so the capture leaves the scene as it found it.
   const hook = scene.onBeforeRender;
   scene.onBeforeRender = THREE.Object3D.prototype.onBeforeRender;
-  if (built?.root?.userData.daylight) aimDaylight(built.root.userData.daylight, p.x, p.z);
+  const daylight = built?.root?.userData.daylight;
+  const placed = daylight && daylightState(daylight);
+  built?.root?.userData.planLight?.bind();
+  if (daylight) aimDaylight(daylight, p.x, p.z);
   // Sun patches are local: left in, they would brighten every room's ambient like the sunniest one.
-  // The fill and window lights are dimmed by CAPTURE_DIM so room surfaces stay modest next to the
-  // windows and fixtures that reflections need. Only intensities change, so shaders are reused.
+  // The fill and window lights are dimmed by CAPTURE_DIM so surfaces they light stay modest next to
+  // the windows and fixtures that reflections need. Plan-lit surfaces keep their light map level:
+  // indoors only PLAN_LIGHT.ibl of the captured diffuse light is used, so their true brightness
+  // makes reflections right (metals, glossy floors) without flattening the rooms. Only intensities
+  // change, so shaders are reused.
   const saved = [];
   scene.traverseVisible((o) => {
     if (!o.isDirectionalLight && !o.isHemisphereLight && !o.isRectAreaLight) return;
     saved.push([o, o.intensity]);
     o.intensity *= o.isDirectionalLight ? 0 : CAPTURE_DIM;
   });
-  const plan = built?.root?.userData.planUniforms?.planScale;
-  const scale = plan?.value;
-  if (plan) plan.value = scale * CAPTURE_DIM;
   // Furniture barely shows in blurred reflections and ambient, and is most of the geometry.
   const furnishings = built?.root?.getObjectByName('furnishings');
   const shown = furnishings?.visible;
@@ -418,7 +436,7 @@ export function captureEnvironment(renderer, scene, built, { position } = {}) {
     scene.onBeforeRender = hook;
     if (furnishings) furnishings.visible = shown;
     for (const [o, v] of saved) o.intensity = v;
-    if (plan) plan.value = scale;
+    if (placed) restoreDaylight(daylight, placed);
     scene.environment = prev.env;
     renderer.setRenderTarget(prev.target);
     if (!state) {
@@ -2709,11 +2727,14 @@ function buildDaylight(ctx, probe) {
 function aimDaylight(group, x, z) {
   const pools = group.userData.pools;
   if (!pools) return;
+  // Every render calls this; a viewer standing still needs no new choice.
+  const last = group.userData.aim;
+  if (last && Math.abs(last.x - x) < 0.01 && Math.abs(last.z - z) < 0.01) return;
+  group.userData.aim = { x, z };
   const here = group.userData.spaceAt?.(x, z) ?? -1;
   for (const { runs, lights, place } of pools) {
     if (!runs.length || !lights.length) continue;
-    const near = runs.map((r, i) => [runDistance(r, x, z) + (here >= 0 && r.space !== here ? 12 : 0), i])
-      .sort((a, b) => a[0] - b[0]).slice(0, lights.length).map((e) => e[1]);
+    const near = nearestRuns(runs, lights.length, (r) => runDistance(r, x, z) + (here >= 0 && r.space !== here ? 12 : 0));
     const chosen = new Set(near), kept = new Set(), free = [];
     for (const l of lights) {
       if (chosen.has(l.userData.run) && !kept.has(l.userData.run)) kept.add(l.userData.run);
@@ -2730,6 +2751,22 @@ function aimDaylight(group, x, z) {
   }
   const spaces = group.userData.rectSpace;
   group.children.forEach((l, i) => { if (i < spaces.length) spaces[i] = l.userData.space ?? -2; });
+}
+
+/** Indices of the k runs with the smallest cost(run), nearest first (k is small; plans have thousands of fixtures). */
+function nearestRuns(runs, k, cost) {
+  const best = [];
+  for (let i = 0; i < runs.length; i++) {
+    const c = cost(runs[i]);
+    if (best.length === k && c >= best[k - 1][0]) continue;
+    let j = best.length < k ? best.length : k - 1;
+    while (j > 0 && best[j - 1][0] > c) {
+      best[j] = best[j - 1];
+      j--;
+    }
+    best[j] = [c, i];
+  }
+  return best.map((e) => e[1]);
 }
 
 /** Plan distance from (x, z) to a run: the nearest point of a window run's span, a fixture's center. */
@@ -2766,14 +2803,44 @@ function fixtureRuns(ctx) {
   return ctx.luminaires.map((f) => ({ ...f, center: { x: f.x, y: f.z }, space: ctx.planLight.spaceAt(f.x, f.z) }));
 }
 
-/** Before each render of a scene from setupEnvironment(): aim every built plan's daylight at the camera. */
+/**
+ * Before each render of a scene from setupEnvironment(): bind the light map of the built plan in it
+ * (with several, the last one's) and aim every built plan's daylight at the camera.
+ */
 function aimSceneDaylight(scene, camera) {
   let p = null;
   for (const c of scene.children) {
+    c.userData.planLight?.bind();
     const group = c.userData.daylight;
     if (!group?.children.length) continue;
     p ||= new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
     aimDaylight(group, p.x, p.z);
+  }
+}
+
+/** Where the daylight group's lights are, for restoreDaylight(). */
+function daylightState(group) {
+  return {
+    aim: group.userData.aim,
+    spaces: group.userData.rectSpace.slice(),
+    lights: group.children.map((l) => ({
+      l, run: l.userData.run, space: l.userData.space, width: l.width, height: l.height, intensity: l.intensity,
+      color: l.color.clone(), position: l.position.clone(), quaternion: l.quaternion.clone(),
+    })),
+  };
+}
+
+function restoreDaylight(group, state) {
+  group.userData.aim = state.aim;
+  group.userData.rectSpace.set(state.spaces);
+  for (const s of state.lights) {
+    const { l } = s;
+    Object.assign(l.userData, { run: s.run, space: s.space });
+    Object.assign(l, { width: s.width, height: s.height, intensity: s.intensity });
+    l.color.copy(s.color);
+    l.position.copy(s.position);
+    l.quaternion.copy(s.quaternion);
+    l.updateMatrixWorld();
   }
 }
 
@@ -2870,7 +2937,6 @@ function environmentProbe(ctx) {
  */
 function buildPlanLight(ctx) {
   const t0 = performance.now();
-  const __ph = {}; let __t = t0;
   const { mask } = ctx;
   const minX = mask.minX, minY = mask.minY, W = mask.nx * mask.c, H = mask.ny * mask.c;
   const g = Math.max(PLAN_LIGHT.cell, Math.sqrt((W * H) / PLAN_LIGHT.maxCells));
@@ -2925,7 +2991,6 @@ function buildPlanLight(ctx) {
     stamp(F, half, cursor, L + ext.b, value);
   }
 
-  __ph.grid = performance.now() - __t; __t = performance.now();
   // Transmittance along a ray from plan point (x, y) to the center of cell (i, j), in half-cell steps.
   let budget = PLAN_LIGHT.budget;
   const reaches = (x, y, i, j) => {
@@ -2972,41 +3037,82 @@ function buildPlanLight(ctx) {
     Math.max(0, Math.floor((y - (N && N.y > 0.5 ? g : R) - minY) / g)), Math.min(ny - 1, Math.floor((y + (N && N.y < -0.5 ? g : R) - minY) / g)),
   ];
 
-  // Ceiling fixtures: downward emitters with a cos^cone intensity falloff.
-  const RF = PLAN_LIGHT.reach.fixture;
-  for (const e of ctx.emitters) {
-    const dh = e.h - Y, own = spaceOf(e.x, e.y);
-    if (dh < 0.2 || cell(e.x, e.y) < 0) continue;
-    const [i0, i1, j0, j1] = box(e.x, e.y, RF);
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        const k = j * nx + i, sp = space[k];
-        if (sp < 0 || occ[k] === 2) continue;
-        const dx = e.x - X[i], dy = e.y - Z[j], h2 = dx * dx + dy * dy;
+  // Ceiling fixtures: downward emitters with a cos^cone intensity falloff. Each one lights from its
+  // cell's center (at most an eighth of a meter off, lost in the smoothing below), so its footprint
+  // is a table per height and beam, shared by every fixture like it.
+  const RF = PLAN_LIGHT.reach.fixture, R = Math.floor(RF / g), KW = 2 * R + 1;
+  const kernels = new Map();
+  const kernel = (dh, cone) => {
+    const key = `${dh}|${cone}`;
+    let t = kernels.get(key);
+    if (t) return t;
+    t = new Float32Array(KW * KW * 4);
+    for (let b = -R; b <= R; b++) {
+      for (let a = -R; a <= R; a++) {
+        // From the lit cell to the fixture.
+        const dx = -a * g, dy = -b * g, h2 = dx * dx + dy * dy;
         if (h2 > RF * RF) continue;
-        const v = sp === own ? 1 : pair(own, sp) >= OPEN_EDGES ? reaches(e.x, e.y, i, j) : 0;
+        const r2 = h2 + dh * dh, r = Math.sqrt(r2), c = dh / r, v = (cone === 2 ? c * c : c) / r2;
+        const o = ((b + R) * KW + a + R) * 4;
+        t[o] = v;
+        t[o + 1] = (v * dx) / r;
+        t[o + 2] = (v * dh) / r;
+        t[o + 3] = (v * dy) / r;
+      }
+    }
+    kernels.set(key, t);
+    return t;
+  };
+  for (const e of ctx.emitters) {
+    const dh = Math.round((e.h - Y) * 20) / 20, own = spaceOf(e.x, e.y);
+    if (dh < 0.2 || cell(e.x, e.y) < 0) continue;
+    const ie = Math.floor((e.x - minX) / g), je = Math.floor((e.y - minY) / g), t = kernel(dh, e.cone), P = e.power;
+    const i0 = Math.max(0, ie - R), i1 = Math.min(nx - 1, ie + R), j0 = Math.max(0, je - R), j1 = Math.min(ny - 1, je + R);
+    for (let j = j0; j <= j1; j++) {
+      let o = ((j - je + R) * KW + i0 - ie + R) * 4;
+      for (let i = i0, k = j * nx + i0; i <= i1; i++, k++, o += 4) {
+        if (!t[o]) continue;
+        const sp = space[k];
+        if (sp < 0 || occ[k] === 2) continue;
+        const v = sp === own ? P : pair(own, sp) >= OPEN_EDGES ? P * reaches(e.x, e.y, i, j) : 0;
         if (!v) continue;
-        const r2 = h2 + dh * dh, r = Math.sqrt(r2), c = dh / r;
-        const s = (v * e.power * (e.cone === 2 ? c * c : c)) / r2;
-        S[k] += s;
-        EX[k] += (s * dx) / r;
-        EY[k] += (s * dh) / r;
-        EZ[k] += (s * dy) / r;
+        S[k] += v * t[o];
+        EX[k] += v * t[o + 1];
+        EY[k] += v * t[o + 2];
+        EZ[k] += v * t[o + 3];
       }
     }
   }
 
-  __ph.fixtures = performance.now() - __t; __t = performance.now();
-  // Windows: vertical strips up to 0.5 m wide, integrated exactly over the glass height.
-  const RW = PLAN_LIGHT.reach.window;
+  // Windows: vertical strips up to PLAN_LIGHT.strip wide, integrated exactly over the glass height.
+  // The integrals depend only on the distance from the strip (per sill and head height), so they
+  // are tabulated every 2 cm and interpolated.
+  const RW = PLAN_LIGHT.reach.window, STEP = 0.02;
+  const profiles = new Map();
+  const profile = (t0, t1) => {
+    const key = `${t0.toFixed(3)}|${t1.toFixed(3)}`;
+    let tab = profiles.get(key);
+    if (tab) return tab;
+    const m = Math.ceil(RW / STEP) + 2;
+    tab = new Float32Array(m * 3);
+    for (let q = 0; q < m; q++) {
+      // Closer than 0.3 m the strip is no longer thin; hold the value there.
+      const p = Math.max(q * STEP, 0.3), p2 = p * p, q0 = p2 + t0 * t0, q1 = p2 + t1 * t1;
+      tab[q * 3] = t1 / (p * Math.sqrt(q1)) - t0 / (p * Math.sqrt(q0));
+      tab[q * 3 + 1] = t1 / (2 * q1) + Math.atan(t1 / p) / (2 * p) - t0 / (2 * q0) - Math.atan(t0 / p) / (2 * p);
+      tab[q * 3 + 2] = p / (2 * q0) - p / (2 * q1);
+    }
+    profiles.set(key, tab);
+    return tab;
+  };
   for (const win of ctx.windows) {
     const { info, s0, s1, y0, y1, side, weight } = win;
     const { F } = info, ht = info.w.thickness / 2;
     if (s1 - s0 < 0.1 || y1 - y0 < 0.1) continue;
     const N = { x: F.n.x * side, y: F.n.y * side };
-    const strips = Math.ceil((s1 - s0) / 0.5), sw = (s1 - s0) / strips;
+    const strips = Math.ceil((s1 - s0) / PLAN_LIGHT.strip), sw = (s1 - s0) / strips;
     const L = PLAN_LIGHT.sky * weight * sunSide(N).sun * sw;
-    const t0 = y0 - Y, t1 = y1 - Y;
+    const tab = profile(y0 - Y, y1 - Y);
     for (let q = 0; q < strips; q++) {
       const s = s0 + (q + 0.5) * sw;
       // The strip at the inner wall face, and a start for rays just inside the room.
@@ -3027,11 +3133,10 @@ function buildPlanLight(ctx) {
           if (cw < 0.02) continue;
           const v = sp === own ? 1 : pair(own, sp) > 0 ? reaches(rx, ry, i, j) : 0;
           if (!v) continue;
-          const p = Math.max(rho, 0.3), p2 = p * p, q0 = p2 + t0 * t0, q1 = p2 + t1 * t1;
-          const k0 = v * L * cw;
-          const sv = k0 * (t1 / (p * Math.sqrt(q1)) - t0 / (p * Math.sqrt(q0)));
-          const eh = k0 * (t1 / (2 * q1) + Math.atan(t1 / p) / (2 * p) - t0 / (2 * q0) - Math.atan(t0 / p) / (2 * p));
-          const ev = k0 * (p / (2 * q0) - p / (2 * q1));
+          const u = rho / STEP, n0 = u | 0, w = u - n0, o = n0 * 3, k0 = v * L * cw;
+          const sv = k0 * (tab[o] + (tab[o + 3] - tab[o]) * w);
+          const eh = k0 * (tab[o + 1] + (tab[o + 4] - tab[o + 1]) * w);
+          const ev = k0 * (tab[o + 2] + (tab[o + 5] - tab[o + 2]) * w);
           S[k] += sv;
           D[k] += sv;
           EX[k] -= (eh * vx) / rho;
@@ -3042,7 +3147,6 @@ function buildPlanLight(ctx) {
     }
   }
 
-  __ph.windows = performance.now() - __t; __t = performance.now();
   // A diffusion over the open cells that walls stop: `iterations` passes spread a field about
   // g * sqrt(iterations) meters.
   const open = (k) => space[k] >= 0 && occ[k] < 2;
@@ -3086,7 +3190,6 @@ function buildPlanLight(ctx) {
   const room = [...ctx.rooms, ...ctx.generals].map((sp) => PLAN_LIGHT.bounce.room + (sp.ceiling === 'open' ? PLAN_LIGHT.bounce.uplight : 0));
   for (let k = 0; k < n; k++) if (open(k)) B[k] = PLAN_LIGHT.bounce.local * cur[k] + (room[space[k]] * sum[space[k]]) / count[space[k]];
 
-  __ph.bounce = performance.now() - __t; __t = performance.now();
   // Adaptation, as a photographer exposes each room: every space's light is pulled toward the
   // reference level by `adapt` (in log terms), so sunny rooms stay brighter than windowless ones
   // without washing out. The scale is softened across doorways.
@@ -3100,7 +3203,6 @@ function buildPlanLight(ctx) {
   diffuse(gain, 6);
   for (const f of [S, EX, EY, EZ, D, B]) for (let k = 0; k < n; k++) f[k] *= gain[k];
 
-  __ph.adapt = performance.now() - __t; __t = performance.now();
   // Cells under walls take their open neighbors' light, so surfaces near walls never sample black.
   const inside = new Float32Array(n);
   for (let k = 0; k < n; k++) inside[k] = open(k) ? 1 : 0;
@@ -3127,7 +3229,6 @@ function buildPlanLight(ctx) {
     }
   }
 
-  __ph.fill = performance.now() - __t; __t = performance.now();
   const half = THREE.DataUtils.toHalfFloat;
   const a = new Uint16Array(n * 4), b = new Uint16Array(n * 4);
   for (let k = 0; k < n; k++) {
@@ -3154,7 +3255,6 @@ function buildPlanLight(ctx) {
     maps,
     cell: g, size: [nx, ny], origin: { x: minX, y: minY },
     ms: performance.now() - t0,
-    phases: __ph, budget,
     /** Space id at plan (x, y), -1 outdoors. */
     spaceAt: (x, y) => {
       const k = cell(x, y);
@@ -3171,7 +3271,7 @@ function buildPlanLight(ctx) {
   };
 }
 
-/** The light map uniforms shared by every plan-lit material of a kit; the newest build fills them. */
+/** The light map uniforms shared by every plan-lit material of a kit, bound to one build at a time. */
 function planUniforms(kit) {
   const store = sharedStore(kit);
   if (!store.plan) {
@@ -3189,18 +3289,25 @@ function planUniforms(kit) {
       planFixColor: { value: tint(colors.fixture) },
       planDayColor: { value: tint(colors.day) },
       planBounceColor: { value: tint(colors.bounce) },
+      planBounceTilt: { value: PLAN_LIGHT.bounce.tilt },
       planEnvRef: { value: 1 },
-      planScale: { value: 1 },
       planOffset: { value: 0.22 },
-      planRectSpace: { value: new Float32Array(1) },
+      planRectSpace: { value: new Float32Array(1).fill(-2) },
     };
   }
   return store.plan;
 }
 
-/** Point the shared uniforms at a build's light map; probe is where the environment is captured. */
-function usePlanLight(kit, light, probe, rectSpace) {
-  const U = planUniforms(kit);
+/**
+ * Point the shared uniforms U at a build's light map; probe is where the environment is captured.
+ * With no light map, plan-lit materials fall back to the uniform fill (no texel reads as indoors).
+ */
+function usePlanLight(U, light, probe, rectSpace) {
+  if (!light) {
+    U.planMapA.value = U.planMapB.value = null;
+    U.planRectSpace.value = new Float32Array(1).fill(-2);
+    return;
+  }
   U.planMapA.value = light.maps[0];
   U.planMapB.value = light.maps[1];
   const [nx, ny] = light.size;
@@ -3222,8 +3329,8 @@ uniform vec4 planShade;
 uniform vec3 planFixColor;
 uniform vec3 planDayColor;
 uniform vec3 planBounceColor;
+uniform float planBounceTilt;
 uniform float planEnvRef;
-uniform float planScale;
 uniform float planOffset;
 #if NUM_RECT_AREA_LIGHTS > 0
 uniform float planRectSpace[ NUM_RECT_AREA_LIGHTS ];
@@ -3271,13 +3378,14 @@ const PLAN_SAMPLE = /* glsl */`
 const PLAN_IRRADIANCE = /* glsl */`
 #if defined( RE_IndirectDiffuse )
   float planE = max( 0.0, planShade.x * planA.x + planShade.y * dot( planN, planA.yzw ) );
-  vec3 planIrr = planScale * ( planE * mix( planFixColor, planDayColor, clamp( planB.x, 0.0, 1.0 ) ) + planB.y * planBounceColor );
+  vec3 planIrr = planE * mix( planFixColor, planDayColor, clamp( planB.x, 0.0, 1.0 ) )
+    + planB.y * ( 1.0 + planBounceTilt * planN.y ) * planBounceColor;
   irradiance = mix( irradiance, planIrr + irradiance * planShade.z, planIn );
 #endif`;
 
 // After the environment maps: image based light scaled to this spot's light level against the probe's.
 const PLAN_ENV = /* glsl */`
-  float planEnv = mix( 1.0, clamp( planScale * ( planA.x + planB.y ) / planEnvRef, 0.08, 1.6 ), planIn );
+  float planEnv = mix( 1.0, clamp( ( planA.x + planB.y ) / planEnvRef, 0.08, 1.6 ), planIn );
 #if defined( RE_IndirectDiffuse )
   iblIrradiance *= planEnv * mix( 1.0, planShade.w, planIn );
 #endif

@@ -320,8 +320,9 @@ export function bent(kit, g, mat, points, r, { segments = 24, radial = 10, close
 
 /**
  * Leaves as one mesh: each is a folded, two-sided oval of `size` meters set at pose(i) =
- * { x, y, z, yaw, pitch, roll, size, width?, droop?, base? } (width and droop scale the outline and
- * the tip's fall, base widens the stalk end; narrow, stiff blades make grasses and sansevieria).
+ * { x, y, z, yaw, pitch, roll, size, width?, droop?, base?, shape? } (width and droop scale the
+ * outline and the tip's fall, base widens the stalk end, shape gives all three half widths, at 0,
+ * 0.3 and 0.68 of the length; narrow, stiff blades make grasses and sansevieria).
  */
 export function leaves(kit, g, mat, count, pose) {
   const T = kit.THREE;
@@ -333,7 +334,7 @@ export function leaves(kit, g, mat, count, pose) {
     const p = pose(i);
     if (!p) continue;
     const L = p.size, fold = 0.12 * L, droop = (p.droop ?? 0.18) * L, wide = p.width ?? 0.62, base = p.base ?? W[0];
-    const half = (j) => (j ? W[j] : base) * L * wide;
+    const half = (j) => (p.shape ? p.shape[j] : j ? W[j] : base) * L * wide;
     m.makeRotationFromEuler(e.set(p.pitch || 0, p.yaw || 0, p.roll || 0, 'YXZ')).setPosition(p.x, p.y, p.z);
     // Vertices: midrib 0..3, left 4..6 and right 7..9 at the first three stations; once per side,
     // so each side shades smoothly across the folded midrib.
@@ -717,7 +718,6 @@ function basin(kit, g, mat, drain, hole, y, depth) {
   kit.cyl(g, drain, 0.028, 0.004, (x0 + x1) / 2, yb, (z0 + z1) / 2, { segments: 16 });
 }
 
-/** Gooseneck faucet at (x, y, z) arcing `reach` toward its local +x, turned by yaw. */
 /** Gooseneck faucet at (x, y, z) arcing `reach` toward its local +x, turned by yaw, with wrist blades. */
 function gooseneck(kit, g, mat, x, y, z, rise, reach, yaw) {
   const f = sub(kit, g, x, y, z, { yaw });
@@ -1139,32 +1139,54 @@ function drawBiosafety(ctx, o) {
 
 // ---- Ultra-low freezer --------------------------------------------------------------
 
+// Cabinet face, door face and latch front, measured back from the item's front edge.
+const ULT = { front: 0.13, door: 0.053, latch: 0.067 };
+
+/**
+ * Upright -80 C freezer: an insulated cabinet on casters with front leveling feet, a thick
+ * gasketed door with a lever latch, a touchscreen control strip above it, a louvered condenser
+ * grille below and an access port through the side.
+ */
 function buildUltFreezer(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = palette(kit, color);
-  const fz = d / 2 - 0.08;
-  const dy0 = 0.37, dy1 = h - 0.3;
-  kit.block(g, m.plinth, -w / 2 + 0.03, w / 2 - 0.03, 0, 0.08, -d / 2 + 0.03, fz - 0.02);
-  kit.block(g, m.body, -w / 2, w / 2, 0.08, h, -d / 2, fz);
-  kit.block(g, m.trim, -w / 2 + 0.01, w / 2 - 0.01, 0.1, 0.34, fz, fz + 0.01);
-  for (let i = 0; i < 4; i++) {
-    const y = 0.14 + i * 0.045;
-    kit.block(g, m.slot, -w / 2 + 0.08, w / 2 - 0.08, y, y + 0.02, fz + 0.01, fz + 0.012, false);
+  const fz = d / 2 - ULT.front;
+  const base = 0.09, dy0 = 0.37, dy1 = h - 0.3;
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const x = sx * (w / 2 - 0.07), z = sz * (d / 2 - 0.16);
+      kit.cyl(g, m.rubber, 0.028, 0.026, x - 0.013, 0.028, z, { axis: 'x', segments: 14 });
+      kit.block(g, m.darkSteel, x - 0.02, x + 0.02, 0.04, base, z - 0.022, z + 0.022, true, { bevel: 0.004 });
+    }
+    turned(kit, g, m.black, [[0, 0], [0.03, 0], [0.03, 0.012], [0.012, 0.018], [0.012, base], [0, base]], sx * (w / 2 - 0.07), 0, fz - 0.06, { segments: 14 });
   }
-  kit.block(g, m.reveal, -w / 2 + 0.006, w / 2 - 0.006, dy0 - 0.006, dy1 + 0.006, fz, fz + 0.006);
-  kit.block(g, m.body, -w / 2 + 0.012, w / 2 - 0.012, dy0, dy1, fz + 0.006, fz + 0.05);
-  if (!m.custom) kit.block(g, m.trim, -w / 2 + 0.06, w / 2 - 0.16, dy0 + 0.08, dy1 - 0.08, fz + 0.05, fz + 0.052, false);
-  for (const y of [dy0 + 0.12, dy1 - 0.12]) kit.block(g, m.trim, -w / 2 + 0.004, -w / 2 + 0.04, y - 0.05, y + 0.05, fz + 0.006, fz + 0.054);
-  const hx = w / 2 - 0.085, hy = (dy0 + dy1) / 2 + 0.05;
-  kit.block(g, m.darkSteel, hx - 0.03, hx + 0.03, hy - 0.2, hy + 0.2, fz + 0.05, fz + 0.062);
-  kit.block(g, m.chrome, hx - 0.014, hx + 0.014, hy - 0.17, hy + 0.17, fz + 0.062, fz + 0.078);
-  kit.cyl(g, m.chrome, 0.012, 0.01, hx, hy + 0.24, fz + 0.055, { axis: 'z', segments: 12 });
-  kit.block(g, m.trim, -w / 2 + 0.01, w / 2 - 0.01, h - 0.27, h - 0.02, fz, fz + 0.02);
-  display(kit, g, m, -w / 2 + 0.08, -w / 2 + 0.32, h - 0.2, h - 0.08, fz + 0.02);
-  for (let i = 0; i < 3; i++) {
-    const x = w / 2 - 0.3 + i * 0.07;
-    kit.block(g, m.darkSteel, x, x + 0.045, h - 0.16, h - 0.13, fz + 0.02, fz + 0.026, false);
+  kit.block(g, m.darkSteel, -w / 2 + 0.02, w / 2 - 0.02, base - 0.01, base + 0.005, -d / 2 + 0.03, fz - 0.03, false);
+  cushion(kit, g, m.body, -w / 2, w / 2, base, h, -d / 2, fz, { r: 0.012 });
+  // Condenser grille: louvers set into a recessed frame.
+  kit.block(g, m.trim, -w / 2 + 0.012, w / 2 - 0.012, base + 0.02, 0.34, fz, fz + 0.012);
+  kit.block(g, m.slot, -w / 2 + 0.06, w / 2 - 0.06, base + 0.05, 0.31, fz + 0.012, fz + 0.013, false, { bevel: false });
+  for (let i = 0; i < 6; i++) {
+    const y = base + 0.06 + i * 0.038;
+    kit.block(g, m.trim, -w / 2 + 0.06, w / 2 - 0.06, y, y + 0.018, fz + 0.006, fz + 0.022, true, { bevel: 0.003 });
   }
+  // Door with a dark gasket line and rounded edges, hinged on the left.
+  kit.block(g, m.reveal, -w / 2 + 0.008, w / 2 - 0.008, dy0 - 0.006, dy1 + 0.006, fz, fz + 0.008, false);
+  cushion(kit, g, m.body, -w / 2 + 0.012, w / 2 - 0.012, dy0, dy1, fz + 0.008, fz + ULT.door, { r: 0.016 });
+  for (const y of [dy0 + 0.12, dy1 - 0.12]) cushion(kit, g, m.trim, -w / 2 - 0.004, -w / 2 + 0.03, y - 0.06, y + 0.06, fz + 0.006, fz + 0.046, { r: 0.008 });
+  // Lever latch: a molded housing with a grip that swings out, and a key lock above it.
+  const hx = w / 2 - 0.075, hy = (dy0 + dy1) / 2 + 0.04, hz = fz + ULT.latch;
+  cushion(kit, g, m.darkSteel, hx - 0.032, hx + 0.032, hy - 0.24, hy + 0.2, fz + ULT.door - 0.002, hz, { r: 0.008 });
+  barPull(kit, g, m.chrome, hx, hy - 0.03, hz, 0.3, { vertical: true, reach: 0.045, r: 0.011 });
+  kit.cyl(g, m.chrome, 0.011, 0.012, hx, hy + 0.15, hz, { axis: 'z', segments: 14 });
+  kit.block(g, m.black, hx - 0.002, hx + 0.002, hy + 0.144, hy + 0.156, hz + 0.006, hz + 0.007, false, { bevel: false });
+  // Control strip: touchscreen, a status bar and alarm keys, over a slim brand band.
+  cushion(kit, g, m.trim, -w / 2 + 0.012, w / 2 - 0.012, h - 0.27, h - 0.025, fz, fz + 0.03, { r: 0.012 });
+  kit.block(g, m.screen, -w / 2 + 0.08, -w / 2 + 0.36, h - 0.21, h - 0.07, fz + 0.03, fz + 0.033, false, { bevel: false });
+  kit.block(g, m.status, -w / 2 + 0.08, -w / 2 + 0.36, h - 0.235, h - 0.228, fz + 0.03, fz + 0.033, false, { bevel: false });
+  for (let i = 0; i < 3; i++) kit.cyl(g, i ? m.darkSteel : m.yellow, 0.016, 0.006, w / 2 - 0.26 + i * 0.07, h - 0.14, fz + 0.03, { axis: 'z', segments: 14 });
+  // Access port for probe cables, capped, through the left side.
+  kit.cyl(g, m.trim, 0.045, 0.016, -w / 2 + 0.004, h - 0.62, -0.05, { axis: 'x', segments: 20 });
+  kit.cyl(g, m.black, 0.028, 0.002, -w / 2 - 0.0035, h - 0.62, -0.05, { axis: 'x', segments: 16, bevel: false });
   return g;
 }
 
@@ -1176,10 +1198,11 @@ function snowflake(ctx, x, y, r) {
 }
 
 function drawUltFreezer(ctx, o) {
-  const fz = o.d / 2 - 0.08;
+  const fz = o.d / 2 - ULT.front;
   pen(ctx, o);
   line(ctx, -o.w / 2, fz, o.w / 2, fz);
-  box(ctx, o.w / 2 - 0.115, fz + 0.03, o.w / 2 - 0.055, fz + 0.075);
+  line(ctx, -o.w / 2 + 0.012, fz + ULT.door, o.w / 2 - 0.012, fz + ULT.door);
+  box(ctx, o.w / 2 - 0.107, fz + ULT.latch, o.w / 2 - 0.043, o.d / 2 - 0.008);
   pen(ctx, o, FINE, o.theme.muted);
   snowflake(ctx, 0, -0.04, Math.min(o.w, o.d) * 0.17);
   outline(ctx, o);

@@ -8,6 +8,9 @@
 // last on display values, where its edge thresholds are meant to work. The scene itself is drawn
 // multisampled (LEVELS.msaa) and resolved into the chain, so edges thinner than a pixel, such as
 // trim, bevel highlights and glass mullions, draw as lines rather than dotted runs SMAA cannot join.
+// 'fast' keeps the linear scene pass and replaces everything after it with one graded output pass,
+// so glass blends in linear light at every level and all levels share the same material programs.
+// UI overlays are drawn last, straight onto the canvas, so they keep their exact colors.
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -41,6 +44,10 @@ const LEVELS = {
     aoScale: 0.5,
     ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, scale: 1.7, samples: 8, distanceFallOff: 1 },
     denoise: { depthPhi: 0.05, normalPhi: 8 },
+    bloom: false,
+  },
+  fast: {
+    msaa: 2,
     bloom: false,
   },
 };
@@ -96,7 +103,8 @@ const balance = () => {
 
 /**
  * The same grade folded into three's CustomToneMapping slot, followed by AgX, for frames drawn
- * without post-processing ('fast'), so every level shares one tone curve. No vignette here.
+ * without the grade pass ('fast', the fallback without WebGL 2, photos), so every level shares one
+ * tone curve. No vignette here.
  */
 function installGradedToneMapping() {
   const stub = 'vec3 CustomToneMapping( vec3 color ) { return color; }';
@@ -497,10 +505,12 @@ class InteriorAOPass extends GTAOPass {
  * RenderPass into a multisampled scene-linear target of its own, resolved and copied into the
  * chain's read buffer. AO reads the resolved depth (sceneTarget.depthTexture), so the composer's
  * ping-pong buffers need no depth. setSamples changes the count; the buffers are reallocated on use.
+ * With resolveOnly (in 'fast') the copy is skipped: the next pass reads sceneTarget itself.
  */
 class MultisampleRenderPass extends RenderPass {
   constructor(scene, camera) {
     super(scene, camera);
+    this.resolveOnly = false;
     this.sceneTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
     this.sceneTarget.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
     this.sceneTarget.texture.name = 'PostFX.scene';
@@ -524,6 +534,7 @@ class MultisampleRenderPass extends RenderPass {
 
   render(renderer, writeBuffer, readBuffer, deltaTime, maskActive) {
     super.render(renderer, writeBuffer, this.sceneTarget, deltaTime, maskActive);
+    if (this.resolveOnly) return;
     this.copy.material.uniforms.tDiffuse.value = this.sceneTarget.texture;
     renderer.setRenderTarget(readBuffer);
     this.copy.render(renderer);
@@ -565,12 +576,63 @@ function cappedBloomPass() {
 }
 
 /** OutputPass plus half-step dithering after the sRGB transfer, so soft wall gradients never band. */
-function ditheredOutputPass() {
-  const pass = new OutputPass();
+function ditheredOutputPass(pass = new OutputPass()) {
   pass.material.fragmentShader = pass.material.fragmentShader.replace(/}\s*$/, `
       gl_FragColor.rgb += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
     }`);
   return pass;
+}
+
+/**
+ * The output pass for 'fast': the grade and AgX in one step (CustomToneMapping, see
+ * installGradedToneMapping), then sRGB and dithering, reading the scene pass's resolved target
+ * directly. A frame costs the scene, its resolve and this one full-screen pass.
+ */
+class GradedOutputPass extends OutputPass {
+  constructor(renderPass) {
+    super();
+    this.renderPass = renderPass;
+    this.material.fragmentShader = /* glsl */`
+      precision highp float;
+      uniform sampler2D tDiffuse;
+      #include <tonemapping_pars_fragment>
+      #include <colorspace_pars_fragment>
+      varying vec2 vUv;
+      void main() {
+        gl_FragColor = texture2D( tDiffuse, vUv );
+        gl_FragColor.rgb = CustomToneMapping( gl_FragColor.rgb );
+        #ifdef SRGB_TRANSFER
+          gl_FragColor = sRGBTransferOETF( gl_FragColor );
+        #endif
+      }`;
+    ditheredOutputPass(this);
+  }
+
+  render(renderer, writeBuffer, readBuffer, deltaTime, maskActive) {
+    super.render(renderer, writeBuffer, this.renderPass.sceneTarget, deltaTime, maskActive);
+  }
+}
+
+/** Writes the scene pass's resolved depth into the canvas, so overlays drawn after the chain are hidden by the scene. */
+const DepthRestoreShader = {
+  uniforms: { tDepth: { value: null } },
+  vertexShader: GradeShader.vertexShader,
+  fragmentShader: /* glsl */`
+    uniform highp sampler2D tDepth;
+    varying vec2 vUv;
+    void main() {
+      gl_FragDepth = texture2D(tDepth, vUv).x;
+    }`,
+};
+
+/**
+ * The chain needs WebGL 2 (its AO shaders use texelFetch and textureLod, its scene pass is
+ * multisampled) and color-renderable half floats. Without them every level draws straight to the
+ * canvas, as 'fast' did before it ran through the scene pass.
+ */
+function chainSupported(renderer) {
+  const ext = renderer.extensions;
+  return renderer.capabilities.isWebGL2 && (ext.has('EXT_color_buffer_float') || ext.has('EXT_color_buffer_half_float'));
 }
 
 function loaded(texture) {
@@ -583,17 +645,21 @@ function loaded(texture) {
 }
 
 /**
- * createPostFX(renderer, scene, camera, { quality, onReady }) ->
- *   { render(camera?), setSize(width, height, pixelRatio), setQuality(q), quality, camera,
+ * createPostFX(renderer, scene, camera, { quality, onReady, overlay }) ->
+ *   { render(camera?), setSize(width, height, pixelRatio), setQuality(q), quality, qualities, camera,
  *     setSceneBounds(box3 | null), ready, dispose() }
- * 'fast' renders straight to the canvas. The passes are created the first time another level
- * renders, and their buffers are released while 'fast' is in use. render(camera) draws with that
- * camera (default: api.camera). ready resolves, and onReady() runs, once the SMAA lookup textures
- * are decoded: frames drawn before then are not anti-aliased, so draw one more.
+ * The passes are created the first time a frame renders; 'fast' uses only the scene pass and its
+ * own output pass, and the other buffers are released while it is in use. render(camera) draws with
+ * that camera (default: api.camera). overlay is an optional scene drawn after the chain, straight
+ * onto the canvas and depth-tested against the scene, for UI whose colors must stay exact
+ * (toneMapped: false). ready resolves, and onReady() runs, once the SMAA lookup textures are
+ * decoded: frames drawn before then are not anti-aliased, so draw one more. Without WebGL 2 and
+ * float render targets, qualities is ['fast'] and every frame draws straight to the canvas.
  */
-export function createPostFX(renderer, scene, camera, { quality = 'high', onReady = null } = {}) {
+export function createPostFX(renderer, scene, camera, { quality = 'high', onReady = null, overlay = null } = {}) {
   const size = { width: 1, height: 1, ratio: renderer.getPixelRatio() };
-  let level = checkQuality(quality);
+  const direct = !chainSupported(renderer);
+  let level = usable(checkQuality(quality));
   let chain = null;
   let applied = null; // { width, height, ratio, level } the chain is set up for
   let clipBox = null;
@@ -608,6 +674,10 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
     return q;
   }
 
+  function usable(q) {
+    return direct ? 'fast' : q;
+  }
+
   function createChain() {
     const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
     target.texture.name = 'PostFX.chain';
@@ -620,31 +690,55 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
     grade.uniforms.balance.value.copy(balance());
     const output = ditheredOutputPass();
     const smaa = new SMAAPass(1, 1);
-    const passes = [renderPass, ao, bloom, grade, output, smaa];
+    const finish = new GradedOutputPass(renderPass);
+    finish.enabled = false;
+    const passes = [renderPass, ao, bloom, grade, output, smaa, finish];
     for (const pass of passes) composer.addPass(pass);
+    const depthRestore = new FullScreenQuad(new THREE.ShaderMaterial({
+      uniforms: THREE.UniformsUtils.clone(DepthRestoreShader.uniforms),
+      vertexShader: DepthRestoreShader.vertexShader,
+      fragmentShader: DepthRestoreShader.fragmentShader,
+      blending: THREE.NoBlending, colorWrite: false, depthWrite: true, depthFunc: THREE.AlwaysDepth, toneMapped: false,
+    }));
     ready = Promise.all([loaded(smaa.areaTexture), loaded(smaa.searchTexture)]).then(() => {
       if (!disposed) onReady?.();
     });
-    return { composer, passes, renderPass, ao, bloom, grade, output, smaa };
+    return { composer, passes, renderPass, ao, bloom, grade, output, smaa, finish, depthRestore, post: true };
   }
 
   /** Bring the chain in line with the size and level. Resizing only drops GPU buffers; they are reallocated on use. */
   function sync() {
     if (!chain) chain = createChain();
     const a = applied;
-    const { composer, renderPass, ao, bloom, grade } = chain;
+    const { composer, renderPass, ao, bloom, grade, output, smaa, finish } = chain;
+    const s = LEVELS[level], post = level !== 'fast';
     const levelChanged = !a || a.level !== level;
     if (levelChanged) {
-      const s = LEVELS[level];
-      ao.updateGtaoMaterial(s.ao);
-      ao.updatePdMaterial(s.denoise);
+      if (post) {
+        ao.updateGtaoMaterial(s.ao);
+        ao.updatePdMaterial(s.denoise);
+      }
       bloom.enabled = s.bloom;
+      // 'fast' skips AO, the grade pass, OutputPass and SMAA; its own output pass grades the scene.
+      if (post !== chain.post) {
+        for (const pass of [ao, grade, output, smaa]) pass.enabled = post;
+        finish.enabled = !post;
+        renderPass.resolveOnly = !post;
+        chain.post = post;
+      }
     }
     if (levelChanged || a.width !== size.width || a.height !== size.height || a.ratio !== size.ratio) {
-      ao.resolutionScale = LEVELS[level].aoScale * Math.min(1, AO_DENSITY / size.ratio);
-      renderPass.setSamples(size.ratio >= MSAA_DENSE ? Math.min(2, LEVELS[level].msaa) : LEVELS[level].msaa);
-      if (composerRatio !== size.ratio) composer.setPixelRatio((composerRatio = size.ratio));
-      composer.setSize(size.width, size.height);
+      renderPass.setSamples(size.ratio >= MSAA_DENSE ? Math.min(2, s.msaa) : s.msaa);
+      if (post) {
+        ao.resolutionScale = s.aoScale * Math.min(1, AO_DENSITY / size.ratio);
+        if (composerRatio !== size.ratio) composer.setPixelRatio((composerRatio = size.ratio));
+        composer.setSize(size.width, size.height);
+      } else {
+        // Only the scene target is drawn at full size; the chain's other buffers are released.
+        if (composerRatio !== 1) composer.setPixelRatio((composerRatio = 1));
+        composer.setSize(1, 1);
+        renderPass.setSize(size.width * size.ratio, size.height * size.ratio);
+      }
       const long = Math.max(size.width, size.height);
       grade.uniforms.aspect.value.set(size.width / long, size.height / long);
       applied = { width: size.width, height: size.height, ratio: size.ratio, level };
@@ -652,39 +746,59 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
   }
 
   /**
-   * AgX in OutputPass after the grade pass, or the same grade and AgX inside the materials when
-   * drawing straight to the canvas. Either way the curve runs exactly once per pixel.
+   * AgX in OutputPass after the grade pass ('fast' calls the graded curve itself), or the same
+   * grade and AgX inside the materials when drawing straight to the canvas. Either way the curve
+   * runs exactly once per pixel.
    */
   function applyToneMapping() {
-    renderer.toneMapping = level === 'fast' ? THREE.CustomToneMapping : THREE.AgXToneMapping;
+    renderer.toneMapping = direct ? THREE.CustomToneMapping : THREE.AgXToneMapping;
   }
 
-  /** Free the full-size buffers while 'fast' is in use; shaders stay compiled for a quick switch back. */
-  function release() {
-    if (!chain || !applied) return;
-    chain.composer.setPixelRatio((composerRatio = 1));
-    chain.composer.setSize(1, 1);
-    applied = null;
+  /**
+   * The overlay scene, straight onto the canvas after the frame; skipped while nothing but its
+   * lights is visible. depth: the scene depth to restore first.
+   */
+  function drawOverlay(cam, depth) {
+    if (!overlay?.children.some((o) => o.visible && !o.isLight)) return;
+    const autoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.setRenderTarget(null);
+    try {
+      if (depth) {
+        chain.depthRestore.material.uniforms.tDepth.value = depth;
+        chain.depthRestore.render(renderer);
+      }
+      renderer.render(overlay, cam);
+    } finally {
+      renderer.autoClear = autoClear;
+    }
   }
 
   const api = {
     camera,
     /** Starts loading what the first post-processed frame needs, so a capture can wait for it. */
     get ready() {
-      if (level !== 'fast' && !chain && !disposed) chain = createChain();
+      if (!direct && !chain && !disposed) chain = createChain();
       return ready;
     },
+    /** The level in use: the one set, or 'fast' when the chain cannot run here. */
     get quality() { return level; },
+    /** The levels this renderer can draw. */
+    get qualities() { return direct ? ['fast'] : QUALITIES; },
 
-    /** The passes in use ({ composer, renderPass, ao, bloom, grade, ... }), or null in 'fast'. For dev tools and tests. */
-    get passes() { return level === 'fast' ? null : chain; },
+    /**
+     * The passes ({ composer, renderPass, ao, bloom, grade, output, smaa, finish, ... }; the enabled
+     * ones are in use), or null when drawing straight to the canvas. For dev tools and tests.
+     */
+    get passes() { return chain; },
 
     /** Draw one frame. Never renders on its own: the caller decides when a frame is needed. */
     render(cam = api.camera) {
       if (disposed) return;
-      if (level === 'fast') {
+      if (direct) {
         renderer.setRenderTarget(null);
         renderer.render(scene, cam);
+        drawOverlay(cam, null);
         return;
       }
       sync();
@@ -704,6 +818,7 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
       info.reset();
       try {
         composer.render(0);
+        drawOverlay(cam, renderPass.sceneTarget.depthTexture);
       } finally {
         info.autoReset = autoReset;
       }
@@ -717,9 +832,7 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
     },
 
     setQuality(q) {
-      level = checkQuality(q);
-      applyToneMapping();
-      if (level === 'fast') release();
+      level = usable(checkQuality(q));
     },
 
     /** Limit AO to the building (a Box3 in world space), so the sky and far exterior skip it. */
@@ -732,6 +845,8 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
       disposed = true;
       if (!chain) return;
       for (const pass of chain.passes) pass.dispose();
+      chain.depthRestore.material.dispose();
+      chain.depthRestore.dispose();
       chain.composer.dispose();
       chain = null;
       applied = null;

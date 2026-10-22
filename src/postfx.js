@@ -49,7 +49,9 @@ const MSAA_DENSE = 1.75;
 // AO is low frequency: past this many AO pixels per CSS pixel it is rendered at reduced resolution.
 const AO_DENSITY = 1.25;
 // Bloom picks up only what is far brighter than paper white once exposed (AgX maps 3 to about 96 percent).
-const BLOOM = { strength: 0.16, radius: 0.45, threshold: 3, knee: 2 };
+// ceiling caps each pixel before the bright pass: fixture lenses and the view out of the windows
+// read 8 to 14, while a specular pinpoint can reach the half-float maximum.
+const BLOOM = { strength: 0.16, radius: 0.45, threshold: 3, knee: 2, ceiling: 16 };
 
 // Values are in exposed scene-linear units (after toneMappingExposure). AgX spans about 16 stops,
 // far more than a daylit interior, so on its own it reads flat and grey; the log-space contrast and
@@ -519,6 +521,33 @@ class MultisampleRenderPass extends RenderPass {
   }
 }
 
+/**
+ * Bloom whose bright pass caps each scene pixel's luminance at `ceiling` before averaging the four
+ * pixels under each half-resolution texel. Uncapped, a single texel thousands of times above the
+ * threshold dominates every coarse mip, and their bilinear upsampling draws it as a stack of
+ * squares; capped, a lone pinpoint adds no more than a quarter of a window's glow.
+ */
+function cappedBloomPass() {
+  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), BLOOM.strength, BLOOM.radius, BLOOM.threshold);
+  const m = bloom.materialHighPassFilter;
+  bloom.highPassUniforms.ceiling = { value: BLOOM.ceiling };
+  const fs = m.fragmentShader
+    .replace('uniform float smoothWidth;', `uniform float smoothWidth;
+		uniform float ceiling;
+		vec3 capped( const in vec2 uv ) {
+			vec3 c = max( texture2D( tDiffuse, uv ).rgb, vec3( 0.0 ) );
+			return c * min( 1.0, ceiling / max( dot( c, vec3( 0.2126, 0.7152, 0.0722 ) ), 1e-6 ) );
+		}`)
+    .replace('vec4 texel = texture2D( tDiffuse, vUv );', `vec2 d = 0.5 / vec2( textureSize( tDiffuse, 0 ) );
+			vec4 texel = vec4( 0.25 * ( capped( vUv - d ) + capped( vUv + d ) + capped( vUv + vec2( d.x, - d.y ) ) + capped( vUv - vec2( d.x, - d.y ) ) ), 1.0 );`);
+  if (!fs.includes('capped( vUv - d )') || !fs.includes('uniform float ceiling;')) {
+    console.warn('postfx: the bloom bright-pass shader changed, so its input is not capped');
+  } else {
+    m.fragmentShader = fs;
+  }
+  return bloom;
+}
+
 /** OutputPass plus half-step dithering after the sRGB transfer, so soft wall gradients never band. */
 function ditheredOutputPass() {
   const pass = new OutputPass();
@@ -570,7 +599,7 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
     const renderPass = new MultisampleRenderPass(scene, camera);
     const ao = new InteriorAOPass(scene, camera);
     ao.setSceneClipBox(clipBox);
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), BLOOM.strength, BLOOM.radius, BLOOM.threshold);
+    const bloom = cappedBloomPass();
     const grade = new ShaderPass(GradeShader);
     grade.uniforms.balance.value.copy(balance());
     const output = ditheredOutputPass();
@@ -650,6 +679,7 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
       const exposure = renderer.toneMappingExposure || 1;
       bloom.threshold = BLOOM.threshold / exposure;
       bloom.highPassUniforms.smoothWidth.value = BLOOM.knee / exposure;
+      bloom.highPassUniforms.ceiling.value = BLOOM.ceiling / exposure;
       grade.uniforms.pivot.value = GRADE.pivot / exposure;
       grade.uniforms.toe.value = GRADE.toe / exposure;
       // Count the whole post-processed frame in renderer.info, not just its last pass.

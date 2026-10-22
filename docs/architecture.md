@@ -327,7 +327,9 @@ visible scene without overlays and real-time stand-ins (area lights, fake contac
 dome), lights it with a sky matching the real-time one plus the sun, turns emissive fixtures into
 area lights, renders in tiles, denoises (an edge-aware a-trous filter guided by depth, normals and
 albedo), adds the same subtle bloom and tone maps with the walkthrough's grade and AgX at the given
-exposure (the dialog passes the live view's `toneMappingExposure`). `onProgress(done, total,
+exposure (the dialog passes the live view's `toneMappingExposure`), raised by `PHOTO_GAIN` (0.3
+stops) because path traced walls and ceilings get no fill light and otherwise read darker than the
+live view. `onProgress(done, total,
 { phase, preview, stats })` reports 'prepare', 'compile', 'render' and 'finish'; aborting `signal`
 rejects with an `AbortError`.
 

@@ -8,7 +8,8 @@
 //   -> Promise<Blob> (PNG)
 //   scene, camera   what to draw (walk.renderContext); neither is changed. Objects flagged
 //                   userData.overlay are left out, with everything under them
-//   exposure        the live view's toneMappingExposure (default PHOTO_EXPOSURE)
+//   exposure        the live view's toneMappingExposure (default PHOTO_EXPOSURE); photos are
+//                   exposed PHOTO_GAIN above it to match the live view's brightness
 //   onProgress(done, total, { phase, preview, stats })   phase 'prepare' | 'compile' | 'render' |
 //                   'finish'; preview is a canvas with the image so far, when one was just drawn;
 //                   stats (scene and light counts) comes with 'finish'
@@ -31,7 +32,11 @@ for (const key of ['backgroundRotation', 'environmentRotation']) {
 }
 
 /** Same as the walkthrough (src/walkthrough.js), so photos and the live view agree in brightness. */
-export const PHOTO_EXPOSURE = 1.65;
+export const PHOTO_EXPOSURE = 1.8;
+// Path traced light reaches walls and ceilings only by real bounces, while the live view adds a fill
+// from its light map and environment, so at the same exposure photos came out 0.3 to 0.65 stops
+// darker in the midtones (lab and office samples). Photos are exposed up by this much to match.
+const PHOTO_GAIN = 2 ** 0.3;
 
 // Light levels are scene-linear radiance (or irradiance for the sun), before exposure. The sky is the
 // real-time dome's colors times SKY.scale, so windows read brighter than the room, as in a photo
@@ -111,7 +116,7 @@ export async function renderPhoto({
     width: clampInt(width, 16, 8192, 1280),
     height: clampInt(height, 16, 8192, 720),
     samples: clampInt(samples, 1, 65536, 256),
-    exposure: Number.isFinite(exposure) && exposure > 0 ? exposure : PHOTO_EXPOSURE,
+    exposure: (Number.isFinite(exposure) && exposure > 0 ? exposure : PHOTO_EXPOSURE) * PHOTO_GAIN,
     bounces: clampInt(bounces ?? (samples > 256 ? 8 : 6), 2, 16, 6),
     onProgress,
     signal,

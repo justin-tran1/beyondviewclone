@@ -3307,8 +3307,10 @@ function buildPlanLight(ctx) {
         const c = Math.cos(a), s = Math.sin(a), rx = ux * c - uy * s, ry = uy * c + ux * s;
         let at = k0, blocked = false, d = 0;
         for (const to of METER.reach) {
-          // Half-cell steps up to the next sample, stopping at a wall or the edge of the building.
-          for (; !blocked && d < to; d = Math.min(to, d + g / 2)) {
+          // Half-cell steps up to the next sample and onto it, stopping at a wall or the edge of the
+          // building, so a sample that lands in a wall or outdoors is never read.
+          while (!blocked && d < to) {
+            d = Math.min(to, d + g / 2);
             const k = cell(x + rx * d, y + ry * d);
             if (k < 0 || occ[k] === 2 || space[k] < 0) blocked = true;
           }

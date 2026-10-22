@@ -3719,7 +3719,8 @@ function blockTris(dims) {
 /**
  * An item's cover grid, in item space: how much of the overhead light its horizontal surfaces take
  * from whatever is under them, and the height of the lowest of them, so the light map can shade the
- * floor under a table, the chair tucked beneath it and its lower shelf, but not the table top. The
+ * floor under a table and the legs of a chair tucked beneath it, but not the table top. Surfaces at
+ * or above the lowest one stay lit, so an item's own lower shelf is not shaded by its top. The
  * surfaces are rasterized per height band, each softened by a penumbra that grows with its height
  * (so a small stool seat ends up blocking less than a broad table top, as it subtends less of the
  * ceiling); each cell takes the lowest surface of the bands that reach it. Null when nothing in the

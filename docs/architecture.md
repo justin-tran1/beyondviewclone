@@ -202,21 +202,24 @@ bounced around each room, and a per-room adaptation, so windows read as the main
 soft falloff and windowless rooms stay evenly lit. A finer third texture, the cover map, holds how
 much furniture shades the light below it (each item's tops, seats and shelves rasterized once per
 item template and softened by a penumbra that grows with their height, plus the height of the
-lowest of them) and the fixtures' height, so floors, low shelves and tucked chairs under tables
-and counters darken while the tops stay lit, and walls fade toward the ceiling line and, less,
-toward the floor. Interior materials are swapped for plan-lit twins (made once per kit and source
-material) that read the maps in place of a uniform fill. A shadowed sun draws the sun patches,
-area lights at the windows and fixture lenses nearest the viewer add their reflections to glossy
-floors, quartz and metals (only within the room they light), and the outdoors reads several stops
-brighter than the interior. Fixture, bounce and fill light are a neutral 4000 K white. Levels are
-scene-linear, before exposure.
+lowest of them) and the fixtures' height, so the floor under tables, counters and seats and what
+stands below their lowest surface (legs, bases, a tucked chair's frame) darken while that surface
+and everything above it stays lit (one height per point, so an item's own lower shelf is not
+shaded by its top), and walls fade toward the ceiling line and, less, toward the floor. Interior
+materials are swapped for plan-lit twins (made once per kit and source material) that read the
+maps in place of a uniform fill. A shadowed sun draws the sun patches, area lights at the windows
+and fixture lenses nearest the viewer add their reflections to glossy floors, quartz and metals
+(only within the room they light), and the outdoors reads several stops brighter than the
+interior. Fixture, bounce and fill light are a neutral 4000 K white. Levels are scene-linear,
+before exposure.
 
 - `buildPlanScene` calls `kit.setEnvironmentIntensity(0.75)`. Builder materials that do not
   depend on the plan, the plan-lit twins and their uniforms (and the items' cover grids, up to 400)
-  are shared by every build made with one kit and live as long as it does (builds never release them; the walkthrough disposes what
-  its last scene used when it is disposed). `root.userData` carries `horizon` (the sky dome
-  radius, for the camera's far plane), `daylight` (the area light group), `planUniforms` and
-  `planLight.bind()`, which points the shared uniforms at this build's light map.
+  are shared by every build made with one kit and live as long as it does (builds never release
+  them; the walkthrough disposes what its last scene used when it is disposed). `root.userData`
+  carries `horizon` (the sky dome radius, for the camera's far plane), `daylight` (the area light
+  group), `planUniforms` and `planLight.bind()`, which points the shared uniforms at this build's
+  light map.
 - `setupEnvironment` changes the scene: it initializes the RectAreaLight tables, sets
   `scene.environment` to a neutral interior PMREM, sets `scene.background` (the horizon color at
   daylight strength) and `scene.fog` (a light haze) when they are unset, adds the `sky-fill`

@@ -30,20 +30,21 @@ export const QUALITIES = ['high', 'balanced', 'fast'];
  * out over its upper half, so a sofa a meter from the wall or a stool in front of a booth's back
  * panel leaves no dark outline on it while contact shading stays. Surfaces facing up (floors,
  * worktops, seats) use floorThickness instead, so tables, chairs and stools still shade the floor
- * under them. denoise.depthPhi is the plane tolerance per meter (see onPlane).
+ * under them: a seat or a tabletop sits 0.5 to 1 m in front of that floor in depth, so the fade
+ * there starts only at 1 m. denoise.depthPhi is the plane tolerance per meter (see onPlane).
  */
 const LEVELS = {
   high: {
     msaa: 4,
     aoScale: 1,
-    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, floorThickness: 1, scale: 1.7, samples: 16, distanceFallOff: 1 },
+    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, floorThickness: 2, scale: 1.7, samples: 16, distanceFallOff: 1 },
     denoise: { depthPhi: 0.05, normalPhi: 8 },
     bloom: true,
   },
   balanced: {
     msaa: 2,
     aoScale: 0.5,
-    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, floorThickness: 1, scale: 1.7, samples: 8, distanceFallOff: 1 },
+    ao: { radius: 0.65, distanceExponent: 1.6, thickness: 0.35, floorThickness: 2, scale: 1.7, samples: 8, distanceFallOff: 1 },
     denoise: { depthPhi: 0.05, normalPhi: 8 },
     bloom: false,
   },

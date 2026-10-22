@@ -34,16 +34,21 @@ for (const key of ['backgroundRotation', 'environmentRotation']) {
 /** Same as the walkthrough (src/walkthrough.js), so photos and the live view agree in brightness. */
 export const PHOTO_EXPOSURE = 1.8;
 // Path traced light reaches walls and ceilings only by real bounces, while the live view adds a fill
-// from its light map and environment, so at the same exposure photos came out 0.3 to 0.65 stops
-// darker in the midtones (lab and office samples). Photos are exposed up by this much to match.
-const PHOTO_GAIN = 2 ** 0.3;
+// from its light map and environment. Over ten lab, medical and office views (dev/photo-test.html,
+// same camera, median display luminance, fixtures at FIXTURE_RADIANCE) photos at the live exposure
+// came out 1.2 stops darker in the median, 0.6 to 1.4 outside the open office floor, so they are
+// exposed up by that much. The open office's views stay 0.7 to 1.5 stops darker than the live
+// view (its dark open deck, and more fixtures than become lights).
+const PHOTO_GAIN = 2 ** 1.2;
 
 // Light levels are scene-linear radiance (or irradiance for the sun), before exposure. The sky is the
 // real-time dome's colors times SKY.scale, so windows read brighter than the room, as in a photo
 // exposed for the interior; the fallback colors are for scenes without the dome.
 const SKY = { scale: 5.2, horizon: '#e8eff2', zenith: '#8ab7da' };
 const SUN_IRRADIANCE = 7.8;
-const FIXTURE_RADIANCE = 10; // a lay-in LED panel; smaller fixtures are brighter for the same output
+// Fitted with PHOTO_GAIN so rooms lit by their fixtures match the live view as well as daylit rooms
+// do; at half this, fixture-lit rooms came out about half a stop darker than daylit ones.
+const FIXTURE_RADIANCE = 20; // a lay-in LED panel; smaller fixtures are brighter for the same output
 const FIXTURE_MIN = 0.6; // emission (radiance) from which a surface counts as a light fixture
 const FIXTURE_AREA = 0.3; // m2, the panel size FIXTURE_RADIANCE is set for
 const MAX_FIXTURE_LIGHTS = 24;
@@ -183,6 +188,9 @@ async function run(job, trash) {
   trash.push(() => disposePathTracer(pt));
   const patched = patchEmission(pt);
   if (!patched) for (const m of photo.fixtureMaterials) unflagFixture(m);
+  patchShadows(pt);
+  // One recompile for both patches: each one compiles the whole path tracing shader.
+  if (pt._pathTracer?.material) pt._pathTracer.material.needsUpdate = true;
   Object.assign(pt, { renderDelay: 0, fadeDuration: 0, minSamples: 0, dynamicLowRes: false, rasterizeScene: false, renderToCanvas: false });
   pt.bounces = job.bounces;
   pt.transmissiveBounces = 8;
@@ -609,9 +617,25 @@ function patchEmission(pt) {
   if (patched.split(end).length === 2) {
     patched = patched.replace(end, `if ( ! all( lessThan( abs( gl_FragColor.rgb ), vec3( 1e20 ) ) ) ) gl_FragColor.rgb = vec3( 0.0 );\n\t\t\t\t\t${end}`);
   }
-  material.fragmentShader = patched;
-  material.needsUpdate = true;
+  material.fragmentShader = patched; // compiled by the caller's needsUpdate
   return true;
+}
+
+/**
+ * The path tracer lets a shadow ray through a single-sided surface it meets from the front (light
+ * passes through the back side), so sun and sky reached every room through the down-facing ceilings
+ * and roof deck. Here opaque surfaces block light from both sides, as the probes in addLights assume;
+ * rays from the camera and bounces still pass through back faces, so nothing new comes into view.
+ */
+function patchShadows(pt) {
+  const material = pt._pathTracer?.material;
+  const fs = material?.fragmentShader;
+  const sided = 'material.side != 0.0 && surfaceHit.side == material.side';
+  if (typeof fs !== 'string' || fs.split(sided).length !== 2) {
+    console.warn('three-gpu-pathtracer changed; photo daylight may come through single-sided ceilings.');
+    return;
+  }
+  material.fragmentShader = fs.replace(sided, 'false'); // compiled by the caller's needsUpdate
 }
 
 /**

@@ -19,7 +19,20 @@ const GARMENTS = [
   '#b7c9c3', '#8b5e5e', '#f6f4ee', '#2f4f4a', '#c9b79c',
 ];
 const KRAFT = ['#b9895a', '#c49a6c', '#a87c50', '#caa477'];
-const LABELS = ['#efeee9', '#e7dcc8', '#30383b'];
+// Printed front panels: [background, which is also the pack's own color, accent, ink]. The last
+// design is a shipping label for warehouse cartons.
+const PACK_ART = [
+  ['#f2f0ea', '#c8664a', '#435254'], ['#032842', '#e2b04a', '#f2f0ea'], ['#80bbad', '#2f5d50', '#f2f0ea'],
+  ['#c8664a', '#f2f0ea', '#032842'], ['#e2b04a', '#032842', '#032842'], ['#5b84a8', '#f2f0ea', '#f2f0ea'],
+  ['#8e4a57', '#e9d6bf', '#f2f0ea'], ['#2f5d50', '#dbd99a', '#f2f0ea'], ['#e9d6bf', '#2f5d50', '#435254'],
+  ['#cad1d3', '#5b84a8', '#032842'], ['#f2f0ea', '#5b84a8', '#032842'], ['#538184', '#f2f0ea', '#f2f0ea'],
+  ['#435254', '#80bbad', '#f2f0ea'], ['#dbd99a', '#8e4a57', '#435254'], ['#a3c2b8', '#032842', '#032842'],
+  ['#efeee9', '#23282b', '#23282b'],
+];
+const SHIPPING = PACK_ART.length - 1;
+// The artwork atlas: cols x rows cells of w x h px, each design inside a plain margin (px) of its
+// background, so filtering and clamped sleeve backs never pick up a neighbor.
+const PACK = { cols: 8, rows: 2, w: 128, h: 256, margin: 6 };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const repeats = (n, min = 1) => clamp(n, min, MAX_REPEAT);
@@ -51,6 +64,236 @@ const painted = (kit, hex, roughness = 0.4) => kit.paintMaterial(hex, { roughnes
 const fabric = (kit, hex) => tint(kit, kit.mat.fabricGrey, hex);
 const packaging = (kit, hex) => kit.material(hex, { roughness: 0.55 });
 const glow = (kit, hex, intensity = 1) => kit.material(hex, { roughness: 0.4, emissive: hex, emissiveIntensity: intensity });
+
+const ART = new WeakMap();
+
+/**
+ * Printed packaging: one canvas atlas holding every PACK_ART design, on one material shared by all
+ * carton fronts, sleeves and labels made with the kit, so a stocked store costs one more material
+ * (a draw call per batch the builder merges) and a 2.7 MB texture. It lives as long as the kit,
+ * like the kit's own maps (textures from kit.canvasTexture belong to the build that drew them, and
+ * the walkthrough frees them with it).
+ */
+function packArt(kit) {
+  let art = ART.get(kit);
+  if (!art) {
+    const T = kit.THREE;
+    const canvas = document.createElement('canvas');
+    canvas.width = PACK.cols * PACK.w;
+    canvas.height = PACK.rows * PACK.h;
+    const ctx = canvas.getContext('2d');
+    PACK_ART.forEach((_, i) => {
+      ctx.save();
+      ctx.translate((i % PACK.cols) * PACK.w, Math.floor(i / PACK.cols) * PACK.h);
+      drawPack(ctx, i);
+      ctx.restore();
+    });
+    const map = new T.CanvasTexture(canvas);
+    map.colorSpace = T.SRGBColorSpace;
+    map.anisotropy = 8;
+    const base = kit.material('#ffffff', { roughness: 0.45 });
+    const material = base.clone();
+    // The artwork carries the albedo (its colors stay within PACK_ART's), so the panels match the
+    // packs' own sides exactly.
+    material.color.setRGB(1, 1, 1);
+    material.map = map;
+    material.name = 'packaging-print';
+    art = { base, material };
+    ART.set(kit, art);
+    const dispose = kit.dispose;
+    kit.dispose = () => {
+      material.dispose();
+      map.dispose();
+      ART.delete(kit);
+      dispose();
+    };
+  }
+  art.material.envMapIntensity = art.base.envMapIntensity;
+  return art.material;
+}
+
+// Brand syllables: as many as retail designs, so stepping through them gives each its own name.
+const BRAND = ['ka', 'lo', 've', 'ri', 'ta', 'no', 'mi', 'sa', 'du', 'fe', 'ro', 'li', 'be', 'zo', 'mo'];
+
+/** Front panel artwork of design i in a PACK.w x PACK.h cell: a brand, a product image and fine print. */
+function drawPack(ctx, i) {
+  const [bg, accent, ink] = PACK_ART[i];
+  const W = PACK.w, H = PACK.h, m = PACK.margin, cx = W / 2;
+  const rnd = seq(101 + i * 17);
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+  // Lines of small type, as rounded bars too fine to read at shelf distance.
+  const type = (y, color, lines, width = 0.62) => {
+    ctx.fillStyle = color;
+    for (let l = 0; l < lines; l++) {
+      const lw = W * width * (l === lines - 1 ? 0.45 + rnd() * 0.3 : 0.85 + rnd() * 0.15);
+      ctx.beginPath();
+      ctx.roundRect(cx - lw / 2, y + l * 7, lw, 3.2, 1.6);
+      ctx.fill();
+    }
+  };
+  if (i === SHIPPING) {
+    // Shipping label: addresses over a heavy rule, a barcode and its digits, in the middle band
+    // that a landscape label crops to.
+    ctx.fillStyle = ink;
+    ctx.fillRect(m + 10, H * 0.33, W * 0.36, 5);
+    type(H * 0.33 + 10, ink, 3, 0.5);
+    ctx.fillRect(m + 4, H * 0.43, W - 2 * (m + 4), 2);
+    for (let x = m + 12; x < W - m - 12;) {
+      const bw = 1 + Math.floor(rnd() * 3);
+      ctx.fillRect(x, H * 0.47, bw, H * 0.13);
+      x += bw + 1 + Math.floor(rnd() * 3);
+    }
+    type(H * 0.62, ink, 1, 0.6);
+    return;
+  }
+  // Syllables stepped through the list at strides coprime to its length, so no two brands match.
+  const brand = [[7, 0], [11, 1], [13, 8]].slice(0, 2 + (i % 2)).map(([k, o]) => BRAND[(i * k + o) % BRAND.length]).join('');
+  const wordmark = (y, color, size) => {
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `bold ${size}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+    const text = brand[0].toUpperCase() + brand.slice(1);
+    const fit = Math.min(1, (W - 2 * m - 16) / ctx.measureText(text).width);
+    ctx.save();
+    ctx.translate(cx, y);
+    ctx.scale(fit, 1);
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  };
+  // Product image: a soft lit disc, like a photographed product on the pack.
+  const image = (y, r, color) => {
+    const g = ctx.createRadialGradient(cx - r * 0.35, y - r * 0.35, r * 0.1, cx, y, r);
+    g.addColorStop(0, '#f3f1ec');
+    g.addColorStop(0.35, color);
+    g.addColorStop(1, color);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, y, r, 0, TAU);
+    ctx.fill();
+  };
+  switch (i % 4) {
+    case 0:
+      // Brand band across the top third, product image below it.
+      ctx.fillStyle = accent;
+      ctx.fillRect(m, H * 0.2, W - 2 * m, H * 0.16);
+      wordmark(H * 0.28, bg, 26);
+      image(H * 0.55, W * 0.24, accent);
+      type(H * 0.76, ink, 3);
+      ctx.fillStyle = accent;
+      ctx.fillRect(m, H * 0.9, W - 2 * m, H * 0.04);
+      break;
+    case 1:
+      // Two-tone split with a logo disc over the seam.
+      ctx.fillStyle = accent;
+      ctx.fillRect(m, H * 0.52, W - 2 * m, H * 0.48 - m);
+      wordmark(H * 0.3, ink, 28);
+      ctx.beginPath();
+      ctx.arc(cx, H * 0.52, W * 0.17, 0, TAU);
+      ctx.fillStyle = bg;
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = accent;
+      ctx.stroke();
+      type(H * 0.7, bg, 3);
+      break;
+    case 2:
+      // Diagonal sash under the brand, a round flash badge at the side.
+      wordmark(H * 0.24, ink, 26);
+      ctx.fillStyle = accent;
+      ctx.beginPath();
+      ctx.moveTo(m, H * 0.42);
+      ctx.lineTo(W - m, H * 0.34);
+      ctx.lineTo(W - m, H * 0.5);
+      ctx.lineTo(m, H * 0.58);
+      ctx.fill();
+      image(H * 0.66, W * 0.2, accent);
+      ctx.fillStyle = ink;
+      ctx.beginPath();
+      ctx.arc(W * 0.72, H * 0.6, W * 0.1, 0, TAU);
+      ctx.fill();
+      type(H * 0.8, ink, 2);
+      break;
+    default:
+      // Minimal: a monogram tile, the brand and a hairline frame.
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(m + 6, m + 6, W - 2 * m - 12, H - 2 * m - 12);
+      ctx.fillStyle = accent;
+      ctx.beginPath();
+      ctx.roundRect(cx - 16, H * 0.2 - 16, 32, 32, 7);
+      ctx.fill();
+      ctx.fillStyle = bg;
+      ctx.font = 'bold 22px "Helvetica Neue", Helvetica, Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(brand[0].toUpperCase(), cx, H * 0.2 + 1);
+      wordmark(H * 0.38, ink, 24);
+      ctx.fillStyle = accent;
+      ctx.fillRect(cx - W * 0.25, H * 0.45, W * 0.5, 2);
+      image(H * 0.62, W * 0.18, accent);
+      type(H * 0.8, ink, 2);
+  }
+}
+
+/**
+ * The region of design i (atlas UVs [u0, u1, v0, v1]) for a panel of aspect `aspect` (width over
+ * height): cropped toward the middle of the design so it is never stretched more than a third.
+ */
+function packRegion(i, aspect) {
+  const P = PACK, cw = P.w - 2 * P.margin, ch = P.h - 2 * P.margin, a0 = cw / ch;
+  const fw = aspect < a0 ? clamp((aspect / a0) * 1.35, 0.45, 1) : 1;
+  const fh = aspect > a0 ? clamp((a0 / aspect) * 1.35, 0.4, 1) : 1;
+  const x0 = (i % P.cols) * P.w + P.margin + (cw * (1 - fw)) / 2, y0 = Math.floor(i / P.cols) * P.h + P.margin + (ch * (1 - fh)) / 2;
+  const W = P.cols * P.w, H = P.rows * P.h;
+  // Canvas rows run down; texture v runs up.
+  return [x0 / W, (x0 + cw * fw) / W, 1 - (y0 + ch * fh) / H, 1 - y0 / H];
+}
+
+/**
+ * Printed panel of design i over x0..x1, y0..y1 on a face at z, facing +z (s = 1) or -z, set a
+ * hair proud of it. It casts no shadow of its own (the pack under it does).
+ */
+function printPanel(kit, g, i, x0, x1, y0, y1, z, s = 1) {
+  const T = kit.THREE, w = x1 - x0, h = y1 - y0;
+  if (!(w > 0.005 && h > 0.005)) return null;
+  const [u0, u1, v0, v1] = packRegion(i, w / h);
+  const geo = new T.PlaneGeometry(1, 1);
+  const uv = geo.attributes.uv;
+  for (let k = 0; k < uv.count; k++) uv.setXY(k, u0 + uv.getX(k) * (u1 - u0), v0 + uv.getY(k) * (v1 - v0));
+  const mesh = new T.Mesh(geo, packArt(kit));
+  mesh.scale.set(w, h, 1);
+  mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, z + s * 0.0015);
+  if (s < 0) mesh.rotation.y = Math.PI;
+  mesh.receiveShadow = true;
+  g.add(mesh);
+  return mesh;
+}
+
+/**
+ * Printed sleeve of design i around a round pack of radius r from y0 to y0 + h at (x, z): the
+ * artwork spans the half facing s (+z or -z) and its background wraps the back. Eight sides,
+ * matching the packs' lathes so their corners stay inside it.
+ */
+function printSleeve(kit, g, i, r, h, x, y0, z, s = 1) {
+  const T = kit.THREE;
+  const [u0, u1, v0, v1] = packRegion(i, (Math.PI * r) / h);
+  const geo = new T.LatheGeometry([new T.Vector2(r, 0), new T.Vector2(r, h)], 8, -Math.PI / 2);
+  const uv = geo.attributes.uv;
+  // Vertices run around (8 + 1 columns from -90 degrees) and up (2 rows); columns past the front
+  // half all take the design's right edge, which is plain background.
+  for (let k = 0; k < uv.count; k++) {
+    const col = Math.floor(k / 2), row = k % 2;
+    uv.setXY(k, col <= 4 ? u0 + (col / 4) * (u1 - u0) : u1, row ? v1 : v0);
+  }
+  const mesh = new T.Mesh(geo, packArt(kit));
+  mesh.position.set(x, y0, z);
+  if (s < 0) mesh.rotation.y = Math.PI;
+  mesh.receiveShadow = true;
+  g.add(mesh);
+  return mesh;
+}
 
 // ---- 3D helpers ---------------------------------------------------------------------
 
@@ -221,8 +464,8 @@ function stockKind(rnd) {
 
 /**
  * Product facings filling a shelf from x0 to x1, faced up to the shelf edge: each run is one
- * product, as a row of cartons with label panels, or as bottles, cans or jars. A price tag sits on
- * the shelf edge under each run. Shelf depth runs from zb in direction s.
+ * product of one brand (a PACK_ART design), as a row of printed cartons, or as bottles, cans or
+ * jars. A price tag sits on the shelf edge under each run. Shelf depth runs from zb in direction s.
  */
 function stockShelf(kit, g, m, rnd, { x0, x1, y, clear, zb, s, dep }) {
   // Facings widen on shelves longer than any real bay (only runs past the bay cap have those).
@@ -238,37 +481,39 @@ function stockShelf(kit, g, m, rnd, { x0, x1, y, clear, zb, s, dep }) {
       x += run + 0.012;
       continue;
     }
-    const color = pick(rnd, PRODUCTS), label = pick(rnd, LABELS);
+    const color = pick(rnd, PRODUCTS), design = Math.floor(rnd() * SHIPPING);
     const face = zb + s * (dep - 0.006 - rnd() * 0.012);
     let kind = round ? stockKind(rnd) : 'box';
     if (kind !== 'box' && clear < 0.16) kind = 'box';
-    if (kind === 'box') cartons(kit, g, rnd, { x, run, y, clear, zb, s, face, color, label, k });
-    else rounds(kit, g, m, rnd, kind, { x, run, y, clear, s, face, dep, deep, color, label });
+    if (kind === 'box') cartons(kit, g, rnd, { x, run, y, clear, zb, s, face, design, k });
+    else rounds(kit, g, m, rnd, kind, { x, run, y, clear, s, face, dep, deep, color, design });
     const tx = x + Math.min(0.03, run * 0.2), edge = zb + s * (dep + 0.012);
     blk(kit, g, m.tag, tx, tx + 0.045, y - SHELF.t - 0.004, y + 0.012, edge, edge + s * 0.002, false, false);
     x += run + (0.008 + rnd() * 0.01) * k;
   }
 }
 
-/** A run of printed cartons standing side by side, each turned a hair off square. */
-function cartons(kit, g, rnd, { x, run, y, clear, zb, s, face, color, label, k }) {
+/**
+ * A run of printed cartons standing side by side, each turned a hair off square: board in the
+ * design's background color with its artwork on the front, inside the rounded edges.
+ */
+function cartons(kit, g, rnd, { x, run, y, clear, zb, s, face, design, k }) {
   const uw = Math.min(run, (0.055 + rnd() * 0.09) * k), gap = 0.004;
   const n = Math.max(1, Math.floor((run + gap) / (uw + gap))), bw = (run - (n - 1) * gap) / n;
-  const ph = Math.min(0.34, clear * (0.45 + rnd() * 0.4));
+  // Faced up toward the shelf above, as stores keep them.
+  const ph = Math.min(0.34, clear * (0.62 + rnd() * 0.26));
   const back = zb + s * (0.025 + rnd() * 0.04), d = Math.abs(face - back), zc = (face + back) / 2;
-  const body = packaging(kit, color), print = rnd() < 0.8 ? packaging(kit, label) : null;
-  const band = rnd() < 0.4;
+  const body = packaging(kit, PACK_ART[design][0]);
+  const e = Math.min(0.006, bw * 0.12);
   for (let i = 0; i < n; i++) {
     const u = sub(kit, g, x + bw / 2 + i * (bw + gap), y, zc, { yaw: (rnd() - 0.5) * 0.03 });
     blk(kit, u, body, -bw / 2, bw / 2, 0, ph, -d / 2, d / 2);
-    if (!print || bw < 0.045) continue;
-    const zf = s * (d / 2), [lx, ly0, ly1] = band ? [0.5, 0.62, 0.8] : [0.36, 0.4, 0.74];
-    blk(kit, u, print, -bw * lx, bw * lx, ph * ly0, ph * ly1, zf, zf + s * 0.0015, false, false);
+    printPanel(kit, u, design, -bw / 2 + e, bw / 2 - e, e, ph - e, s * (d / 2), s);
   }
 }
 
 /** A run of round packs (bottles, cans or jars): one row deep, two on low shelves. */
-function rounds(kit, g, m, rnd, kind, { x, run, y, clear, s, face, dep, deep, color, label }) {
+function rounds(kit, g, m, rnd, kind, { x, run, y, clear, s, face, dep, deep, color, design }) {
   const T = (v) => Math.min(clear * 0.88, v);
   const spec = kind === 'bottle' ? { r: 0.026 + rnd() * 0.016, h: T(0.17 + rnd() * 0.13) }
     : kind === 'can' ? { r: 0.032, h: 0.118 }
@@ -279,9 +524,9 @@ function rounds(kit, g, m, rnd, kind, { x, run, y, clear, s, face, dep, deep, co
   const stack = kind === 'can' && clear > 2 * h + 0.04 ? 2 : 1;
   const body = kind === 'can' ? kit.material(color, { roughness: 0.3, metalness: 0.35 })
     : kit.material(color, { roughness: kind === 'jar' ? 0.12 : 0.24 });
-  const print = packaging(kit, label), lid = kind === 'can' ? m.lid : kit.material(pick(rnd, LIDS), { roughness: 0.35 });
+  const lid = kind === 'can' ? m.lid : kit.material(pick(rnd, LIDS), { roughness: 0.35 });
   // Packs are open lathes where a cap would never show (bases on the shelf, sleeves over bodies).
-  const sleeve = (cx, y0, cz, sh) => turned(kit, g, print, [[r * 1.012, 0], [r * 1.012, sh]], cx, y0, cz, { segments: 8 });
+  const sleeve = (cx, y0, cz, sh) => printSleeve(kit, g, design, r * 1.012, sh, cx, y0, cz, s);
   const x0 = x + (run - n * pitch + 0.005) / 2 + r;
   for (let i = 0; i < n; i++) {
     const cx = x0 + i * pitch;
@@ -482,7 +727,9 @@ function buildCheckout(kit, { w, d, color }) {
   for (let i = 0; i < 3; i++) {
     const x = ix0 + 0.02 + i * iw;
     for (const [y, za, zb] of [[C.top + 0.09, iz0 + 0.02, izm - 0.02], [C.top + 0.025, izm + 0.02, iz1 - 0.02]]) {
-      blk(kit, g, packaging(kit, pick(rnd, PRODUCTS)), x + 0.008, x + iw - 0.008, y, y + 0.05 + rnd() * 0.03, za, zb, true, 0.004);
+      const design = Math.floor(rnd() * SHIPPING), top = y + 0.05 + rnd() * 0.03;
+      blk(kit, g, packaging(kit, PACK_ART[design][0]), x + 0.008, x + iw - 0.008, y, top, za, zb, true, 0.004);
+      printPanel(kit, g, design, x + 0.012, x + iw - 0.012, y + 0.004, top - 0.004, zb);
     }
   }
   return g;
@@ -792,7 +1039,6 @@ function buildPallet(kit, { w, d, h, color }) {
   const cw = lw / cols, cd = ld / rows;
   const tones = isColor(color) ? [1, 0.92, 1.06].map((f) => `#${new kit.THREE.Color(color).multiplyScalar(f).getHexString()}`) : KRAFT;
   const tape = kit.material('#c9ad80', { roughness: 0.3 });
-  const label = kit.material('#efeee9', { roughness: 0.6 });
   g.add(assembly(kit, null, (a) => {
     for (let l = 0; l < layers; l++) {
       const yb = y0 + l * lh;
@@ -803,7 +1049,7 @@ function buildPallet(kit, { w, d, h, color }) {
           const za = -ld / 2 + k * cd + 0.003 + jz, zb = za + cd - 0.006;
           blk(kit, a, carton(kit, pick(rnd, tones)), xa, xb, yb, yb + lh - 0.004, za, zb, true, 0.004);
           const cx = (xa + xb) / 2;
-          if (k === rows - 1 && rnd() < 0.7) blk(kit, a, label, cx - 0.07, cx + 0.04, yb + lh * 0.4, yb + lh * 0.68, zb, zb + 0.002, false, false);
+          if (k === rows - 1 && rnd() < 0.7) printPanel(kit, a, SHIPPING, cx - 0.07, cx + 0.04, yb + lh * 0.4, yb + lh * 0.68, zb);
           if (l === layers - 1) blk(kit, a, tape, xa, xb, yb + lh - 0.004, yb + lh - 0.002, (za + zb) / 2 - 0.024, (za + zb) / 2 + 0.024, false, false);
         }
       }

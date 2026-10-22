@@ -1002,7 +1002,33 @@ function rackLoad(kit, g, rnd, { cx, y0, pw, pd, loadH, wrap }) {
   }
 }
 
-const stretchWrap = (kit) => kit.material('#eef4f4', { roughness: 0.15, transparent: true, opacity: 0.3, depthWrite: false });
+const FILMS = new WeakMap();
+
+/**
+ * Stretch film: clear like the kit's glass (reflections add over the load, which shows through at
+ * 88 percent), with a rougher, crinkled sheen and the faintest haze. A normally blended white layer
+ * read as a milky veil that washed the kraft out. One per kit; it goes with kit.dispose().
+ */
+function stretchWrap(kit) {
+  const base = kit.glassMaterial({ tint: '#eef3f2' });
+  let film = FILMS.get(kit);
+  if (!film) {
+    film = base.clone();
+    film.roughness = 0.2;
+    film.opacity = 0.08;
+    film.color.set('#9aa3a3');
+    film.name = 'stretch-film';
+    FILMS.set(kit, film);
+    const dispose = kit.dispose;
+    kit.dispose = () => {
+      film.dispose();
+      FILMS.delete(kit);
+      dispose();
+    };
+  }
+  film.envMapIntensity = base.envMapIntensity;
+  return film;
+}
 /** Corrugated board in a kraft tone. */
 const carton = (kit, hex) => tint(kit, kit.mat.cardboard, hex);
 

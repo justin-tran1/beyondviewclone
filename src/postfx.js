@@ -43,6 +43,9 @@ const LEVELS = {
 };
 
 const AO_INTENSITY = 1;
+// From this pixel ratio pixels are small enough that 2x MSAA joins thin edges; 4x would cost a
+// lot of memory (about 60 bytes per pixel for the scene pass) for little visible gain.
+const MSAA_DENSE = 1.75;
 // AO is low frequency: past this many AO pixels per CSS pixel it is rendered at reduced resolution.
 const AO_DENSITY = 1.25;
 // Bloom picks up only what is far brighter than paper white once exposed (AgX maps 3 to about 96 percent).
@@ -588,13 +591,13 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
     const levelChanged = !a || a.level !== level;
     if (levelChanged) {
       const s = LEVELS[level];
-      renderPass.setSamples(s.msaa);
       ao.updateGtaoMaterial(s.ao);
       ao.updatePdMaterial(s.denoise);
       bloom.enabled = s.bloom;
     }
     if (levelChanged || a.width !== size.width || a.height !== size.height || a.ratio !== size.ratio) {
       ao.resolutionScale = LEVELS[level].aoScale * Math.min(1, AO_DENSITY / size.ratio);
+      renderPass.setSamples(size.ratio >= MSAA_DENSE ? Math.min(2, LEVELS[level].msaa) : LEVELS[level].msaa);
       if (composerRatio !== size.ratio) composer.setPixelRatio((composerRatio = size.ratio));
       composer.setSize(size.width, size.height);
       const long = Math.max(size.width, size.height);

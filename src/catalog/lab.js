@@ -837,7 +837,7 @@ function circle(ctx, x, y, r, fill) {
 
 function rounded(ctx, x0, y0, x1, y1, r) {
   ctx.beginPath();
-  ctx.roundRect(x0, y0, x1 - x0, y1 - y0, Math.min(r, (x1 - x0) / 2, (y1 - y0) / 2));
+  ctx.roundRect(x0, y0, x1 - x0, y1 - y0, Math.max(0, Math.min(r, (x1 - x0) / 2, (y1 - y0) / 2)));
   ctx.stroke();
 }
 

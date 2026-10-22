@@ -282,7 +282,7 @@ function circle(ctx, x, y, r, fill) {
 
 function ellipse(ctx, x, y, rx, ry, fill) {
   ctx.beginPath();
-  ctx.ellipse(x, y, rx, ry, 0, 0, TAU);
+  ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), 0, 0, TAU);
   paint(ctx, fill);
 }
 

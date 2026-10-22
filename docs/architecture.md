@@ -249,18 +249,20 @@ export function useGradedToneMapping(renderer)   // the same grade and AgX curve
 
 | Level | UI name | What it draws |
 | --- | --- | --- |
-| `high` | Realistic | Scene in half-float HDR, GTAO (16 samples, full resolution up to 1.25 AO pixels per CSS pixel), bloom on very bright windows and fixtures, color grade, AgX, SMAA |
-| `balanced` | Balanced | The same with 8-sample AO at half resolution and no bloom |
+| `high` | Realistic | Scene in half-float HDR with 4x MSAA, GTAO (16 samples, full resolution up to 1.25 AO pixels per CSS pixel), bloom on very bright windows and fixtures, color grade, AgX, SMAA |
+| `balanced` | Balanced | The same with 2x MSAA, 8-sample AO at half resolution and no bloom |
 | `fast` | Fast | Straight to the canvas with MSAA; the grade and AgX run inside the materials (no AO, bloom or vignette) |
 
-Color pipeline: the scene pass writes scene-linear HDR; AO, bloom and the grade work in linear
-light; `OutputPass` applies `renderer.toneMapping` (AgX) and `toneMappingExposure` exactly once,
+Color pipeline: the scene pass draws scene-linear HDR into a multisampled target of its own (so
+edges thinner than a pixel, such as trim and pendant lights, draw as lines; SMAA alone leaves them
+dotted) and copies the resolved image into the chain, whose buffers carry no depth. AO, bloom and
+the grade work in linear light; `OutputPass` applies `renderer.toneMapping` (AgX) and `toneMappingExposure` exactly once,
 then sRGB with half-step dithering; SMAA runs last on display values. The grade (in exposed
 units, so it holds if the exposure changes) is a slight warm balance, a log-space contrast around
 a lit wall with a small toe and a smooth shoulder above it (sun patches and the view out of the
 windows keep their texture instead of clipping), a little saturation and a barely visible lens
 falloff. AO reads the
-scene pass's depth (no second geometry pass), rebuilds normals from it, denoises with a
+scene pass's resolved depth (no second geometry pass), rebuilds normals from it, denoises with a
 cross-bilateral 5 x 5 box that cancels GTAO's rotation pattern, and is multiplied in with a
 depth-aware upsample. Positions are always rebuilt at the depth texel they read, which keeps
 grazing floors and tops free of false occlusion. `setQuality` switches `renderer.toneMapping`

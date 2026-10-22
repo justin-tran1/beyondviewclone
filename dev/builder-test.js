@@ -394,9 +394,9 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDraw
 renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-// As in src/walkthrough.js: AgX at 1.65, applied once by the post-processing chain.
+// As in src/walkthrough.js: AgX at 1.8, applied once by the post-processing chain.
 renderer.toneMapping = THREE.AgXToneMapping;
-renderer.toneMappingExposure = Number(params.get('exposure') || 1.65);
+renderer.toneMappingExposure = Number(params.get('exposure') || 1.8);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 

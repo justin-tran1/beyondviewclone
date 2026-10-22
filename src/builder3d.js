@@ -54,7 +54,7 @@ const WORLD = { o: { x: 0, y: 0 }, d: { x: 1, y: 0 }, n: { x: 0, y: 1 } };
 // Afternoon sun from the south west, about 40 degrees up, so sun patches reach into the room.
 const SUN_DIR = new THREE.Vector3(-0.6, 0.64, 0.48).normalize();
 
-// ---- Light levels (scene-linear; the walkthrough exposes by 1.65 and grades around a lit wall at 0.45).
+// ---- Light levels (scene-linear; the walkthrough exposes by 1.8 and grades around a lit wall at 0.45).
 // Sky radiance is the dome's vertex colors times SKY_SCALE, the same daylight scale photo.js uses.
 const SKY_SCALE = 4;
 const SKY = { horizon: '#e6ecee', zenith: '#93b6d3' };
@@ -582,7 +582,9 @@ function createMaterials(kit) {
     beam: kit.material('#2d3437', { roughness: 0.7 }),
     duct: kit.material('#aab0b2', { roughness: 0.38, metalness: 1 }),
     pendant: kit.mat.black,
-    sprinkler: kit.mat.chrome,
+    // White-painted pendent heads, as in a finished ceiling: polished chrome this small mirrors the
+    // dark floor and reads as black specks.
+    sprinkler: kit.material('#e3e2de', { roughness: 0.3 }),
     get(name) {
       return sharedMaterial(kit, name, textured[name]);
     },

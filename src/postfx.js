@@ -5,7 +5,9 @@
 // Color pipeline: RenderPass writes scene-linear HDR (three applies no tone mapping when rendering
 // into a render target), AO, bloom and the grade work in that linear space, OutputPass applies
 // renderer.toneMapping and toneMappingExposure exactly once plus the sRGB transfer, and SMAA runs
-// last on display values, where its edge thresholds are meant to work.
+// last on display values, where its edge thresholds are meant to work. The scene itself is drawn
+// multisampled (LEVELS.msaa) and resolved into the chain, so edges thinner than a pixel, such as
+// trim, bevel highlights and glass mullions, draw as lines rather than dotted runs SMAA cannot join.
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -14,18 +16,25 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
+import { CopyShader } from 'three/addons/shaders/CopyShader.js';
 
 export const QUALITIES = ['high', 'balanced', 'fast'];
 
-/** Per-level settings. AO radius and thickness are meters; denoise.depthPhi is the plane tolerance per meter (see onPlane). */
+/**
+ * Per-level settings. msaa is the scene pass's sample count. AO radius and thickness are meters;
+ * denoise.depthPhi is the plane tolerance per meter (see onPlane).
+ */
 const LEVELS = {
   high: {
+    msaa: 4,
     aoScale: 1,
     ao: { radius: 0.65, distanceExponent: 1.6, thickness: 1, scale: 1.7, samples: 16, distanceFallOff: 1 },
     denoise: { depthPhi: 0.05, normalPhi: 8 },
     bloom: true,
   },
   balanced: {
+    msaa: 2,
     aoScale: 0.5,
     ao: { radius: 0.65, distanceExponent: 1.6, thickness: 1, scale: 1.7, samples: 8, distanceFallOff: 1 },
     denoise: { depthPhi: 0.05, normalPhi: 8 },
@@ -463,6 +472,50 @@ class InteriorAOPass extends GTAOPass {
   }
 }
 
+/**
+ * RenderPass into a multisampled scene-linear target of its own, resolved and copied into the
+ * chain's read buffer. AO reads the resolved depth (sceneTarget.depthTexture), so the composer's
+ * ping-pong buffers need no depth. setSamples changes the count; the buffers are reallocated on use.
+ */
+class MultisampleRenderPass extends RenderPass {
+  constructor(scene, camera) {
+    super(scene, camera);
+    this.sceneTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+    this.sceneTarget.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
+    this.sceneTarget.texture.name = 'PostFX.scene';
+    this.copy = new FullScreenQuad(new THREE.ShaderMaterial({
+      uniforms: THREE.UniformsUtils.clone(CopyShader.uniforms),
+      vertexShader: CopyShader.vertexShader,
+      fragmentShader: CopyShader.fragmentShader,
+      blending: THREE.NoBlending, depthTest: false, depthWrite: false,
+    }));
+  }
+
+  setSamples(samples) {
+    if (this.sceneTarget.samples === samples) return;
+    this.sceneTarget.samples = samples;
+    this.sceneTarget.dispose();
+  }
+
+  setSize(width, height) {
+    this.sceneTarget.setSize(width, height);
+  }
+
+  render(renderer, writeBuffer, readBuffer, deltaTime, maskActive) {
+    super.render(renderer, writeBuffer, this.sceneTarget, deltaTime, maskActive);
+    this.copy.material.uniforms.tDiffuse.value = this.sceneTarget.texture;
+    renderer.setRenderTarget(readBuffer);
+    this.copy.render(renderer);
+  }
+
+  dispose() {
+    super.dispose();
+    this.sceneTarget.dispose();
+    this.copy.material.dispose();
+    this.copy.dispose();
+  }
+}
+
 /** OutputPass plus half-step dithering after the sRGB transfer, so soft wall gradients never band. */
 function ditheredOutputPass() {
   const pass = new OutputPass();
@@ -508,14 +561,10 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
   }
 
   function createChain() {
-    const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
-    target.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
-    target.texture.name = 'PostFX.scene';
+    const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+    target.texture.name = 'PostFX.chain';
     const composer = new EffectComposer(renderer, target);
-    // RenderTarget.clone() in r160 shares the depth texture's source, which would put both buffers
-    // on one GL depth texture; AO reads one buffer's depth while drawing into the other.
-    composer.renderTarget2.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
-    const renderPass = new RenderPass(scene, camera);
+    const renderPass = new MultisampleRenderPass(scene, camera);
     const ao = new InteriorAOPass(scene, camera);
     ao.setSceneClipBox(clipBox);
     const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), BLOOM.strength, BLOOM.radius, BLOOM.threshold);
@@ -535,10 +584,11 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
   function sync() {
     if (!chain) chain = createChain();
     const a = applied;
-    const { composer, ao, bloom, grade } = chain;
+    const { composer, renderPass, ao, bloom, grade } = chain;
     const levelChanged = !a || a.level !== level;
     if (levelChanged) {
       const s = LEVELS[level];
+      renderPass.setSamples(s.msaa);
       ao.updateGtaoMaterial(s.ao);
       ao.updatePdMaterial(s.denoise);
       bloom.enabled = s.bloom;
@@ -592,8 +642,7 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
       sync();
       const { composer, renderPass, ao, bloom, grade } = chain;
       renderPass.camera = ao.camera = cam;
-      // The scene pass draws into the composer's read buffer, and AO samples that buffer's depth.
-      ao.setDepth(composer.readBuffer.depthTexture);
+      ao.setDepth(renderPass.sceneTarget.depthTexture);
       // Thresholds are set in exposed units so they hold if the exposure is recalibrated.
       const exposure = renderer.toneMappingExposure || 1;
       bloom.threshold = BLOOM.threshold / exposure;

@@ -43,7 +43,7 @@ const THEME = { line: '#435254', fill: '#ffffff', accent: '#003f2d', muted: '#7f
 const MARK = '#17e88f';  // footprint outlines and front markers
 const GAP = 0.7;         // meters between items in the 3D grid
 // The walkthrough's exposure, and studio lights at interior levels (scene-linear).
-const EXPOSURE = 1.65;
+const EXPOSURE = 1.8;
 const STUDIO = { key: 3.2, fill: 1.9, env: 0.75, floor: '#cfd1cc' };
 // Floor finish of the preview room per category.
 const ROOM_FLOOR = { lab: 'epoxy', medical: 'vinyl', office: 'carpet', retail: 'polished-concrete', general: 'wood' };

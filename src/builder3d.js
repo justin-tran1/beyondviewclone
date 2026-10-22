@@ -101,6 +101,16 @@ const PLAN_LIGHT = {
   colors: { fixture: '#fff5ea', day: '#f2f5f9', bounce: '#f7f4ef' },
   budget: 6e6,
 };
+// Furniture shading the light below it (the light map itself does not see items; see itemCover).
+// Horizontal surfaces from `min` to `max` m above an item's base count, rasterized every `step` m
+// (at most `cells` per item) in height `bands` (m); each band's penumbra reaches `penumbra` times
+// its height past its edges, within `soft` (m), as light from fixtures spread over the ceiling
+// would have it. Full cover takes `strength` of the light map's light. The plan's cover map has
+// texels of at least `texel` m, at most `texels` of them. A kit keeps up to `cache` item cover grids.
+const COVER = {
+  step: 0.05, cells: 20000, min: 0.15, max: 2.4, bands: [0.35, 0.6, 0.9, 1.4], penumbra: 0.8, soft: [0.1, 0.6],
+  strength: 0.6, texel: 0.08, texels: 250000, cache: 400,
+};
 // The light map's view meter (planLight.meter): ray directions off the view axis (radians, about
 // the horizontal field of view) and the distances (m) sampled along each.
 const METER = { fan: [-0.7, -0.35, 0, 0.35, 0.7], reach: [0.6, 1.3, 2.2, 3.3, 4.8, 6.6, 9] };
@@ -476,6 +486,8 @@ function createContext(plan, kit, quality, owned, loose) {
     windows: [],
     // Ceiling fixtures for the light map: { x, y (plan), h, power, cone }.
     emitters: [],
+    // Placed items' cover grids for the light map: { cover, x, y (plan), y0 (elevation), rotation }.
+    covers: [],
     // Fixture lenses for reflections: { x, z (plan x, y), y (height), length, breadth, dir, radiance }.
     luminaires: [],
     lights: 0,
@@ -507,7 +519,7 @@ const SHARED = new WeakMap();
 
 function sharedStore(kit) {
   let store = SHARED.get(kit);
-  if (!store) SHARED.set(kit, (store = { materials: new Map(), owned: { geometries: [], materials: [], textures: [] }, tints: new Map(), lit: new Map(), plan: null }));
+  if (!store) SHARED.set(kit, (store = { materials: new Map(), owned: { geometries: [], materials: [], textures: [] }, tints: new Map(), lit: new Map(), plan: null, covers: new Map() }));
   return store;
 }
 
@@ -547,7 +559,7 @@ function createMaterials(kit) {
     aoFloor: (owned) => shadeMaterial(owned, 0.22, 'shade-floor'),
     aoWall: (owned) => shadeMaterial(owned, 0.13, 'shade-wall'),
     aoCeiling: (owned) => shadeMaterial(owned, 0.12, 'shade-ceiling'),
-    blob: (owned) => shadeMaterial(owned, 0.36, 'shade-contact'),
+    blob: (owned) => shadeMaterial(owned, 0.46, 'shade-contact'),
     // The polished slab under the building, depth-offset so rooms never z-fight with it.
     slab: () => Object.assign(kit.floorMaterial('polished-concrete').clone(), { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 2 }),
     sky: () => skyMaterial(),
@@ -3035,6 +3047,9 @@ function buildPlanLight(ctx) {
   const OPEN_EDGES = 2.4 / g;
 
   const S = new Float32Array(n), EX = new Float32Array(n), EY = new Float32Array(n), EZ = new Float32Array(n), D = new Float32Array(n);
+  // The fixtures' height as each cell sees them (weighted by their light), for how walls fall off
+  // toward the ceiling line: FH / FW.
+  const FH = new Float32Array(n), FW = new Float32Array(n);
   const Y = PLAN_LIGHT.height;
   const X = Float64Array.from({ length: nx }, (_, i) => cx(i)), Z = Float64Array.from({ length: ny }, (_, j) => cy(j));
   // Cells within R of (x, y), optionally only on the side a unit normal N faces.
@@ -3083,6 +3098,8 @@ function buildPlanLight(ctx) {
         const v = sp === own ? P : pair(own, sp) >= OPEN_EDGES ? P * reaches(e.x, e.y, i, j) : 0;
         if (!v) continue;
         S[k] += v * t[o];
+        FW[k] += v * t[o];
+        FH[k] += v * t[o] * e.h;
         EX[k] += v * t[o + 1];
         EY[k] += v * t[o + 2];
         EZ[k] += v * t[o + 3];
@@ -3181,7 +3198,7 @@ function buildPlanLight(ctx) {
     return field;
   };
   // Soften the edges of light let through doorways (penumbras the grid cannot resolve).
-  for (const f of [S, EX, EY, EZ, D]) diffuse(f, 3);
+  for (const f of [S, EX, EY, EZ, D, FH, FW]) diffuse(f, 3);
   // Bounce: the direct light spread locally plus the space's average.
   const cur = diffuse(S.slice(), clamp(Math.round((PLAN_LIGHT.bounce.spread / g) ** 2), 1, 60));
   const spaces = ctx.rooms.length + ctx.generals.length;
@@ -3212,13 +3229,13 @@ function buildPlanLight(ctx) {
   // Cells under walls take their open neighbors' light, so surfaces near walls never sample black.
   const inside = new Float32Array(n);
   for (let k = 0; k < n; k++) inside[k] = open(k) ? 1 : 0;
-  const fields = [S, EX, EY, EZ, D, B];
+  const fields = [S, EX, EY, EZ, D, B, FH, FW];
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       const k = j * nx + i;
       if (open(k)) continue;
       let m = 0, first = -1;
-      const acc = [0, 0, 0, 0, 0, 0];
+      const acc = fields.map(() => 0);
       for (let dj = -1; dj <= 1; dj++) {
         for (let di = -1; di <= 1; di++) {
           const ii = i + di, jj = j + dj, q = jj * nx + ii;
@@ -3248,17 +3265,21 @@ function buildPlanLight(ctx) {
     // Space ids up to 2048 are exact in half floats; beyond that a rare shared id only loosens the gating.
     b[k * 4 + 3] = half(space[k] % 2048);
   }
-  const texture = (data) => {
-    const t = new THREE.DataTexture(data, nx, ny, THREE.RGBAFormat, THREE.HalfFloatType);
+  const texture = (data, w = nx, h = ny) => {
+    const t = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.HalfFloatType);
     t.magFilter = t.minFilter = THREE.LinearFilter;
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
     t.generateMipmaps = false;
     t.needsUpdate = true;
     return t;
   };
-  const maps = [texture(a), texture(b)];
+  const fixture = new Uint16Array(n), wallHeight = half(ctx.settings.wallHeight);
+  for (let k = 0; k < n; k++) fixture[k] = FW[k] > 1e-6 ? half(FH[k] / FW[k]) : wallHeight;
+  const cover = coverMap(ctx, minX, minY, W, H, (x, y) => fixture[cell(x, y)] ?? wallHeight);
+  const maps = [texture(a), texture(b), texture(cover.data, cover.size[0], cover.size[1])];
   return {
     maps,
+    cover: { cell: cover.cell, size: cover.size },
     cell: g, size: [nx, ny], origin: { x: minX, y: minY },
     ms: performance.now() - t0,
     /** Space id at plan (x, y), -1 outdoors. */
@@ -3305,6 +3326,53 @@ function buildPlanLight(ctx) {
   };
 }
 
+/**
+ * The plan's cover map over the light map's area, finer than the light map so a stool still shades
+ * its own patch of floor: every placed item's cover grid (see itemCover) stamped in with its
+ * placement, as half floats (cover, lowest covering height above the floor, fixture height, unused);
+ * fixtureAt(x, y) returns the fixture height as half-float bits.
+ */
+function coverMap(ctx, minX, minY, W, H, fixtureAt) {
+  const c = Math.max(COVER.texel, Math.sqrt((W * H) / COVER.texels));
+  const nx = Math.max(2, Math.ceil(W / c)), ny = Math.max(2, Math.ceil(H / c)), n = nx * ny;
+  const C = new Float32Array(n), Y = new Float32Array(n).fill(99);
+  for (const { cover: g, x, y, y0, rotation } of ctx.covers) {
+    const cos = Math.cos(rotation), sin = Math.sin(rotation);
+    // The item's grid corners in plan space bound the cells it can reach.
+    let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    for (const [lx, lz] of [[g.x0, g.z0], [-g.x0, g.z0], [g.x0, -g.z0], [-g.x0, -g.z0]]) {
+      const px = x + cos * lx + sin * lz, py = y - sin * lx + cos * lz;
+      lo = [Math.min(lo[0], px), Math.min(lo[1], py)];
+      hi = [Math.max(hi[0], px), Math.max(hi[1], py)];
+    }
+    const i0 = Math.max(0, Math.floor((lo[0] - minX) / c)), i1 = Math.min(nx - 1, Math.floor((hi[0] - minX) / c));
+    const j0 = Math.max(0, Math.floor((lo[1] - minY) / c)), j1 = Math.min(ny - 1, Math.floor((hi[1] - minY) / c));
+    for (let j = j0; j <= j1; j++) {
+      const dy = minY + (j + 0.5) * c - y;
+      for (let i = i0; i <= i1; i++) {
+        const dx = minX + (i + 0.5) * c - x;
+        const gi = Math.floor((cos * dx - sin * dy - g.x0) / g.step), gj = Math.floor((sin * dx + cos * dy - g.z0) / g.step);
+        if (gi < 0 || gj < 0 || gi >= g.nx || gj >= g.nz) continue;
+        const q = gj * g.nx + gi, v = g.cover[q];
+        if (v < 0.004) continue;
+        const k = j * nx + i;
+        if (v > C[k]) C[k] = v;
+        if (g.low[q] + y0 < Y[k]) Y[k] = g.low[q] + y0;
+      }
+    }
+  }
+  const half = THREE.DataUtils.toHalfFloat, data = new Uint16Array(n * 4);
+  const none = half(99);
+  for (let j = 0, k = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++, k++) {
+      data[k * 4] = C[k] ? half(C[k]) : 0;
+      data[k * 4 + 1] = C[k] ? half(Y[k]) : none;
+      data[k * 4 + 2] = fixtureAt(minX + (i + 0.5) * c, minY + (j + 0.5) * c);
+    }
+  }
+  return { data, cell: c, size: [nx, ny] };
+}
+
 /** The light map uniforms shared by every plan-lit material of a kit, bound to one build at a time. */
 function planUniforms(kit) {
   const store = sharedStore(kit);
@@ -3317,7 +3385,10 @@ function planUniforms(kit) {
     store.plan = {
       planMapA: { value: null },
       planMapB: { value: null },
+      planMapC: { value: null },
       planBox: { value: new THREE.Vector4(0, 0, 1, 1) },
+      planCoverBox: { value: new THREE.Vector4(0, 0, 1, 1) },
+      planCover: { value: COVER.strength },
       planSize: { value: new THREE.Vector2(1, 1) },
       planShade: { value: new THREE.Vector4(shade[0], shade[1], hemi, ibl) },
       planFixColor: { value: tint(colors.fixture) },
@@ -3338,14 +3409,17 @@ function planUniforms(kit) {
  */
 function usePlanLight(U, light, probe, rectSpace) {
   if (!light) {
-    U.planMapA.value = U.planMapB.value = null;
+    U.planMapA.value = U.planMapB.value = U.planMapC.value = null;
     U.planRectSpace.value = new Float32Array(1).fill(-2);
     return;
   }
   U.planMapA.value = light.maps[0];
   U.planMapB.value = light.maps[1];
+  U.planMapC.value = light.maps[2];
   const [nx, ny] = light.size;
   U.planBox.value.set(light.origin.x, light.origin.y, 1 / (nx * light.cell), 1 / (ny * light.cell));
+  const { cell, size } = light.cover;
+  U.planCoverBox.value.set(light.origin.x, light.origin.y, 1 / (size[0] * cell), 1 / (size[1] * cell));
   U.planSize.value.set(nx, ny);
   // Sample wall faces a cell and a bit in front of them, clear of the wall's own cells.
   U.planOffset.value = 1.1 * light.cell;
@@ -3357,7 +3431,10 @@ function usePlanLight(U, light, probe, rectSpace) {
 const PLAN_PARS = /* glsl */`
 uniform sampler2D planMapA;
 uniform sampler2D planMapB;
+uniform sampler2D planMapC;
 uniform vec4 planBox;
+uniform vec4 planCoverBox;
+uniform float planCover;
 uniform vec2 planSize;
 uniform vec4 planShade;
 uniform vec3 planFixColor;
@@ -3406,20 +3483,35 @@ const PLAN_SAMPLE = /* glsl */`
   vec4 planB = texture2D( planMapB, planUV );
   vec2 planEdge = step( vec2( 0.0 ), planUV ) * step( planUV, vec2( 1.0 ) );
   float planIn = clamp( planB.z, 0.0, 1.0 ) * planEdge.x * planEdge.y;
-  float planSpace = planIn > 0.0 ? texture2D( planMapB, ( floor( planUV * planSize ) + 0.5 ) / planSize ).w : - 1.0;`;
+  float planSpace = planIn > 0.0 ? texture2D( planMapB, ( floor( planUV * planSize ) + 0.5 ) / planSize ).w : - 1.0;
+  // Furniture over this point takes part of the light, unless this surface is the furniture's own top.
+  vec3 planC = texture2D( planMapC, ( vPlanWorld.xz + planN.xz * planOffset - planCoverBox.xy ) * planCoverBox.zw ).xyz;
+  float planShadow = 1.0 - planCover * planIn * clamp( planC.x, 0.0, 1.0 ) * ( 1.0 - smoothstep( planC.y - 0.1, planC.y - 0.03, vPlanWorld.y ) );`;
 
-// After the lights: the map's diffuse light in place of the uniform fill, indoors.
+// After the lights: the map's diffuse light in place of the uniform fill, indoors. The map holds the
+// light at PLAN_LIGHT.height; on walls and other upright faces the fixtures' direct light follows
+// the surface's height instead. A downward emitter rho meters out and h above a point lights an upright
+// face there in proportion to h * rho / (rho^2 + h^2)^2, so walls fade toward the ceiling line and,
+// less, toward the floor. rho comes from the map's horizontal to vertical light; fixtures on either
+// side of a point cancel in it, so it is held to at least 1.5 m, about where the fixtures lighting a
+// wall really are once those along it count too.
 const PLAN_IRRADIANCE = /* glsl */`
 #if defined( RE_IndirectDiffuse )
-  float planE = max( 0.0, planShade.x * planA.x + planShade.y * dot( planN, planA.yzw ) );
+  float planH0 = max( planC.z - ${PLAN_LIGHT.height.toFixed(2)}, 0.2 );
+  float planRho = clamp( planH0 * length( planA.yw ) / max( planA.z, 1e-4 ), 1.5, 6.0 ) + planOffset;
+  float planDrop = clamp( planC.z - vPlanWorld.y, 0.0, planC.z );
+  float planRise = ( planRho * planRho + planH0 * planH0 ) / ( planRho * planRho + planDrop * planDrop );
+  float planWall = mix( clamp( planDrop / planH0 * planRise * planRise, 0.0, 1.5 ), 1.0, clamp( planB.x, 0.0, 1.0 ) );
+  float planSide = planShade.x * planA.x + planShade.y * dot( planN.xz, planA.yw );
+  float planE = max( 0.0, planSide * mix( 1.0, planWall, 1.0 - abs( planN.y ) ) + planShade.y * planN.y * planA.z );
   vec3 planIrr = planE * mix( planFixColor, planDayColor, clamp( planB.x, 0.0, 1.0 ) )
     + planB.y * ( 1.0 + planBounceTilt * planN.y ) * planBounceColor;
-  irradiance = mix( irradiance, planIrr + irradiance * planShade.z, planIn );
+  irradiance = mix( irradiance, ( planIrr + irradiance * planShade.z ) * planShadow, planIn );
 #endif`;
 
 // After the environment maps: image based light scaled to this spot's light level against the probe's.
 const PLAN_ENV = /* glsl */`
-  float planEnv = mix( 1.0, clamp( ( planA.x + planB.y ) / planEnvRef, 0.08, 1.6 ), planIn );
+  float planEnv = mix( 1.0, clamp( ( planA.x + planB.y ) / planEnvRef, 0.08, 1.6 ), planIn ) * planShadow;
 #if defined( RE_IndirectDiffuse )
   iblIrradiance *= planEnv * mix( 1.0, planShade.w, planIn );
 #endif
@@ -3486,6 +3578,7 @@ function planMaterial(kit, m) {
  */
 function buildItems(ctx) {
   const templates = new Map();
+  const covers = sharedStore(ctx.kit).covers;
   const place = new THREE.Matrix4();
   for (const item of ctx.plan.items) {
     const def = getItem(item.type);
@@ -3496,15 +3589,27 @@ function buildItems(ctx) {
     const rotation = (-normDeg(item.rotation || 0) * Math.PI) / 180;
     place.compose(_v.set(item.x, item.elevation ?? 0, item.y), _q.setFromAxisAngle(_y, rotation), _s.set(1, 1, 1));
     ctx.items.at(item.x, item.y);
+    // What the item shades below it, once per template (see itemCover); rugs and the like shade nothing.
+    const blocking = def.blocking !== false;
+    let cover = null;
     try {
       // Past the detail budget items are plain blocks, so a plan with thousands of items stays quick.
-      if (ctx.itemVerts > MAX_ITEM_VERTS) itemBlock(ctx, item, dims);
-      else if (parts) stampParts(ctx, parts, place);
-      else collectObject(ctx, buildItem(ctx, def, dims, item), place);
+      if (ctx.itemVerts > MAX_ITEM_VERTS) {
+        itemBlock(ctx, item, dims);
+        cover = blocking && cachedCover(covers, `block|${dims.w}|${dims.d}|${dims.h}`, () => itemCover(blockTris(dims), dims));
+      } else if (parts) {
+        stampParts(ctx, parts, place);
+        cover = blocking && cachedCover(covers, key, () => itemCover(coverTris(parts), dims));
+      } else {
+        const obj = buildItem(ctx, def, dims, item);
+        cover = blocking && cachedCover(covers, key, () => itemCover(coverTris(objectParts(ctx, obj)), dims));
+        collectObject(ctx, obj, place);
+      }
     } catch (err) {
       console.warn(`Could not place item "${item.type}"`, err);
     }
-    if (def.blocking === false) continue;
+    if (!blocking) continue;
+    if (cover) ctx.covers.push({ cover, x: item.x, y: item.y, y0: item.elevation ?? 0, rotation });
     ctx.obstacles.push({ corners: itemCorners(item, dims) });
     const shadow = def.contactShadow ?? true;
     if ((item.elevation ?? 0) < 0.05 && shadow) blobShadow(ctx, item, dims, shadow === 'round');
@@ -3526,7 +3631,8 @@ function itemBlock(ctx, item, dims) {
 function blobShadow(ctx, item, dims, round) {
   const r = (normDeg(item.rotation || 0) * Math.PI) / 180;
   const F = frameOf({ x: item.x, y: item.y }, { x: Math.cos(r), y: Math.sin(r) });
-  const m = clamp(0.1 + 0.08 * Math.min(dims.w, dims.d), 0.12, 0.28);
+  // The soft margin widens with the item's height (a taller top throws a wider penumbra).
+  const m = clamp(0.06 + 0.06 * Math.min(dims.w, dims.d) + 0.12 * Math.min(dims.h, 1), 0.12, 0.28);
   const inset = Math.min(0.08, dims.w / 4, dims.d / 4);
   const b = ctx.fx.at(item.x, item.y).get(ctx.mats.get('blob'), false, false);
   const P = (s, u) => [F.o.x + F.d.x * s + F.n.x * u, 0.003, F.o.y + F.d.y * s + F.n.y * u];
@@ -3547,6 +3653,151 @@ function blobShadow(ctx, item, dims, round) {
   for (let j = 0; j < 3; j++) {
     for (let i = 0; i < 3; i++) quad(b, P(xs[i], ys[j]), P(xs[i + 1], ys[j]), P(xs[i + 1], ys[j + 1]), P(xs[i], ys[j + 1]), UP, t[i], t[j], t[i + 1], t[j + 1]);
   }
+}
+
+/** An item's cover grid from the kit's cache (an item's geometry depends only on its key), or make(). */
+function cachedCover(covers, key, make) {
+  if (!covers.has(key)) {
+    // A long session of resizing items would otherwise keep every size it ever built.
+    if (covers.size >= COVER.cache) covers.clear();
+    covers.set(key, make());
+  }
+  return covers.get(key);
+}
+
+/** Mesh parts of an item that is rebuilt per instance (see collectObject), for its cover. */
+function objectParts(ctx, obj) {
+  obj.updateMatrixWorld(true);
+  const parts = [];
+  obj.traverseVisible((o) => {
+    if (mergeable(o)) parts.push(...meshParts(ctx, o));
+  });
+  return parts;
+}
+
+/**
+ * The roughly horizontal triangles of an item's parts between COVER.min and COVER.max above its
+ * base, in item space, as [ax, az, bx, bz, cx, cz, y] runs: its tops, seats, shelves and undersides.
+ */
+function coverTris(parts) {
+  const out = [];
+  for (const p of parts) {
+    const pos = p.g.attributes.position, idx = p.g.index?.array;
+    const P = !pos.isInterleavedBufferAttribute && !pos.normalized && pos.itemSize === 3 ? pos.array : null;
+    const m = p.local.elements;
+    const total = idx ? idx.length : pos.count;
+    const start = p.range ? p.range.start : 0, end = p.range ? Math.min(total, p.range.start + p.range.count) : total;
+    const v = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (let t = start; t + 2 < end; t += 3) {
+      for (let c = 0; c < 3; c++) {
+        const i = idx ? idx[t + c] : t + c;
+        const x = P ? P[i * 3] : pos.getX(i), y = P ? P[i * 3 + 1] : pos.getY(i), z = P ? P[i * 3 + 2] : pos.getZ(i);
+        v[c * 3] = m[0] * x + m[4] * y + m[8] * z + m[12];
+        v[c * 3 + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
+        v[c * 3 + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
+      }
+      const ux = v[3] - v[0], uy = v[4] - v[1], uz = v[5] - v[2], wx = v[6] - v[0], wy = v[7] - v[1], wz = v[8] - v[2];
+      const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+      const area = Math.hypot(nx, ny, nz);
+      if (area < 1e-7 || Math.abs(ny) < 0.7 * area) continue;
+      const y = (v[1] + v[4] + v[7]) / 3;
+      if (y < COVER.min || y > COVER.max) continue;
+      out.push(v[0], v[2], v[3], v[5], v[6], v[8], y);
+    }
+  }
+  return out;
+}
+
+/** The top of a plain block (see itemBlock), in coverTris' form. */
+function blockTris(dims) {
+  const x = dims.w / 2, z = dims.d / 2, y = dims.h;
+  return y < COVER.min || y > COVER.max ? [] : [-x, -z, x, -z, x, z, y, -x, -z, x, z, -x, z, y];
+}
+
+/**
+ * An item's cover grid, in item space: how much of the overhead light its horizontal surfaces take
+ * from whatever is under them, and the height of the lowest of them, so the light map can shade the
+ * floor under a table, the chair tucked beneath it and its lower shelf, but not the table top. The
+ * surfaces are rasterized per height band, each softened by a penumbra that grows with its height
+ * (so a small stool seat ends up blocking less than a broad table top, as it subtends less of the
+ * ceiling); each cell takes the lowest surface of the bands that reach it. Null when nothing in the
+ * item covers anything.
+ */
+function itemCover(tris, dims) {
+  if (!tris.length) return null;
+  let top = 0;
+  for (let t = 6; t < tris.length; t += 7) top = Math.max(top, tris[t]);
+  const reach = (h) => clamp(COVER.penumbra * h, COVER.soft[0], COVER.soft[1]);
+  const pad = reach(top) + COVER.step;
+  const step = Math.max(COVER.step, Math.sqrt(((dims.w + 2 * pad) * (dims.d + 2 * pad)) / COVER.cells));
+  const nx = Math.ceil((dims.w + 2 * pad) / step), nz = Math.ceil((dims.d + 2 * pad) / step), n = nx * nz;
+  const x0 = -dims.w / 2 - pad, z0 = -dims.d / 2 - pad;
+  const bands = COVER.bands.map(() => null).concat(null);
+  for (let t = 0; t < tris.length; t += 7) {
+    const ax = tris[t], az = tris[t + 1], bx = tris[t + 2], bz = tris[t + 3], cx = tris[t + 4], cz = tris[t + 5], y = tris[t + 6];
+    const d = (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
+    if (Math.abs(d) < 1e-9) continue;
+    const at = COVER.bands.findIndex((edge) => y < edge);
+    const band = (bands[at < 0 ? COVER.bands.length : at] ||= { hard: new Float32Array(n), sum: 0, count: 0, low: Infinity });
+    band.low = Math.min(band.low, y);
+    const i0 = Math.max(0, Math.ceil((Math.min(ax, bx, cx) - x0) / step - 0.5)), i1 = Math.min(nx - 1, Math.floor((Math.max(ax, bx, cx) - x0) / step - 0.5));
+    const j0 = Math.max(0, Math.ceil((Math.min(az, bz, cz) - z0) / step - 0.5)), j1 = Math.min(nz - 1, Math.floor((Math.max(az, bz, cz) - z0) / step - 0.5));
+    for (let j = j0; j <= j1; j++) {
+      const pz = z0 + (j + 0.5) * step;
+      for (let i = i0; i <= i1; i++) {
+        const px = x0 + (i + 0.5) * step;
+        // Barycentric weights, the same sign as d inside the triangle.
+        const w0 = ((bx - px) * (cz - pz) - (bz - pz) * (cx - px)) / d, w1 = ((cx - px) * (az - pz) - (cz - pz) * (ax - px)) / d;
+        if (w0 < 0 || w1 < 0 || w0 + w1 > 1) continue;
+        const k = j * nx + i;
+        if (!band.hard[k]) {
+          band.hard[k] = 1;
+          band.sum += y;
+          band.count++;
+        }
+      }
+    }
+  }
+  // Two box passes make a tent-shaped penumbra about `reach` wide either side of each edge.
+  const cover = new Float32Array(n), low = new Float32Array(n).fill(Infinity);
+  let any = false;
+  for (const band of bands) {
+    if (!band?.count) continue;
+    const h = Math.max(1, Math.round(reach(band.sum / band.count) / 2 / step));
+    const soft = boxBlur(boxBlur(band.hard, nx, nz, h), nx, nz, h);
+    for (let k = 0; k < n; k++) {
+      if (soft[k] < 0.004) continue;
+      if (soft[k] > cover[k]) cover[k] = soft[k];
+      if (band.low < low[k]) low[k] = band.low;
+    }
+    any = true;
+  }
+  return any ? { x0, z0, step, nx, nz, cover, low } : null;
+}
+
+/** Separable box blur of an nx by nz grid, half-width h cells, edges padded with zero (running sums). */
+function boxBlur(src, nx, nz, h) {
+  const tmp = new Float32Array(src.length), out = new Float32Array(src.length), k = 1 / (2 * h + 1);
+  for (let j = 0; j < nz; j++) {
+    const row = j * nx;
+    let s = 0;
+    for (let q = 0; q < Math.min(h, nx); q++) s += src[row + q];
+    for (let i = 0; i < nx; i++) {
+      if (i + h < nx) s += src[row + i + h];
+      if (i - h - 1 >= 0) s -= src[row + i - h - 1];
+      tmp[row + i] = s * k;
+    }
+  }
+  for (let i = 0; i < nx; i++) {
+    let s = 0;
+    for (let q = 0; q < Math.min(h, nz); q++) s += tmp[q * nx + i];
+    for (let j = 0; j < nz; j++) {
+      if (j + h < nz) s += tmp[(j + h) * nx + i];
+      if (j - h - 1 >= 0) s -= tmp[(j - h - 1) * nx + i];
+      out[j * nx + i] = s * k;
+    }
+  }
+  return out;
 }
 
 function buildItem(ctx, def, dims, item) {

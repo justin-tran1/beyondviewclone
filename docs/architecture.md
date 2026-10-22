@@ -199,16 +199,21 @@ Lighting works like an architectural rendering. Per build, a plan light map (two
 textures over the floor plate) holds the diffuse light each point receives from the ceiling
 fixtures and through the windows (walls block it, doorways and glass let it through), the light
 bounced around each room, and a per-room adaptation, so windows read as the main source with a
-soft falloff and windowless rooms stay evenly lit. Interior materials are swapped for plan-lit
-twins (made once per kit and source material) that read the map in place of a uniform fill. A
-shadowed sun draws the sun patches, area lights at the windows and fixture lenses nearest the
-viewer add their reflections to glossy floors, quartz and metals (only within the room they
-light), and the outdoors reads several stops brighter than the interior. Fixture, bounce and fill
-light are a neutral 4000 K white. Levels are scene-linear, before exposure.
+soft falloff and windowless rooms stay evenly lit. A finer third texture, the cover map, holds how
+much furniture shades the light below it (each item's tops, seats and shelves rasterized once per
+item template and softened by a penumbra that grows with their height, plus the height of the
+lowest of them) and the fixtures' height, so floors, low shelves and tucked chairs under tables
+and counters darken while the tops stay lit, and walls fade toward the ceiling line and, less,
+toward the floor. Interior materials are swapped for plan-lit twins (made once per kit and source
+material) that read the maps in place of a uniform fill. A shadowed sun draws the sun patches,
+area lights at the windows and fixture lenses nearest the viewer add their reflections to glossy
+floors, quartz and metals (only within the room they light), and the outdoors reads several stops
+brighter than the interior. Fixture, bounce and fill light are a neutral 4000 K white. Levels are
+scene-linear, before exposure.
 
 - `buildPlanScene` calls `kit.setEnvironmentIntensity(0.75)`. Builder materials that do not
-  depend on the plan, the plan-lit twins and their uniforms are shared by every build made with
-  one kit and live as long as it does (builds never release them; the walkthrough disposes what
+  depend on the plan, the plan-lit twins and their uniforms (and the items' cover grids, up to 400)
+  are shared by every build made with one kit and live as long as it does (builds never release them; the walkthrough disposes what
   its last scene used when it is disposed). `root.userData` carries `horizon` (the sky dome
   radius, for the camera's far plane), `daylight` (the area light group), `planUniforms` and
   `planLight.bind()`, which points the shared uniforms at this build's light map.

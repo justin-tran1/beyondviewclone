@@ -710,7 +710,10 @@ export class Walkthrough extends EventTarget {
     return true;
   }
 
-  /** PNG of the current view as shown, post-processing included, rendered fresh at full resolution. */
+  /**
+   * PNG of the current view, post-processing included, rendered fresh at full resolution and at the
+   * chosen quality: a still has no frame budget, so a level lowered for moving does not apply.
+   */
   screenshot() {
     const check = () => {
       if (!this._built) throw new Error('This plan could not be shown in 3D, so there is no 3D view to save.');
@@ -721,7 +724,13 @@ export class Walkthrough extends EventTarget {
     } catch (err) {
       return Promise.reject(err);
     }
-    return this._postfx.ready.then(() => new Promise((resolve, reject) => {
+    // Asking for `ready` at the chosen level starts loading what that level's chain needs; frames
+    // drawn while it loads stay at the level in use.
+    const level = this._chosenQuality, inUse = this._postfx.quality;
+    if (inUse !== level) this._postfx.setQuality(level);
+    const ready = this._postfx.ready;
+    if (inUse !== level) this._postfx.setQuality(inUse);
+    return ready.then(() => new Promise((resolve, reject) => {
       check();
       const renderer = this._renderer;
       if (renderer.getPixelRatio() !== this._baseRatio) {
@@ -730,10 +739,16 @@ export class Walkthrough extends EventTarget {
       }
       const ring = this._ring.visible;
       this._ring.visible = false;
-      this._render();
-      this._canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not capture the 3D view.'))), 'image/png');
-      this._ring.visible = ring;
-      this._invalidate();
+      try {
+        if (this._postfx.quality !== level) this._postfx.setQuality(level);
+        this._render();
+        this._canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not capture the 3D view.'))), 'image/png');
+      } finally {
+        if (this._postfx.quality !== this._quality) this._postfx.setQuality(this._quality);
+        this._ring.visible = ring;
+        this._skipFrames();
+        this._invalidate();
+      }
     }));
   }
 

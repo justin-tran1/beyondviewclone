@@ -41,6 +41,7 @@ The quality menu on the 3D view sets how it is drawn: **Realistic** (soft contac
 glow, filmic color and smooth edges), **Balanced** (lighter shading for smoother movement) or
 **Fast** (plain shading for older computers). If moving gets slow, the view steps down on its own
 and the menu says so; once moving is smooth again it steps back up, never above the level you picked.
+Saved images always use the level you picked.
 
 Plans save as `.cbreplan.json` files (the traced image is embedded) and autosave in the browser.
 Press `?` in the app for every keyboard shortcut.

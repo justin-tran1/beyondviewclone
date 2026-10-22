@@ -2,7 +2,7 @@
 // warehouse equipment (pallet racking, pallets, forklift, workbench, bollards, floor markings).
 // Local frame: x = width, y = up, z = depth with the front facing +z (plan +y).
 import { registerItems } from './registry.js';
-import { tint, cushion, turned, bent, assembly, barPull, warpAt, shaded } from './lab.js';
+import { tint, cushion, turned, slabTop, bent, assembly, barPull, warpAt, shaded } from './lab.js';
 
 const OUT = 1.25;       // plan outline weight in px
 const FINE = 0.75;      // plan detail weight in px
@@ -929,11 +929,24 @@ function drawPalletRacking(ctx, o) {
 
 // ---- Forklift -----------------------------------------------------------------------
 
-const LIFT = { forkX: 0.27, forkW: 0.1, forkZ: [0.5, 1.21], mastZ: [0.36, 0.46], guardZ: [-0.75, 0.3] };
+// weight: the counterweight's plan extents [x, z0, z1] and corner radius.
+const LIFT = { forkX: 0.27, forkW: 0.1, forkZ: [0.5, 1.21], mastZ: [0.36, 0.46], guardZ: [-0.75, 0.3], weight: [0.52, -1.2, -0.62, 0.26] };
 
-function wheel(kit, g, tire, hub, x, r, width, z) {
-  kit.cyl(g, tire, r, width, x, r, z, { axis: 'x', segments: 28 });
-  kit.cyl(g, hub, r * 0.55, width + 0.012, x, r, z, { axis: 'x', segments: 20 });
+/**
+ * Solid tire with rounded shoulders and two tread grooves, on a steel rim set back into it with a
+ * hub cap and wheel nuts on the outer face (s = 1 faces +x).
+ */
+function wheel(kit, g, tire, hub, x, r, width, z, s) {
+  const hw = width / 2, e = Math.min(0.03, width * 0.18), gx = width * 0.17;
+  const groove = (c) => [[r, c - 0.005], [r - 0.006, c - 0.002], [r - 0.006, c + 0.002], [r, c + 0.005]];
+  const profile = [[r * 0.6, -hw], [r * 0.92, -hw], [r - e * 0.3, -hw + e * 0.35], [r, -hw + e], ...groove(-gx), ...groove(gx), [r, hw - e], [r - e * 0.3, hw - e * 0.35], [r * 0.92, hw], [r * 0.6, hw]];
+  turned(kit, g, tire, profile, x, r, z, { segments: 32 }).rotation.z = Math.PI / 2;
+  kit.cyl(g, hub, r * 0.62, width - 0.04, x, r, z, { axis: 'x', segments: 24 });
+  kit.cyl(g, hub, r * 0.22, width - 0.014, x, r, z, { axis: 'x', segments: 16 });
+  for (let i = 0; i < 6; i++) {
+    const a = (i * TAU) / 6;
+    kit.cyl(g, kit.mat.darkSteel, 0.011, 0.012, x + s * (hw - 0.014), r + Math.sin(a) * r * 0.34, z + Math.cos(a) * r * 0.34, { axis: 'x', segments: 6 });
+  }
 }
 
 function buildForklift(kit, { color }) {
@@ -945,27 +958,28 @@ function buildForklift(kit, { color }) {
   const hub = tint(kit, kit.mat.steel, '#c4c7c6');
   const seat = tint(kit, kit.mat.vinylBlue, '#2a2d2f');
   for (const s of [-1, 1]) {
-    wheel(kit, g, kit.mat.rubber, hub, s * 0.5, 0.25, 0.2, 0.12);
-    wheel(kit, g, kit.mat.rubber, hub, s * 0.45, 0.2, 0.15, -0.85);
+    wheel(kit, g, kit.mat.rubber, hub, s * 0.5, 0.25, 0.2, 0.12, s);
+    wheel(kit, g, kit.mat.rubber, hub, s * 0.45, 0.2, 0.15, -0.85, s);
   }
-  // Chassis, side skirts, rounded counterweight with a rear bumper.
-  blk(kit, g, body, -0.37, 0.37, 0.14, 0.6, -1.0, 0.34);
+  // Chassis and side skirts as pressed steel panels with rounded edges (the auto bevel stops at
+  // 6 mm, which reads as a sharp box at this size).
+  blk(kit, g, body, -0.37, 0.37, 0.14, 0.6, -1.0, 0.34, true, 0.04);
   for (const s of [-1, 1]) {
-    blk(kit, g, body, s * 0.37, s * 0.5, 0.16, 0.6, -0.62, -0.16);
-    blk(kit, g, black, s * 0.38, s * 0.6, 0.53, 0.57, -0.17, 0.4);
+    blk(kit, g, body, s * 0.37, s * 0.5, 0.16, 0.6, -0.62, -0.16, true, 0.02);
+    blk(kit, g, black, s * 0.38, s * 0.6, 0.53, 0.57, -0.17, 0.4, true, 0.012);
     blk(kit, g, black, s * 0.5, s * 0.52, 0.16, 0.5, -0.6, -0.18);
   }
-  const cw = kit.cyl(g, body, 1, 0.58, 0, 0.42, -0.92, { segments: 36 });
-  cw.scale.set(0.56, 1, 0.3);
-  const bumper = kit.cyl(g, black, 1, 0.18, 0, 0.24, -0.92, { segments: 36 });
-  bumper.scale.set(0.5, 1, 0.295);
-  for (const s of [-1, 1]) blk(kit, g, glow(kit, '#d6453d', 0.6), s * 0.2, s * 0.32, 0.86, 0.9, -1.2, -1.17);
+  // Cast counterweight, rounded in plan and along its top, over a rubber rear bumper.
+  const [wx, wz0, wz1, wr] = LIFT.weight;
+  slabTop(kit, g, body, -wx, wx, 0.42, 1.0, wz0, wz1, { corner: wr, edge: 0.05 });
+  slabTop(kit, g, black, -wx + 0.02, wx - 0.02, 0.24, 0.42, wz0 - 0.01, wz1 - 0.08, { corner: wr - 0.01, edge: 0.02 });
+  for (const s of [-1, 1]) blk(kit, g, glow(kit, '#d6453d', 0.6), s * 0.12, s * 0.24, 0.86, 0.9, wz0 - 0.006, wz0 + 0.02);
   // Hood with seat, operator deck and dash.
-  blk(kit, g, body, -0.45, 0.45, 0.6, 0.9, -0.7, -0.1);
-  blk(kit, g, black, -0.44, 0.44, 0.9, 0.915, -0.69, -0.11);
+  blk(kit, g, body, -0.45, 0.45, 0.6, 0.9, -0.7, -0.1, true, 0.05);
+  blk(kit, g, black, -0.39, 0.39, 0.9, 0.915, -0.64, -0.16);
   blk(kit, g, black, -0.42, 0.42, 0.58, 0.61, -0.1, 0.24);
-  blk(kit, g, body, -0.36, 0.36, 0.6, 1.0, 0.22, 0.34);
-  blk(kit, g, black, -0.37, 0.37, 1.0, 1.04, 0.2, 0.35);
+  blk(kit, g, body, -0.36, 0.36, 0.6, 1.0, 0.22, 0.34, true, 0.04);
+  blk(kit, g, black, -0.37, 0.37, 1.0, 1.04, 0.2, 0.35, true, 0.015);
   blk(kit, g, black, -0.2, 0.2, 0.915, 0.95, -0.5, -0.18);
   cushion(kit, g, seat, -0.23, 0.23, 0.95, 1.025, -0.52, -0.12, { r: 0.03, crown: 0.012 });
   const back = sub(kit, g, 0, 1.0, -0.56, { pitch: -0.12 });
@@ -1031,10 +1045,16 @@ function drawForklift(ctx, o) {
     rect(ctx, s * 0.375, -1.05, s * 0.525, -0.65, o.theme.line);
   }
   pen(ctx, o, OUT);
+  const [wx, wz0, wz1, wr] = L.weight;
   ctx.beginPath();
   ctx.moveTo(-0.47, 0.34);
   ctx.lineTo(0.47, 0.34);
-  ctx.ellipse(0, -0.92, 0.56, 0.3, 0, 0.575, Math.PI - 0.575, true);
+  ctx.lineTo(0.47, wz1);
+  ctx.lineTo(wx, wz1);
+  ctx.arcTo(wx, wz0, 0, wz0, wr);
+  ctx.arcTo(-wx, wz0, -wx, wz1, wr);
+  ctx.lineTo(-wx, wz1);
+  ctx.lineTo(-0.47, wz1);
   ctx.closePath();
   paint(ctx, o.theme.fill);
   pen(ctx, o, FINE);

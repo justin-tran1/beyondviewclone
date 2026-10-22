@@ -68,14 +68,14 @@ const OUTDOOR_FILL = 1.6;
 // The uniform fill: strong from above, weak from below, so floors read brightest, walls mid and
 // ceilings darker. It lights the outdoors and anything the plan light map does not cover; indoors
 // the map takes over and keeps PLAN_LIGHT.hemi of it.
-const FILL = { sky: '#fff1df', ground: '#8f877c', intensity: 1.9 };
+const FILL = { sky: '#fbf6ef', ground: '#8f877c', intensity: 1.9 };
 // Sky light through the windows: radiance of the area lights at the glass, at most `max` of them
 // (aimed at the runs nearest the viewer), and the gap (m) under which windows in a row share one.
 // They add only reflections; the light map carries the diffuse daylight from every window.
 const DAYLIGHT = { color: '#f1f4f8', radiance: 3.5, max: 6, maxLow: 3, merge: 1.6 };
 // Fixture lenses nearest the viewer that get an area light for their reflections.
 const FIXTURE_LIGHTS = 4;
-const LED = { color: '#fff3e4', troffer: 4.5, downlight: 7, pendant: 5, reflector: 0.28 };
+const LED = { color: '#fff5ea', troffer: 4.5, downlight: 7, pendant: 5, reflector: 0.28 };
 // The plan light map. cell: texel size (m), grown so the map stays under maxCells; height: where
 // light is evaluated (m above the floor). Emitter output is per fixture (per sample for pendant runs,
 // every `pendantStep` m), set so a grid of them gives about 3 on a desk (scene-linear irradiance)
@@ -98,7 +98,7 @@ const PLAN_LIGHT = {
   bounce: { local: 0.3, room: 0.25, uplight: 0.25, spread: 1.1, tilt: 0.3 },
   exposure: { reference: 4.2, adapt: 0.6, range: [0.45, 1.7] },
   shade: [0.2, 0.8], hemi: 0.12, ibl: 0.15,
-  colors: { fixture: '#fff0de', day: '#f2f5f9', bounce: '#fbf3ea' },
+  colors: { fixture: '#fff5ea', day: '#f2f5f9', bounce: '#f7f4ef' },
   budget: 6e6,
 };
 // Image based lighting strength for every material once the interior has been captured.

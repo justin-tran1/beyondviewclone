@@ -59,7 +59,7 @@ const BLOOM = { strength: 0.16, radius: 0.45, threshold: 3, knee: 2 };
 // instead of clipping. 8-bit display values: deep shadow (0.02) 29, a lit white wall (0.6 to 1)
 // 178 to 207, a sun patch on a pale floor (4 to 8) 245 to 249, the view out of a window (20) 252.
 const GRADE = {
-  balance: [1.04, 1, 0.94], // slight warmth, normalized below so it never changes brightness
+  balance: [0.945, 1, 1.06], // a touch cool, so lit warm-white paint reads white; normalized, brightness holds
   contrast: 1.5, // log-space contrast around the pivot
   pivot: 0.75, // a lit wall: contrast turns around it, so whites hold
   shoulder: 4.5, // stops above the pivot that highlights approach (AgX white is about 4.4 above)

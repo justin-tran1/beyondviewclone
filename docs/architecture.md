@@ -202,8 +202,8 @@ soft falloff and windowless rooms stay evenly lit. Interior materials are swappe
 twins (made once per kit and source material) that read the map in place of a uniform fill. A
 shadowed sun draws the sun patches, area lights at the windows and fixture lenses nearest the
 viewer add their reflections to glossy floors, quartz and metals (only within the room they
-light), and the outdoors reads several stops brighter than the interior. Levels are scene-linear,
-before exposure.
+light), and the outdoors reads several stops brighter than the interior. Fixture, bounce and fill
+light are a neutral 4000 K white. Levels are scene-linear, before exposure.
 
 - `buildPlanScene` calls `kit.setEnvironmentIntensity(0.75)`. Builder materials that do not
   depend on the plan, the plan-lit twins and their uniforms are shared by every build made with
@@ -258,7 +258,7 @@ edges thinner than a pixel, such as trim and pendant lights, draw as lines; SMAA
 dotted) and copies the resolved image into the chain, whose buffers carry no depth. AO, bloom and
 the grade work in linear light; `OutputPass` applies `renderer.toneMapping` (AgX) and `toneMappingExposure` exactly once,
 then sRGB with half-step dithering; SMAA runs last on display values. The grade (in exposed
-units, so it holds if the exposure changes) is a slight warm balance, a log-space contrast around
+units, so it holds if the exposure changes) is a white balance a touch cool (lit warm-white paint reads white), a log-space contrast around
 a lit wall with a small toe and a smooth shoulder above it (sun patches and the view out of the
 windows keep their texture instead of clipping), a little saturation and a barely visible lens
 falloff. AO reads the

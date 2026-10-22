@@ -75,7 +75,7 @@ Module contracts and coordinate conventions are in [docs/architecture.md](docs/a
 ```bash
 npm install                      # Playwright, for tests only
 npm start                        # in one terminal
-npm run smoke                    # opens every sample in Plan, Split and Walk; screenshots to smoke-out/
+npm run smoke                    # opens every sample in Plan, Split and Walk; screenshots to smoke-out/, fails on any error
 node scripts/shot.mjs <url> <out.png> [--wait=expr]   # screenshot any page and report console errors
 ```
 

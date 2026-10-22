@@ -16,6 +16,7 @@
 //   signal          AbortSignal; aborting rejects with an AbortError
 import * as THREE from 'three';
 import { WebGLPathTracer, ProceduralEquirectTexture, ShapedAreaLight } from 'three-gpu-pathtracer';
+import { MeshBVH } from 'three-mesh-bvh';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import * as postfx from './postfx.js';
@@ -105,6 +106,20 @@ export function photoSupport() {
 const abortError = () => new DOMException('The photo was cancelled.', 'AbortError');
 const clampInt = (v, lo, hi, fallback) => (Number.isFinite(+v) ? Math.min(hi, Math.max(lo, Math.round(+v))) : fallback);
 
+/** Settles like promise, or rejects with an AbortError as soon as signal aborts. */
+function untilAborted(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const stop = () => reject(abortError());
+    if (signal.aborted) {
+      stop();
+      return;
+    }
+    signal.addEventListener('abort', stop, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+  });
+}
+
 // Answers each message a few milliseconds later. Timers in a worker keep running in a hidden page,
 // where the page's own timers fire about once a second at most.
 const TICKER = 'onmessage = () => setTimeout(() => postMessage(0), 4);';
@@ -115,7 +130,7 @@ let tickerUrl = null;
  * page (another tab in front, a minimized or covered window) gets no frames at all, so a pending
  * frame also ends when the page is hidden and from then on frame() is a tick. tick() waits a few
  * milliseconds on a worker's timer, or without a worker for a message event, which browsers do not
- * throttle either.
+ * throttle either; the setup yields with it, as it only has to let the page handle input.
  */
 function createClock(trash) {
   const waiting = [];
@@ -180,13 +195,17 @@ export async function renderPhoto({
   try {
     return await run(job, trash);
   } finally {
-    for (let i = trash.length - 1; i >= 0; i--) {
-      try {
-        trash[i]();
-      } catch (err) {
-        console.warn('Photo cleanup step failed', err);
+    const release = () => {
+      for (let i = trash.length - 1; i >= 0; i--) {
+        try {
+          trash[i]();
+        } catch (err) {
+          console.warn('Photo cleanup step failed', err);
+        }
       }
-    }
+    };
+    if (job.settle) job.settle(release);
+    else release();
   }
 }
 
@@ -203,9 +222,11 @@ async function run(job, trash) {
     }
   };
 
+  // The setup yields to the page between its steps, so the dialog stays live and Cancel takes
+  // effect at once (the BVH, the longest step, builds in a worker).
   const clock = createClock(trash);
   report(0, 'prepare');
-  await clock.frame();
+  await clock.tick();
   aborted();
 
   const canvas = document.createElement('canvas');
@@ -223,6 +244,40 @@ async function run(job, trash) {
     renderer.forceContextLoss();
   });
   gl = renderer.getContext();
+  // The photo's GL objects are released only once the GPU has caught up and three has finished
+  // compiling. Releasing them earlier waits for whatever the GPU is still doing (a shader compile
+  // can take many seconds), which would freeze the page just as a cancel should show, and three's
+  // compileAsync, which polls each program it starts until it is ready, throws once it is disposed.
+  const compiles = new Set();
+  const compileAsync = renderer.compileAsync.bind(renderer);
+  renderer.compileAsync = (...args) => {
+    const p = compileAsync(...args);
+    compiles.add(p);
+    p.then(() => compiles.delete(p));
+    return p;
+  };
+  job.settle = (release) => {
+    let pending = true;
+    const once = () => {
+      if (!pending) return;
+      pending = false;
+      release();
+    };
+    // A lost context never finishes compiling.
+    if (lost || gl.isContextLost()) {
+      once();
+      return;
+    }
+    canvas.addEventListener('webglcontextlost', once, { once: true });
+    const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
+    (async () => {
+      while (pending && fence && gl.clientWaitSync(fence, 0, 0) === gl.TIMEOUT_EXPIRED) await clock.tick();
+      if (fence) gl.deleteSync(fence);
+      await Promise.all(compiles);
+      once();
+    })();
+  };
   renderer.setPixelRatio(1);
   renderer.setSize(width, height, false);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -234,6 +289,8 @@ async function run(job, trash) {
   const camera = photoCamera(job.sourceCamera, width, height);
   const photo = photoScene(job.source, trash);
   if (!photo.meshes) throw new PhotoError('There is nothing in this view to render.', 'empty');
+  await clock.tick();
+  aborted();
 
   const pt = new WebGLPathTracer(renderer);
   trash.push(() => disposePathTracer(pt));
@@ -251,11 +308,23 @@ async function run(job, trash) {
   presize(pt, renderer, width, height);
 
   const setupStart = performance.now();
-  const result = pt.setScene(photo.scene, camera);
+  const builder = await bvhBuilder(trash, signal);
+  aborted();
+  let result;
+  if (builder) {
+    pt.setBVHWorker(builder);
+    result = await untilAborted(pt.setSceneAsync(photo.scene, camera), signal);
+  } else {
+    result = pt.setScene(photo.scene, camera);
+  }
+  aborted();
+  await clock.tick();
   aborted();
   const lighting = addLights(pt, photo, result, camera, patched, trash);
   if (lighting.materialsChanged) pt.updateMaterials();
   pt.updateLights();
+  await clock.tick();
+  aborted();
 
   const post = createPost(renderer, pt, result.geometry, camera, width, height, job.exposure);
   trash.push(() => post.dispose());
@@ -700,6 +769,109 @@ function presize(pt, renderer, width, height) {
   r.setSize(width, height);
   pt._lowResPathTracer?.setSize(Math.max(1, Math.floor(width * pt.lowResScale)), Math.max(1, Math.floor(height * pt.lowResScale)));
   if (renderer.extensions.get('EXT_float_blend') && r._blendTargets) for (const t of r._blendTargets) t.setSize(1, 1);
+}
+
+// Builds a MeshBVH from the arrays it is sent and sends back the tree, as three-mesh-bvh's own
+// GenerateMeshBVHWorker does (not vendored).
+const BVH_WORKER = (lib, three) => `
+  import { MeshBVH } from ${JSON.stringify(lib)};
+  import { BufferGeometry, BufferAttribute } from ${JSON.stringify(three)};
+  onmessage = ({ data }) => {
+    try {
+      const geometry = new BufferGeometry();
+      geometry.setAttribute('position', new BufferAttribute(data.position, 3));
+      if (data.index) geometry.setIndex(new BufferAttribute(data.index, 1));
+      for (const g of data.groups) geometry.addGroup(g.start, g.count, g.materialIndex);
+      geometry.setDrawRange(data.drawRange.start, data.drawRange.count);
+      const { roots, indirectBuffer } = MeshBVH.serialize(new MeshBVH(geometry, data.options), { cloneBuffers: false });
+      postMessage({ roots, indirectBuffer }, indirectBuffer ? [...roots, indirectBuffer.buffer] : roots);
+    } catch (err) {
+      postMessage({ error: String(err?.message || err) });
+    }
+  };`;
+let bvhWorkerUrl = null;
+
+/**
+ * The path tracer's BVH in a worker: building it is the longest step of the setup (several seconds
+ * for a large plan), and the page stays responsive meanwhile. Module workers do not see the page's
+ * import map, so the worker loads the vendored three-mesh-bvh with its import of three pointed at
+ * the page's copy. Resolves with null where that cannot work; a build the worker fails is done here.
+ */
+async function bvhBuilder(trash, signal) {
+  let worker;
+  try {
+    bvhWorkerUrl ??= (async () => {
+      const three = import.meta.resolve('three');
+      const res = await fetch(import.meta.resolve('three-mesh-bvh'));
+      if (!res.ok) throw new Error(`three-mesh-bvh: ${res.status}`);
+      const lib = (await res.text()).replace(/from\s*(['"])three\1/g, `from ${JSON.stringify(three)}`);
+      const libUrl = URL.createObjectURL(new Blob([lib], { type: 'text/javascript' }));
+      return URL.createObjectURL(new Blob([BVH_WORKER(libUrl, three)], { type: 'text/javascript' }));
+    })();
+    worker = new Worker(await bvhWorkerUrl, { type: 'module' });
+  } catch (err) {
+    console.warn('Photo BVH worker unavailable; building on the page.', err);
+    bvhWorkerUrl = null;
+    return null;
+  }
+  let failed = false;
+  let disposed = false;
+  let fallback = null;
+  worker.onerror = (e) => {
+    e.preventDefault();
+    if (!failed) console.warn('Photo BVH worker did not start; building on the page.');
+    failed = true;
+    fallback?.();
+  };
+  // Cancelling stops the build at once, even while the rest of the cleanup waits (see job.settle).
+  const stop = () => {
+    disposed = true;
+    worker.terminate();
+  };
+  signal?.addEventListener('abort', stop, { once: true });
+  trash.push(() => {
+    signal?.removeEventListener('abort', stop);
+    stop();
+  });
+  return {
+    // The interface PathTracingSceneGenerator expects of a BVH worker.
+    generate(geometry, options) {
+      const { onProgress: _, ...rest } = options; // functions cannot go to a worker
+      return new Promise((resolve) => {
+        const here = () => {
+          fallback = null;
+          if (!disposed) resolve(new MeshBVH(geometry, options));
+        };
+        if (failed) {
+          here();
+          return;
+        }
+        fallback = here;
+        worker.onmessage = ({ data }) => {
+          fallback = null;
+          if (disposed) return;
+          if (data.error) {
+            console.warn('Photo BVH worker failed; building on the page.', data.error);
+            here();
+            return;
+          }
+          const bvh = MeshBVH.deserialize({ roots: data.roots, index: null, indirectBuffer: data.indirectBuffer }, geometry, { setIndex: false });
+          geometry.boundingBox ??= bvh.getBoundingBox(new THREE.Box3());
+          resolve(bvh);
+        };
+        try {
+          // Copies: the merged geometry keeps its arrays.
+          worker.postMessage({
+            position: geometry.attributes.position.array, index: geometry.index?.array ?? null,
+            groups: geometry.groups, drawRange: geometry.drawRange, options: rest,
+          });
+        } catch (err) {
+          console.warn('Photo BVH worker failed; building on the page.', err);
+          here();
+        }
+      });
+    },
+  };
 }
 
 /** WebGLPathTracer.dispose() in 0.0.23 throws, so release its parts here; the context goes too. */

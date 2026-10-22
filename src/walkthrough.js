@@ -533,6 +533,8 @@ export class Walkthrough extends EventTarget {
     // Frame governor state: recent motion frame times, frames to leave out, motion time with headroom,
     // the headroom needed before stepping up, and the motion time since the last step up.
     this._perf = { win: [], skip: 0, calm: 0, upAfter: STEP_UP_AFTER, since: Infinity };
+    this._fastScene = false;
+    this._casters = [];
     this._restore = {};
 
     this._setupDom();
@@ -627,6 +629,12 @@ export class Walkthrough extends EventTarget {
     this._ceilTop = Math.max(plan.settings.wallHeight, ...plan.rooms.map((r) => r.height || 0)) + 1.2;
     this._renderer.shadowMap.needsUpdate = true;
     this._captureEnvironment(built);
+    // The item meshes this build lets cast sun shadows, which 'fast' turns off; the capture above saw
+    // the full scene, so the reflections are the same at every level.
+    this._casters = [];
+    built.root.getObjectByName('furnishings')?.traverse((o) => { if (o.isMesh && o.castShadow) this._casters.push(o); });
+    this._fastScene = false;
+    this._setFastScene(this._quality === 'fast');
     this._postfx.setSceneBounds(aoBounds(built.bounds, this._ceilTop));
     const far = Math.max(600, (built.root.userData.horizon || 1000) * 1.3);
     for (const cam of [this._camera, this._orbitCam, this._tweenCam]) {
@@ -737,13 +745,15 @@ export class Walkthrough extends EventTarget {
         renderer.setPixelRatio(this._baseRatio);
         this._applySize();
       }
-      const ring = this._ring.visible;
+      const ring = this._ring.visible, fastScene = this._fastScene;
       this._ring.visible = false;
       try {
         if (this._postfx.quality !== level) this._postfx.setQuality(level);
+        this._setFastScene(level === 'fast');
         this._render();
         this._canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not capture the 3D view.'))), 'image/png');
       } finally {
+        this._setFastScene(fastScene);
         if (this._postfx.quality !== this._quality) this._postfx.setQuality(this._quality);
         this._ring.visible = ring;
         this._skipFrames();
@@ -1017,6 +1027,7 @@ export class Walkthrough extends EventTarget {
   }
 
   _disposeBuilt() {
+    this._casters = [];
     this._built.dispose();
     for (const t of this._buildTextures) t.dispose();
     this._buildTextures = new Set();
@@ -1135,7 +1146,10 @@ export class Walkthrough extends EventTarget {
     let active = false, heavy = false;
     try {
       active = this._update(dt);
-      const ratio = active || this._look?.moved || this._pinch ? this._motionRatio : this._baseRatio;
+      const moving = active || this._look?.moved || this._pinch;
+      // Changing the 'fast' scene recompiles the lit materials, so it waits until the view is still.
+      if (!moving) this._setFastScene(this._quality === 'fast');
+      const ratio = moving ? this._motionRatio : this._baseRatio;
       if (this._renderer.getPixelRatio() !== ratio) {
         this._renderer.setPixelRatio(ratio);
         this._applySize();
@@ -1243,6 +1257,22 @@ export class Walkthrough extends EventTarget {
     this._resetGovernor(changed ? SKIP_FRAMES : 0);
     this.dispatchEvent(new CustomEvent('quality', { detail: { quality, chosen: this._chosenQuality, auto } }));
     this._invalidate();
+  }
+
+  /**
+   * In 'fast' the view also leaves out the window and fixture reflections (area lights, evaluated on
+   * every pixel) and the items' sun shadows, so redrawing the shadow map (as when the ceilings
+   * toggle) costs less. Each build starts with the full scene; rebuild() applies the level in use.
+   */
+  _setFastScene(on) {
+    const built = this._built;
+    if (!built || on === this._fastScene) return;
+    this._fastScene = on;
+    const daylight = built.root.userData.daylight;
+    if (daylight) daylight.visible = !on;
+    for (const mesh of this._casters) mesh.castShadow = !on;
+    if (this._casters.length) this._renderer.shadowMap.needsUpdate = true;
+    this._dirty = true;
   }
 
   _update(dt) {

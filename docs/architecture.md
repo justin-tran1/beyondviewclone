@@ -304,7 +304,9 @@ steps the quality down one level at a time (never above the chosen level), then 
 ratio used while moving; idle frames keep the full pixel ratio. After 3 s of moving with three
 frames in four under 24 ms it steps back up one notch toward the chosen level, the pixel ratio
 first; a step up that turns out too slow within 10 s doubles that wait. Stills (`screenshot()`)
-are drawn at the chosen level. After each build it fits the sun to the plan, captures the interior for reflections
+are drawn at the chosen level. In 'fast' the scene also leaves out the window and fixture
+reflections (area lights) and the items' sun shadows; switching that recompiles shaders, so it
+waits until the view is still. After each build it fits the sun to the plan, captures the interior for reflections
 (`captureEnvironment`, when builder3d.js offers it) and limits AO to the building. It owns one kit
 for its whole life: rebuilds release only what each build made (`built.dispose()` plus the canvas
 textures items drew), and `dispose()` calls `kit.dispose()`, releases the builder's shared

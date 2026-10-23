@@ -16,6 +16,7 @@
 //   signal          AbortSignal; aborting rejects with an AbortError
 import * as THREE from 'three';
 import { WebGLPathTracer, ProceduralEquirectTexture, ShapedAreaLight } from 'three-gpu-pathtracer';
+import { MeshBVH } from 'three-mesh-bvh';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import * as postfx from './postfx.js';
@@ -34,16 +35,21 @@ for (const key of ['backgroundRotation', 'environmentRotation']) {
 /** Same as the walkthrough (src/walkthrough.js), so photos and the live view agree in brightness. */
 export const PHOTO_EXPOSURE = 1.8;
 // Path traced light reaches walls and ceilings only by real bounces, while the live view adds a fill
-// from its light map and environment, so at the same exposure photos came out 0.3 to 0.65 stops
-// darker in the midtones (lab and office samples). Photos are exposed up by this much to match.
-const PHOTO_GAIN = 2 ** 0.3;
+// from its light map and environment. Over ten lab, medical and office views (dev/photo-test.html,
+// same camera, median display luminance, fixtures at FIXTURE_RADIANCE) photos at the live exposure
+// came out 1.2 stops darker in the median, 0.6 to 1.4 outside the open office floor, so they are
+// exposed up by that much. The open office's views stay 0.7 to 1.5 stops darker than the live
+// view (its dark open deck, and more fixtures than become lights).
+const PHOTO_GAIN = 2 ** 1.2;
 
 // Light levels are scene-linear radiance (or irradiance for the sun), before exposure. The sky is the
 // real-time dome's colors times SKY.scale, so windows read brighter than the room, as in a photo
 // exposed for the interior; the fallback colors are for scenes without the dome.
 const SKY = { scale: 5.2, horizon: '#e8eff2', zenith: '#8ab7da' };
 const SUN_IRRADIANCE = 7.8;
-const FIXTURE_RADIANCE = 10; // a lay-in LED panel; smaller fixtures are brighter for the same output
+// Fitted with PHOTO_GAIN so rooms lit by their fixtures match the live view as well as daylit rooms
+// do; at half this, fixture-lit rooms came out about half a stop darker than daylit ones.
+const FIXTURE_RADIANCE = 20; // a lay-in LED panel; smaller fixtures are brighter for the same output
 const FIXTURE_MIN = 0.6; // emission (radiance) from which a surface counts as a light fixture
 const FIXTURE_AREA = 0.3; // m2, the panel size FIXTURE_RADIANCE is set for
 const MAX_FIXTURE_LIGHTS = 24;
@@ -98,8 +104,72 @@ export function photoSupport() {
 }
 
 const abortError = () => new DOMException('The photo was cancelled.', 'AbortError');
-const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
 const clampInt = (v, lo, hi, fallback) => (Number.isFinite(+v) ? Math.min(hi, Math.max(lo, Math.round(+v))) : fallback);
+
+/** Settles like promise, or rejects with an AbortError as soon as signal aborts. */
+function untilAborted(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const stop = () => reject(abortError());
+    if (signal.aborted) {
+      stop();
+      return;
+    }
+    signal.addEventListener('abort', stop, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+  });
+}
+
+// Answers each message a few milliseconds later. Timers in a worker keep running in a hidden page,
+// where the page's own timers fire about once a second at most.
+const TICKER = 'onmessage = () => setTimeout(() => postMessage(0), 4);';
+let tickerUrl = null;
+
+/**
+ * The photo's pace. frame() waits for the next display frame while the page is visible; a hidden
+ * page (another tab in front, a minimized or covered window) gets no frames at all, so a pending
+ * frame also ends when the page is hidden and from then on frame() is a tick. tick() waits a few
+ * milliseconds on a worker's timer, or without a worker for a message event, which browsers do not
+ * throttle either; the setup yields with it, as it only has to let the page handle input.
+ */
+function createClock(trash) {
+  const waiting = [];
+  const wake = () => waiting.shift()?.();
+  const channel = new MessageChannel();
+  channel.port1.onmessage = wake;
+  let worker = null;
+  try {
+    tickerUrl ??= URL.createObjectURL(new Blob([TICKER], { type: 'text/javascript' }));
+    worker = new Worker(tickerUrl);
+    worker.onmessage = wake;
+    worker.onerror = (e) => {
+      // Blocked by the page's security policy, say: answer what it was asked on the channel.
+      e.preventDefault();
+      worker = null;
+      for (let i = 0; i < waiting.length; i++) channel.port2.postMessage(0);
+    };
+  } catch {
+    worker = null;
+  }
+  trash.push(() => {
+    worker?.terminate();
+    channel.port1.close();
+  });
+  const tick = () => new Promise((resolve) => {
+    waiting.push(resolve);
+    (worker || channel.port2).postMessage(0);
+  });
+  const frame = () => (document.hidden ? tick() : new Promise((resolve) => {
+    const done = () => {
+      cancelAnimationFrame(id);
+      document.removeEventListener('visibilitychange', done);
+      resolve();
+    };
+    const id = requestAnimationFrame(done);
+    document.addEventListener('visibilitychange', done);
+  }));
+  return { frame, tick };
+}
 
 /** Ray-traced PNG of camera's view of scene. See the top of this file. */
 export async function renderPhoto({
@@ -125,13 +195,17 @@ export async function renderPhoto({
   try {
     return await run(job, trash);
   } finally {
-    for (let i = trash.length - 1; i >= 0; i--) {
-      try {
-        trash[i]();
-      } catch (err) {
-        console.warn('Photo cleanup step failed', err);
+    const release = () => {
+      for (let i = trash.length - 1; i >= 0; i--) {
+        try {
+          trash[i]();
+        } catch (err) {
+          console.warn('Photo cleanup step failed', err);
+        }
       }
-    }
+    };
+    if (job.settle) job.settle(release);
+    else release();
   }
 }
 
@@ -148,8 +222,11 @@ async function run(job, trash) {
     }
   };
 
+  // The setup yields to the page between its steps, so the dialog stays live and Cancel takes
+  // effect at once (the BVH, the longest step, builds in a worker).
+  const clock = createClock(trash);
   report(0, 'prepare');
-  await nextFrame();
+  await clock.tick();
   aborted();
 
   const canvas = document.createElement('canvas');
@@ -167,6 +244,40 @@ async function run(job, trash) {
     renderer.forceContextLoss();
   });
   gl = renderer.getContext();
+  // The photo's GL objects are released only once the GPU has caught up and three has finished
+  // compiling. Releasing them earlier waits for whatever the GPU is still doing (a shader compile
+  // can take many seconds), which would freeze the page just as a cancel should show, and three's
+  // compileAsync, which polls each program it starts until it is ready, throws once it is disposed.
+  const compiles = new Set();
+  const compileAsync = renderer.compileAsync.bind(renderer);
+  renderer.compileAsync = (...args) => {
+    const p = compileAsync(...args);
+    compiles.add(p);
+    p.then(() => compiles.delete(p));
+    return p;
+  };
+  job.settle = (release) => {
+    let pending = true;
+    const once = () => {
+      if (!pending) return;
+      pending = false;
+      release();
+    };
+    // A lost context never finishes compiling.
+    if (lost || gl.isContextLost()) {
+      once();
+      return;
+    }
+    canvas.addEventListener('webglcontextlost', once, { once: true });
+    const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
+    (async () => {
+      while (pending && fence && gl.clientWaitSync(fence, 0, 0) === gl.TIMEOUT_EXPIRED) await clock.tick();
+      if (fence) gl.deleteSync(fence);
+      await Promise.all(compiles);
+      once();
+    })();
+  };
   renderer.setPixelRatio(1);
   renderer.setSize(width, height, false);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -178,11 +289,16 @@ async function run(job, trash) {
   const camera = photoCamera(job.sourceCamera, width, height);
   const photo = photoScene(job.source, trash);
   if (!photo.meshes) throw new PhotoError('There is nothing in this view to render.', 'empty');
+  await clock.tick();
+  aborted();
 
   const pt = new WebGLPathTracer(renderer);
   trash.push(() => disposePathTracer(pt));
   const patched = patchEmission(pt);
   if (!patched) for (const m of photo.fixtureMaterials) unflagFixture(m);
+  patchShadows(pt);
+  // One recompile for both patches: each one compiles the whole path tracing shader.
+  if (pt._pathTracer?.material) pt._pathTracer.material.needsUpdate = true;
   Object.assign(pt, { renderDelay: 0, fadeDuration: 0, minSamples: 0, dynamicLowRes: false, rasterizeScene: false, renderToCanvas: false });
   pt.bounces = job.bounces;
   pt.transmissiveBounces = 8;
@@ -192,11 +308,23 @@ async function run(job, trash) {
   presize(pt, renderer, width, height);
 
   const setupStart = performance.now();
-  const result = pt.setScene(photo.scene, camera);
+  const builder = await bvhBuilder(trash, signal);
+  aborted();
+  let result;
+  if (builder) {
+    pt.setBVHWorker(builder);
+    result = await untilAborted(pt.setSceneAsync(photo.scene, camera), signal);
+  } else {
+    result = pt.setScene(photo.scene, camera);
+  }
+  aborted();
+  await clock.tick();
   aborted();
   const lighting = addLights(pt, photo, result, camera, patched, trash);
   if (lighting.materialsChanged) pt.updateMaterials();
   pt.updateLights();
+  await clock.tick();
+  aborted();
 
   const post = createPost(renderer, pt, result.geometry, camera, width, height, job.exposure);
   trash.push(() => post.dispose());
@@ -234,7 +362,7 @@ async function run(job, trash) {
   let started = false;
   report(0, 'compile');
   while (finished < samples) {
-    await nextFrame();
+    await clock.frame();
     aborted();
     if (!settled()) continue;
     if (issuedAt) {
@@ -248,7 +376,8 @@ async function run(job, trash) {
       finished = queued;
       started = true;
       let preview = null;
-      if (job.onProgress && finished < samples && performance.now() - lastPreview > 1000) {
+      // Previews are skipped while the page is hidden, where nobody sees them.
+      if (job.onProgress && finished < samples && !document.hidden && performance.now() - lastPreview > 1000) {
         post.compose(finished);
         lastPreview = performance.now();
         preview = canvas;
@@ -609,9 +738,25 @@ function patchEmission(pt) {
   if (patched.split(end).length === 2) {
     patched = patched.replace(end, `if ( ! all( lessThan( abs( gl_FragColor.rgb ), vec3( 1e20 ) ) ) ) gl_FragColor.rgb = vec3( 0.0 );\n\t\t\t\t\t${end}`);
   }
-  material.fragmentShader = patched;
-  material.needsUpdate = true;
+  material.fragmentShader = patched; // compiled by the caller's needsUpdate
   return true;
+}
+
+/**
+ * The path tracer lets a shadow ray through a single-sided surface it meets from the front (light
+ * passes through the back side), so sun and sky reached every room through the down-facing ceilings
+ * and roof deck. Here opaque surfaces block light from both sides, as the probes in addLights assume;
+ * rays from the camera and bounces still pass through back faces, so nothing new comes into view.
+ */
+function patchShadows(pt) {
+  const material = pt._pathTracer?.material;
+  const fs = material?.fragmentShader;
+  const sided = 'material.side != 0.0 && surfaceHit.side == material.side';
+  if (typeof fs !== 'string' || fs.split(sided).length !== 2) {
+    console.warn('three-gpu-pathtracer changed; photo daylight may come through single-sided ceilings.');
+    return;
+  }
+  material.fragmentShader = fs.replace(sided, 'false'); // compiled by the caller's needsUpdate
 }
 
 /**
@@ -624,6 +769,109 @@ function presize(pt, renderer, width, height) {
   r.setSize(width, height);
   pt._lowResPathTracer?.setSize(Math.max(1, Math.floor(width * pt.lowResScale)), Math.max(1, Math.floor(height * pt.lowResScale)));
   if (renderer.extensions.get('EXT_float_blend') && r._blendTargets) for (const t of r._blendTargets) t.setSize(1, 1);
+}
+
+// Builds a MeshBVH from the arrays it is sent and sends back the tree, as three-mesh-bvh's own
+// GenerateMeshBVHWorker does (not vendored).
+const BVH_WORKER = (lib, three) => `
+  import { MeshBVH } from ${JSON.stringify(lib)};
+  import { BufferGeometry, BufferAttribute } from ${JSON.stringify(three)};
+  onmessage = ({ data }) => {
+    try {
+      const geometry = new BufferGeometry();
+      geometry.setAttribute('position', new BufferAttribute(data.position, 3));
+      if (data.index) geometry.setIndex(new BufferAttribute(data.index, 1));
+      for (const g of data.groups) geometry.addGroup(g.start, g.count, g.materialIndex);
+      geometry.setDrawRange(data.drawRange.start, data.drawRange.count);
+      const { roots, indirectBuffer } = MeshBVH.serialize(new MeshBVH(geometry, data.options), { cloneBuffers: false });
+      postMessage({ roots, indirectBuffer }, indirectBuffer ? [...roots, indirectBuffer.buffer] : roots);
+    } catch (err) {
+      postMessage({ error: String(err?.message || err) });
+    }
+  };`;
+let bvhWorkerUrl = null;
+
+/**
+ * The path tracer's BVH in a worker: building it is the longest step of the setup (several seconds
+ * for a large plan), and the page stays responsive meanwhile. Module workers do not see the page's
+ * import map, so the worker loads the vendored three-mesh-bvh with its import of three pointed at
+ * the page's copy. Resolves with null where that cannot work; a build the worker fails is done here.
+ */
+async function bvhBuilder(trash, signal) {
+  let worker;
+  try {
+    bvhWorkerUrl ??= (async () => {
+      const three = import.meta.resolve('three');
+      const res = await fetch(import.meta.resolve('three-mesh-bvh'));
+      if (!res.ok) throw new Error(`three-mesh-bvh: ${res.status}`);
+      const lib = (await res.text()).replace(/from\s*(['"])three\1/g, `from ${JSON.stringify(three)}`);
+      const libUrl = URL.createObjectURL(new Blob([lib], { type: 'text/javascript' }));
+      return URL.createObjectURL(new Blob([BVH_WORKER(libUrl, three)], { type: 'text/javascript' }));
+    })();
+    worker = new Worker(await bvhWorkerUrl, { type: 'module' });
+  } catch (err) {
+    console.warn('Photo BVH worker unavailable; building on the page.', err);
+    bvhWorkerUrl = null;
+    return null;
+  }
+  let failed = false;
+  let disposed = false;
+  let fallback = null;
+  worker.onerror = (e) => {
+    e.preventDefault();
+    if (!failed) console.warn('Photo BVH worker did not start; building on the page.');
+    failed = true;
+    fallback?.();
+  };
+  // Cancelling stops the build at once, even while the rest of the cleanup waits (see job.settle).
+  const stop = () => {
+    disposed = true;
+    worker.terminate();
+  };
+  signal?.addEventListener('abort', stop, { once: true });
+  trash.push(() => {
+    signal?.removeEventListener('abort', stop);
+    stop();
+  });
+  return {
+    // The interface PathTracingSceneGenerator expects of a BVH worker.
+    generate(geometry, options) {
+      const { onProgress: _, ...rest } = options; // functions cannot go to a worker
+      return new Promise((resolve) => {
+        const here = () => {
+          fallback = null;
+          if (!disposed) resolve(new MeshBVH(geometry, options));
+        };
+        if (failed) {
+          here();
+          return;
+        }
+        fallback = here;
+        worker.onmessage = ({ data }) => {
+          fallback = null;
+          if (disposed) return;
+          if (data.error) {
+            console.warn('Photo BVH worker failed; building on the page.', data.error);
+            here();
+            return;
+          }
+          const bvh = MeshBVH.deserialize({ roots: data.roots, index: null, indirectBuffer: data.indirectBuffer }, geometry, { setIndex: false });
+          geometry.boundingBox ??= bvh.getBoundingBox(new THREE.Box3());
+          resolve(bvh);
+        };
+        try {
+          // Copies: the merged geometry keeps its arrays.
+          worker.postMessage({
+            position: geometry.attributes.position.array, index: geometry.index?.array ?? null,
+            groups: geometry.groups, drawRange: geometry.drawRange, options: rest,
+          });
+        } catch (err) {
+          console.warn('Photo BVH worker failed; building on the page.', err);
+          here();
+        }
+      });
+    },
+  };
 }
 
 /** WebGLPathTracer.dispose() in 0.0.23 throws, so release its parts here; the context goes too. */

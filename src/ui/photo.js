@@ -260,7 +260,9 @@ export function openPhotoDialog({ store, prefs = {}, getWalk, sizes = PHOTO_SIZE
     closeBtn.focus({ preventScroll: true });
     setProgress(null, 'Preparing the scene');
     const t0 = performance.now();
-    let firstAt = 0, firstDone = 0;
+    // The time left comes from the last 20 seconds of samples, so a pause (a laptop asleep, say)
+    // does not throw it off for the rest of the render.
+    const recent = [];
     try {
       const result = await photo.renderPhoto({
         scene: ctx.scene, camera, width: job.size.width, height: job.size.height, samples: job.quality.samples,
@@ -272,11 +274,10 @@ export function openPhotoDialog({ store, prefs = {}, getWalk, sizes = PHOTO_SIZE
           else if (phase === 'compile') setProgress(null, 'Starting the ray tracer on your graphics card');
           else if (phase === 'render') {
             const now = performance.now();
-            if (!firstAt) {
-              firstAt = now;
-              firstDone = done;
-            }
-            const rate = done > firstDone ? (now - firstAt) / (done - firstDone) : 0;
+            recent.push([now, done]);
+            while (recent.length > 2 && now - recent[1][0] > 20000) recent.shift();
+            const [since, from] = recent[0];
+            const rate = done > from ? (now - since) / (done - from) : 0;
             const left = rate ? `, ${remaining(rate * (total - done))}` : '';
             setProgress(done / total, `Rendering: ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} samples${left}`);
           }

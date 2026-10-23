@@ -40,8 +40,8 @@ without a code change, run the workflow from the Actions tab.
 The quality menu on the 3D view sets how it is drawn: **Realistic** (soft contact shadows, window
 glow, filmic color and smooth edges), **Balanced** (lighter shading for smoother movement) or
 **Fast** (plain shading for older computers). If moving gets slow, the view steps down on its own
-and the menu says so; it never goes above the level you picked. Browsers without WebGL 2 always
-draw Fast.
+and the menu says so; once moving is smooth again it steps back up, never above the level you picked.
+Saved images always use the level you picked. Browsers without WebGL 2 always draw Fast.
 
 Plans save as `.cbreplan.json` files (the traced image is embedded) and autosave in the browser.
 Press `?` in the app for every keyboard shortcut.
@@ -75,7 +75,7 @@ Module contracts and coordinate conventions are in [docs/architecture.md](docs/a
 ```bash
 npm install                      # Playwright, for tests only
 npm start                        # in one terminal
-npm run smoke                    # opens every sample in Plan, Split and Walk; screenshots to smoke-out/
+npm run smoke                    # opens every sample in Plan, Split and Walk; screenshots to smoke-out/, fails on any error
 node scripts/shot.mjs <url> <out.png> [--wait=expr]   # screenshot any page and report console errors
 ```
 

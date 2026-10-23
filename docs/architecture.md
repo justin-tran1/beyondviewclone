@@ -372,10 +372,11 @@ exposure (the dialog passes the live view's `toneMappingExposure`). Path traced 
 get no fill light, so at that exposure photos read darker than the live view, by an amount that
 varies from room to room. The dialog therefore also passes `meter`, the live view's median
 scene-linear luminance (`walk.meterView()`, read back from the post chain's scene target through
-postfx.js `meter()`), and after a few samples the photo sets its exposure so its own median matches
-(within -1 to +3 stops). Without `meter` it is raised by `PHOTO_GAIN` (1.2 stops, fitted together
-with the fixtures' output) instead. Opaque surfaces block sun and sky from
-both sides, so none comes in through the single-sided ceilings and roof deck. The BVH is built in a
+postfx.js `meter()`), and after a few samples the photo sets its exposure so the median of its
+denoised image matches (less a quarter stop for the live view's AO, within -1 to +3.5 stops).
+Without `meter` it is raised by `PHOTO_GAIN` (1.2 stops, fitted together with the fixtures' output)
+instead. Opaque surfaces block sun and sky from both sides, so none comes in through the
+single-sided ceilings and roof deck. The BVH is built in a
 worker and the setup yields between its steps, so the page stays responsive; rendering goes on while
 the tab is hidden. `onProgress(done, total,
 { phase, preview, stats })` reports 'prepare', 'compile', 'render' and 'finish'; aborting `signal`

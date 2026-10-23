@@ -44,10 +44,14 @@ export const PHOTO_EXPOSURE = 1.8;
 // view (its dark open deck, and more fixtures than become lights).
 const PHOTO_GAIN = 2 ** 1.2;
 // So each photo is metered instead: after this many samples its median luminance is set to the
-// live view's (the same exposure semantics, so the display medians match), within METER_RANGE
-// stops of the live exposure. Previews before then use PHOTO_GAIN.
+// live view's (the same exposure semantics, so the display medians match), less METER_BIAS stops
+// for the live view's ambient occlusion, which comes after the scene pass the meter reads, within
+// METER_RANGE stops of the live exposure. Previews before then use PHOTO_GAIN. Measured on the lab
+// lobby, open office and warehouse aisle (dev/photo-test.html): within about 0.15 stops of the
+// live view's median, against -1.2 to +0.1 with PHOTO_GAIN alone.
 const METER_SAMPLES = 4;
-const METER_RANGE = [-1, 3];
+const METER_BIAS = 0.25;
+const METER_RANGE = [-1, 3.5];
 
 // Light levels are scene-linear radiance (or irradiance for the sun), before exposure. The sky is the
 // real-time dome's colors times SKY.scale, so windows read brighter than the room, as in a photo
@@ -390,7 +394,7 @@ async function run(job, trash) {
         metered = true;
         const median = post.meter(finished);
         if (median) {
-          const stops = THREE.MathUtils.clamp(Math.log2(job.meter / median), METER_RANGE[0], METER_RANGE[1]);
+          const stops = THREE.MathUtils.clamp(Math.log2(job.meter / median) - METER_BIAS, METER_RANGE[0], METER_RANGE[1]);
           post.setExposure(job.liveExposure * 2 ** stops);
           stats.meteredStops = Math.round(stops * 100) / 100;
         }

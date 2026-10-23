@@ -597,6 +597,17 @@ export class Walkthrough extends EventTarget {
     return { renderer: this._renderer, scene: this._scene, camera: this._activeCamera(), built: this._built };
   }
 
+  /**
+   * Median scene-linear luminance of the current view before exposure (postfx.js meter()), from a
+   * frame drawn fresh at the level in use, or null where it cannot be measured. Photos expose to it.
+   */
+  meterView() {
+    if (!this._built || this._disposed || !this._applySize()) return null;
+    this._render();
+    this._invalidate();
+    return this._postfx.meter();
+  }
+
   start() {
     if (this._running) return;
     this._running = true;

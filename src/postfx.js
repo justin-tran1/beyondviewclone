@@ -654,6 +654,45 @@ function chainSupported(renderer) {
   return renderer.capabilities.isWebGL2 && (ext.has('EXT_color_buffer_float') || ext.has('EXT_color_buffer_half_float'));
 }
 
+/**
+ * Median scene-linear luminance of an HDR texture, read back from a small grid of point samples
+ * (plenty for a median), or null where float color buffers cannot be read back. Photos meter
+ * against the live view with it.
+ */
+export function medianLuminance(renderer, texture, width = 96, height = 54) {
+  if (!renderer.capabilities.isWebGL2 || !renderer.extensions.has('EXT_color_buffer_float')) return null;
+  const rt = new THREE.WebGLRenderTarget(width, height, {
+    type: THREE.FloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+  });
+  const quad = new FullScreenQuad(new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.clone(CopyShader.uniforms),
+    vertexShader: CopyShader.vertexShader,
+    fragmentShader: CopyShader.fragmentShader,
+    blending: THREE.NoBlending, depthTest: false, depthWrite: false,
+  }));
+  const prev = renderer.getRenderTarget();
+  try {
+    quad.material.uniforms.tDiffuse.value = texture;
+    renderer.setRenderTarget(rt);
+    quad.render(renderer);
+    const px = new Float32Array(width * height * 4);
+    renderer.readRenderTargetPixels(rt, 0, 0, width, height, px);
+    const y = [];
+    for (let i = 0; i < px.length; i += 4) {
+      const v = LUMA.x * px[i] + LUMA.y * px[i + 1] + LUMA.z * px[i + 2];
+      if (Number.isFinite(v)) y.push(v);
+    }
+    y.sort((a, b) => a - b);
+    const median = y[y.length >> 1];
+    return median > 0 ? median : null;
+  } finally {
+    renderer.setRenderTarget(prev);
+    rt.dispose();
+    quad.material.dispose();
+    quad.dispose();
+  }
+}
+
 function loaded(texture) {
   const img = texture.image;
   if (!img || (img.complete && img.naturalWidth)) return Promise.resolve();
@@ -666,7 +705,7 @@ function loaded(texture) {
 /**
  * createPostFX(renderer, scene, camera, { quality, onReady, overlay }) ->
  *   { render(camera?), setSize(width, height, pixelRatio), setQuality(q), quality, qualities, camera,
- *     setSceneBounds(box3 | null), ready, dispose() }
+ *     setSceneBounds(box3 | null), meter(), ready, dispose() }
  * The passes are created the first time a frame renders; 'fast' uses only the scene pass and its
  * own output pass, and the other buffers are released while it is in use. render(camera) draws with
  * that camera (default: api.camera). overlay is an optional scene drawn after the chain, straight
@@ -841,6 +880,15 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
       } finally {
         info.autoReset = autoReset;
       }
+    },
+
+    /**
+     * Median scene-linear luminance (before exposure, AO and grade) of the last frame drawn, or
+     * null when it cannot be measured here. Photos are exposed to match it.
+     */
+    meter() {
+      if (direct || !chain || disposed) return null;
+      return medianLuminance(renderer, chain.renderPass.sceneTarget.texture);
     },
 
     /** width and height in CSS pixels, as given to renderer.setSize. */

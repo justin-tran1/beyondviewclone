@@ -266,7 +266,7 @@ export function openPhotoDialog({ store, prefs = {}, getWalk, sizes = PHOTO_SIZE
     try {
       const result = await photo.renderPhoto({
         scene: ctx.scene, camera, width: job.size.width, height: job.size.height, samples: job.quality.samples,
-        exposure: ctx.renderer?.toneMappingExposure, signal,
+        exposure: ctx.renderer?.toneMappingExposure, meter: walk.meterView?.(), signal,
         onProgress: (done, total, { phase, preview }) => {
           if (signal.aborted) return;
           if (preview) drawPreview(preview);

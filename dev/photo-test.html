@@ -6,7 +6,8 @@
   <!--
     Renders a sample's saved view with src/photo.js next to the real-time view of the same camera.
     Query: sample (lab-suite), view (0), w (640), h (360), samples (32), bounces (by samples),
-    realtime (1 to show it), quality (high, the real-time level). window.photoResult reports
+    realtime (1 to show it, and meter the photo against it; meter=0 to skip that), quality (high,
+    the real-time level). window.photoResult reports
     timings and scene statistics when done.
   -->
   <script type="importmap">
@@ -82,19 +83,22 @@
     camera.rotation.set((cam.pitch * Math.PI) / 180, (-cam.yaw * Math.PI) / 180, 0);
     camera.updateMatrixWorld();
 
+    // With the real-time view drawn, the photo is metered against it, as the Render photo dialog does.
+    let meter = null;
     if (params.get('realtime') === '1') {
       document.getElementById('rt-fig').hidden = false;
       const fx = createPostFX(renderer, scene, camera, { quality: params.get('quality') || 'high' });
       fx.setSize(W, H, 1);
       await fx.ready;
       fx.render(camera);
+      if (params.get('meter') !== '0') meter = fx.meter?.() ?? null;
     }
 
     const t0 = performance.now();
     const times = {};
     const log = [];
     const blob = await renderPhoto({
-      scene, camera, width: W, height: H, samples: target, bounces: params.get('bounces') ? +params.get('bounces') : null,
+      scene, camera, width: W, height: H, samples: target, bounces: params.get('bounces') ? +params.get('bounces') : null, meter,
       onProgress: (done, total, { phase, stats }) => {
         if (stats) times.stats = stats;
         times[phase] ??= Math.round(performance.now() - t0);

@@ -4,12 +4,14 @@
 // accumulated image is denoised (an edge-aware a-trous filter guided by depth, normals and albedo),
 // given a subtle bloom and tone mapped with the walkthrough's grade and AgX curve at its exposure.
 //
-// renderPhoto({ scene, camera, width, height, samples, onProgress, signal, exposure, bounces })
+// renderPhoto({ scene, camera, width, height, samples, onProgress, signal, exposure, meter, bounces })
 //   -> Promise<Blob> (PNG)
 //   scene, camera   what to draw (walk.renderContext); neither is changed. Objects flagged
 //                   userData.overlay are left out, with everything under them
-//   exposure        the live view's toneMappingExposure (default PHOTO_EXPOSURE); photos are
-//                   exposed PHOTO_GAIN above it to match the live view's brightness
+//   exposure        the live view's toneMappingExposure (default PHOTO_EXPOSURE)
+//   meter           the live view's median scene-linear luminance (walk.meterView()); after
+//                   METER_SAMPLES the photo is exposed so its median matches. Without it, photos
+//                   are exposed PHOTO_GAIN above the live exposure
 //   onProgress(done, total, { phase, preview, stats })   phase 'prepare' | 'compile' | 'render' |
 //                   'finish'; preview is a canvas with the image so far, when one was just drawn;
 //                   stats (scene and light counts) comes with 'finish'
@@ -41,6 +43,11 @@ export const PHOTO_EXPOSURE = 1.8;
 // exposed up by that much. The open office's views stay 0.7 to 1.5 stops darker than the live
 // view (its dark open deck, and more fixtures than become lights).
 const PHOTO_GAIN = 2 ** 1.2;
+// So each photo is metered instead: after this many samples its median luminance is set to the
+// live view's (the same exposure semantics, so the display medians match), within METER_RANGE
+// stops of the live exposure. Previews before then use PHOTO_GAIN.
+const METER_SAMPLES = 4;
+const METER_RANGE = [-1, 3];
 
 // Light levels are scene-linear radiance (or irradiance for the sun), before exposure. The sky is the
 // real-time dome's colors times SKY.scale, so windows read brighter than the room, as in a photo
@@ -174,19 +181,22 @@ function createClock(trash) {
 /** Ray-traced PNG of camera's view of scene. See the top of this file. */
 export async function renderPhoto({
   scene, camera, width = 1280, height = 720, samples = 256, onProgress = null, signal = null,
-  exposure = PHOTO_EXPOSURE, bounces = null,
+  exposure = PHOTO_EXPOSURE, meter = null, bounces = null,
 } = {}) {
   if (!scene?.isObject3D || !camera?.isPerspectiveCamera) throw new TypeError('renderPhoto needs a scene and a perspective camera.');
   const check = photoSupport();
   if (!check.ok) throw new PhotoError(check.reason, 'unsupported');
   if (signal?.aborted) throw abortError();
+  const liveExposure = Number.isFinite(exposure) && exposure > 0 ? exposure : PHOTO_EXPOSURE;
   const job = {
     source: scene,
     sourceCamera: camera,
     width: clampInt(width, 16, 8192, 1280),
     height: clampInt(height, 16, 8192, 720),
     samples: clampInt(samples, 1, 65536, 256),
-    exposure: (Number.isFinite(exposure) && exposure > 0 ? exposure : PHOTO_EXPOSURE) * PHOTO_GAIN,
+    liveExposure,
+    exposure: liveExposure * PHOTO_GAIN,
+    meter: Number.isFinite(meter) && meter > 0 ? meter : null,
     bounces: clampInt(bounces ?? (samples > 256 ? 8 : 6), 2, 16, 6),
     onProgress,
     signal,
@@ -360,6 +370,7 @@ async function run(job, trash) {
   let issuedAt = 0;
   let lastPreview = 0;
   let started = false;
+  let metered = false;
   report(0, 'compile');
   while (finished < samples) {
     await clock.frame();
@@ -375,6 +386,15 @@ async function run(job, trash) {
     if (queued > finished) {
       finished = queued;
       started = true;
+      if (job.meter && !metered && finished >= Math.min(METER_SAMPLES, samples)) {
+        metered = true;
+        const median = postfx.medianLuminance?.(renderer, pt.target.texture);
+        if (median) {
+          const stops = THREE.MathUtils.clamp(Math.log2(job.meter / median), METER_RANGE[0], METER_RANGE[1]);
+          post.setExposure(job.liveExposure * 2 ** stops);
+          stats.meteredStops = Math.round(stops * 100) / 100;
+        }
+      }
       let preview = null;
       // Previews are skipped while the page is hidden, where nobody sees them.
       if (job.onProgress && finished < samples && !document.hidden && performance.now() - lastPreview > 1000) {
@@ -1583,6 +1603,13 @@ function createPost(renderer, pt, geometry, camera, width, height, exposure) {
       draw(momentsPass, moments[1 - current]);
       current = 1 - current;
       renderer.setRenderTarget(null);
+    },
+
+    /** Expose the photo by e from now on (the output pass and the bloom thresholds). */
+    setExposure(e) {
+      renderer.toneMappingExposure = e;
+      bloom.threshold = BLOOM.threshold / e;
+      bloom.highPassUniforms.smoothWidth.value = BLOOM.knee / e;
     },
 
     /** Denoise what has accumulated after n samples and draw it to the canvas. */

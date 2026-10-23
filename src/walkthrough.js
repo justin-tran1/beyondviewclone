@@ -398,7 +398,8 @@ function ringMesh() {
 
 /**
  * Small figure standing at the walker pose in overview, with a view wedge pointing forward (-z).
- * The wedge and base ring draw through walls so the position always reads.
+ * The wedge and base ring draw through walls so the position always reads. Like the walk target,
+ * it is drawn in the overlay scene, so the body is lit by that scene's own lights (see _setupScene).
  */
 function walkerFigure() {
   const group = new THREE.Group();
@@ -559,7 +560,8 @@ export class Walkthrough extends EventTarget {
 
   /**
    * 'high' (ambient occlusion, bloom, color grade, SMAA), 'balanced' (cheaper AO, no bloom) or
-   * 'fast' (direct rendering). Emits 'quality' {quality, chosen, auto}.
+   * 'fast' (the color grade only). Emits 'quality' {quality, chosen, auto}. Where post-processing
+   * cannot run (no WebGL 2), the level in use stays 'fast' and auto is true.
    */
   setQuality(quality) {
     if (!QUALITIES.includes(quality)) throw new Error(`Unknown walkthrough quality "${quality}"`);
@@ -817,8 +819,8 @@ export class Walkthrough extends EventTarget {
     this._motionRatio = this._baseRatio;
     renderer.setPixelRatio(this._baseRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    // AgX, applied once: by OutputPass after the grade in 'high' and 'balanced', and in 'fast' by
-    // the materials, with the grade folded in (postfx.js switches renderer.toneMapping to match).
+    // AgX, applied once by the post-processing chain after the grade at every level (postfx.js
+    // switches to the graded curve inside the materials where the chain cannot run).
     renderer.toneMapping = THREE.AgXToneMapping;
     renderer.toneMappingExposure = EXPOSURE;
     renderer.shadowMap.enabled = true;
@@ -845,11 +847,20 @@ export class Walkthrough extends EventTarget {
     this._tweenCam = new THREE.PerspectiveCamera(FOV.walk, 1, 0.05, 1500);
     this._ring = ringMesh();
     this._figure = walkerFigure();
-    this._scene.add(this._ring, this._figure);
+    // UI drawn after post-processing, straight onto the canvas, so the accent keeps its exact color
+    // (toneMapped: false) instead of being graded and tone mapped with the scene. Not in the scene,
+    // so captures and photos never see it.
+    this._overlay = new THREE.Scene();
+    const key = new THREE.DirectionalLight(0xffffff, 7);
+    key.position.set(0.5, 1, 0.8);
+    // About as bright as the room lit the walker's body when it was part of the scene.
+    this._overlay.add(this._ring, this._figure, new THREE.HemisphereLight(0xffffff, 0x445544, 8), key);
     this._postfx = createPostFX(this._renderer, this._scene, this._camera, {
       quality: this._quality,
       onReady: () => this._invalidate(),
+      overlay: this._overlay,
     });
+    this._quality = this._postfx.quality;
     this._raycaster = new THREE.Raycaster();
     this._ndc = new THREE.Vector2();
 
@@ -975,15 +986,12 @@ export class Walkthrough extends EventTarget {
   _captureEnvironment(built) {
     const capture = builder.captureEnvironment;
     if (typeof capture !== 'function') return;
-    const shown = [this._ring, this._figure].filter((o) => o.visible);
-    for (const o of shown) o.visible = false;
     let next = null;
     try {
       next = capture(this._renderer, this._scene, built);
     } catch (err) {
       console.warn('Could not capture the interior for reflections; keeping the previous environment.', err);
     } finally {
-      for (const o of shown) o.visible = true;
       this._renderer.setRenderTarget(null);
     }
     if (!next?.texture) {
@@ -1159,12 +1167,14 @@ export class Walkthrough extends EventTarget {
   }
 
   _applyQuality(quality, auto) {
-    const changed = quality !== this._quality;
-    this._quality = quality;
     this._postfx.setQuality(quality);
+    // The level postfx.js can draw here: 'fast' only, without WebGL 2.
+    const level = this._postfx.quality;
+    const changed = level !== this._quality;
+    this._quality = level;
     this._perf.n = 0;
     this._perf.skip = changed ? 2 : 0;
-    this.dispatchEvent(new CustomEvent('quality', { detail: { quality, chosen: this._chosenQuality, auto } }));
+    this.dispatchEvent(new CustomEvent('quality', { detail: { quality: level, chosen: this._chosenQuality, auto: auto || level !== quality } }));
     this._invalidate();
   }
 

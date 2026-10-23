@@ -244,12 +244,14 @@ captures and photos leave them out.
 
 ```js
 export const QUALITIES = ['high', 'balanced', 'fast']
-export function createPostFX(renderer, scene, camera, { quality = 'high', onReady }) -> {
+export function createPostFX(renderer, scene, camera, { quality = 'high', onReady, overlay }) -> {
   render(camera = api.camera)        // draw one frame; never renders on its own
   setSize(width, height, pixelRatio) // CSS pixels, as given to renderer.setSize
-  setQuality(q), quality, camera
+  setQuality(q), quality, camera     // quality: the level in use ('fast' where the chain cannot run)
+  qualities                          // the levels this renderer can draw: QUALITIES, or ['fast']
   setSceneBounds(box3 | null)        // limit AO to the building, so the sky and far exterior skip it
-  passes                             // { composer, renderPass, ao, bloom, grade, output, smaa } or null in 'fast'
+  passes                             // { composer, renderPass, ao, bloom, grade, output, smaa, finish, ... }
+                                     // (the enabled ones run), or null when drawing straight to the canvas
   ready                              // resolves (and onReady() runs) once SMAA's lookup textures are decoded
   dispose()
 }
@@ -260,7 +262,7 @@ export function useGradedToneMapping(renderer)   // the same grade and AgX curve
 | --- | --- | --- |
 | `high` | Realistic | Scene in half-float HDR with 4x MSAA, GTAO (16 samples, full resolution up to 1.25 AO pixels per CSS pixel), bloom on very bright windows and fixtures, color grade, AgX, SMAA |
 | `balanced` | Balanced | The same with 2x MSAA, 8-sample AO at half resolution and no bloom |
-| `fast` | Fast | Straight to the canvas with MSAA; the grade and AgX run inside the materials (no AO, bloom or vignette) |
+| `fast` | Fast | The same scene pass with 2x MSAA, then one output pass with the grade and AgX (no AO, bloom, vignette or SMAA) |
 
 Color pipeline: the scene pass draws scene-linear HDR into a multisampled target of its own (so
 edges thinner than a pixel, such as trim and pendant lights, draw as lines; SMAA alone leaves them
@@ -274,9 +276,21 @@ instead of clipping), a little saturation and a barely visible lens falloff. AO 
 scene pass's resolved depth (no second geometry pass), rebuilds normals from it, denoises with a
 cross-bilateral 5 x 5 box that cancels GTAO's rotation pattern, and is multiplied in with a
 depth-aware upsample. Positions are always rebuilt at the depth texel they read, which keeps
-grazing floors and tops free of false occlusion. `setQuality` switches `renderer.toneMapping`
-between `AgXToneMapping` and the graded `CustomToneMapping`, and releases the full-size buffers
-while 'fast' is in use.
+grazing floors and tops free of false occlusion. The denoiser blends across inside corners
+(wall and ceiling, a leg and the floor), never across silhouettes or outside edges, and an
+occluder counts only within 0.35 m of depth in front of a surface (2 m on surfaces facing up, so
+furniture still shades the floor under it), fading over the upper half, so objects standing clear
+of a wall leave no dark outline on it. Bloom caps each pixel at 16
+exposed units before its bright pass, so a specular pinpoint cannot bloom into squares. 'fast'
+keeps the linear scene pass (glass and other blending stay in linear light, so it looks like the
+other levels apart from AO, bloom and edges) and replaces the rest of the chain with one output
+pass that calls the graded `CustomToneMapping`; materials always draw into the scene target, so
+every level shares their shader programs, and the chain's other buffers are released while
+'fast' is in use. `overlay` is a scene drawn last, straight onto the canvas after the scene depth
+is restored into it, so UI with `toneMapped: false` keeps its exact colors. The chain needs WebGL 2
+and color-renderable half floats; without them `qualities` is `['fast']` and every frame draws
+straight to the canvas, with the grade and AgX inside the materials (`renderer.toneMapping` is
+then the graded `CustomToneMapping`; otherwise it stays `AgXToneMapping`).
 
 ### `walkthrough.js`
 
@@ -312,7 +326,11 @@ and for `screenshot()`. Photos take the live exposure. PCF soft shadows updated
 only when the scene changes, and frames drawn only when something moved or changed. While moving
 stays slower than 40 ms a frame, the walkthrough steps the quality down one level at a time (never
 above the chosen level), then lowers the pixel ratio used while moving; idle frames keep the full
-pixel ratio. After each build it fits the sun to the plan, captures the interior for reflections
+pixel ratio. Where post-processing cannot run (no WebGL 2) the level in use stays 'fast' whatever
+is chosen, and the 'quality' event reports it with `auto` true. The walk target and the overview
+walker live in an overlay scene of their own (postfx.js `overlay`), not in the rendered scene, so
+the accent green is exact at every level and captures and photos never see them. After each
+build it fits the sun to the plan, captures the interior for reflections
 (`captureEnvironment`, when builder3d.js offers it) and limits AO to the building. It owns one kit
 for its whole life: rebuilds release only what each build made (`built.dispose()` plus the canvas
 textures items drew), and `dispose()` calls `kit.dispose()`, releases the builder's shared
@@ -367,8 +385,10 @@ pages carry the same map):
 three-gpu-pathtracer 0.0.23 expects r162 or later and reads `Scene.backgroundRotation` and
 `Scene.environmentRotation`, which r160 lacks; `photo.js` adds both to `THREE.Scene.prototype` as
 plain `Euler` properties when they are missing (the Scene shim). Remove it when Three.js is updated.
-`postfx.js` patches the stock GTAO shader's point reconstruction at runtime (see the comment there);
-check that patch, and the `CustomToneMapping` replacement, when updating Three.js.
+`postfx.js` patches the stock GTAO shader's point reconstruction and thickness fade, and the bloom
+bright pass, at runtime (see the comments there); check those patches, and the `CustomToneMapping`
+replacement, when updating Three.js. `kit3d.js` rebuilds the anisotropy frame after
+`lights_physical_fragment`, which depends on that chunk's `material.anisotropyT` and `anisotropyB`.
 
 ## Brand
 

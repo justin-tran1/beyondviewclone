@@ -846,9 +846,8 @@ async function runChecks() {
         return {
           quality: w.quality, chosen: w.chosenQuality, events, frames, glError, calls, ms: Math.round(ms), shot,
           mean: lum.reduce((a, b) => a + b, 0) / lum.length, spread: Math.max(...lum) - Math.min(...lum),
-          agx: level === 'fast'
-            ? r.toneMapping === T.CustomToneMapping && T.ShaderChunk.tonemapping_pars_fragment.includes('InteriorGradeToneMapping')
-            : r.toneMapping === T.AgXToneMapping,
+          // AgX in OutputPass; 'fast' calls the graded curve (InteriorGradeToneMapping) in its own output pass.
+          agx: r.toneMapping === T.AgXToneMapping && T.ShaderChunk.tonemapping_pars_fragment.includes('InteriorGradeToneMapping'),
           passes: p ? p.composer.passes.filter((x) => x.enabled).map((x) => x.constructor.name) : null,
           aoScale: p ? p.ao.resolutionScale : null, aoSamples: p ? p.ao.gtaoMaterial.defines.SAMPLES : null,
         };
@@ -864,10 +863,11 @@ async function runChecks() {
     }
     const { high, balanced, fast } = levels;
     const passes = (l) => (l.passes || []).join(' ');
-    assert(passes(high) === 'RenderPass InteriorAOPass UnrealBloomPass ShaderPass OutputPass SMAAPass', `high passes: ${passes(high)}`);
-    assert(passes(balanced) === 'RenderPass InteriorAOPass ShaderPass OutputPass SMAAPass', `balanced passes: ${passes(balanced)}`);
+    assert(passes(high) === 'MultisampleRenderPass InteriorAOPass UnrealBloomPass ShaderPass OutputPass SMAAPass', `high passes: ${passes(high)}`);
+    assert(passes(balanced) === 'MultisampleRenderPass InteriorAOPass ShaderPass OutputPass SMAAPass', `balanced passes: ${passes(balanced)}`);
     assert(balanced.aoScale <= high.aoScale / 2 && balanced.aoSamples < high.aoSamples, `balanced AO scale ${balanced.aoScale}, samples ${balanced.aoSamples}`);
-    assert(fast.passes === null && fast.frames === 1, `fast drew ${fast.frames} renders through ${passes(fast)}`);
+    // 'fast' still draws the scene into the linear target (so glass blends as at the other levels), then one output pass.
+    assert(passes(fast) === 'MultisampleRenderPass GradedOutputPass' && fast.frames <= 3, `fast drew ${fast.frames} renders through ${passes(fast)}`);
     // Every level shares one tone curve, so they differ only by AO, bloom and edge quality.
     const diff = high.shot.reduce((sum, v, i) => sum + Math.abs(v - fast.shot[i]), 0) / high.shot.length;
     const tone = Math.abs(high.mean - fast.mean);
@@ -912,7 +912,9 @@ async function runChecks() {
       const out = {
         renderer: c.renderer === w.renderer, scene: c.scene === w._scene, built: c.built === w._built,
         camera: c.camera.isPerspectiveCamera && Math.abs(c.camera.position.x - p.x) < 1e-6 && Math.abs(c.camera.position.z - p.y) < 1e-6,
-        overlays: c.scene.children.filter((o) => o.userData.overlay).length,
+        // The walk target and walker are UI in the walkthrough's overlay scene, never in the rendered scene.
+        overlays: w._overlay.children.filter((o) => o.userData.overlay).length,
+        inScene: [w._ring, w._figure].filter((o) => o.parent === c.scene).length,
         capture: typeof builder.captureEnvironment === 'function',
       };
       const before = w._envCapture;
@@ -923,7 +925,7 @@ async function runChecks() {
     });
     await idle();
     assert(r.renderer && r.scene && r.built && r.camera, `renderContext ${JSON.stringify(r)}`);
-    assert(r.overlays === 2, `${r.overlays} overlay objects marked`);
+    assert(r.overlays === 2 && r.inScene === 0, `${r.overlays} overlay objects marked, ${r.inScene} in the scene`);
     assert(r.env && r.usesCapture, `environment ${JSON.stringify(r)}`);
     return r.capture ? 'captureEnvironment result assigned and replaced on rebuild' : 'builder has no captureEnvironment yet; the room environment stays';
   });

@@ -922,7 +922,27 @@ function dataTexture(data, size, { srgb = false, anisotropy = 8 } = {}) {
 //          uneven sheen and tone, so they stop reading as flawless plastic (no maps, so the
 //          builder still merges them by color)
 //   glass: reflections add on top of the background instead of fading with opacity
-// The patch survives clone(), so derived materials (the builder's slab) keep it.
+// The patch survives clone(), so derived materials (the builder's slab) keep it. Every kit material
+// also rebuilds its anisotropy frame (ANISOTROPY_FRAME), whether or not it has a patch.
+
+// Kit geometry has no tangents, so three derives the anisotropy frame from screen-space UV
+// derivatives. Across the bevels of rounded boxes and on thin posts the per-face planar UVs barely
+// change, the frame collapses to near zero, and the anisotropic GGX lobe stops falling off: single
+// pixels of brushed steel reach the half-float maximum in sunlight and bloom as squares. The frame
+// is made orthonormal around the shading normal, keeping its better-defined axis. Flat faces
+// already have an orthonormal frame, so their brushed highlight is unchanged.
+const ANISOTROPY_FRAME = /* glsl */`#include <lights_physical_fragment>
+#ifdef USE_ANISOTROPY
+  {
+    vec3 kitT = material.anisotropyT - normal * dot( normal, material.anisotropyT );
+    vec3 kitB = material.anisotropyB - normal * dot( normal, material.anisotropyB );
+    if ( dot( kitT, kitT ) < dot( kitB, kitB ) ) kitT = cross( kitB, normal );
+    if ( dot( kitT, kitT ) < 1e-12 ) kitT = cross( normal, abs( normal.y ) < 0.9 ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 ) );
+    kitT = normalize( kitT );
+    material.anisotropyT = kitT;
+    material.anisotropyB = cross( normal, kitT );
+  }
+#endif`;
 
 const patched = (Base) => class extends Base {
   constructor(params) {
@@ -942,9 +962,8 @@ const patched = (Base) => class extends Base {
 
   onBeforeCompile(shader) {
     const p = this.kitPatch;
-    if (!p) return;
-    let fs = shader.fragmentShader;
-    if (p.macro) {
+    let fs = shader.fragmentShader.replace('#include <lights_physical_fragment>', ANISOTROPY_FRAME);
+    if (p?.macro) {
       shader.uniforms.kitMacroMap = { value: p.macro.map };
       shader.uniforms.kitMacroScale = { value: new THREE.Vector2(...p.macro.scale) };
       shader.uniforms.kitMacroAmount = { value: new THREE.Vector2(...p.macro.amount) };
@@ -959,7 +978,7 @@ const patched = (Base) => class extends Base {
   roughnessFactor = clamp( roughnessFactor * ( 1.0 + kitMacroAmount.y * kitMacro ), 0.03, 1.0 );
 #endif`);
     }
-    if (p.micro) {
+    if (p?.micro) {
       shader.uniforms.kitMacroMap = { value: p.micro.map };
       shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 vKitUv;')
         .replace('#include <uv_vertex>', '#include <uv_vertex>\n  vKitUv = uv;');
@@ -970,7 +989,7 @@ const patched = (Base) => class extends Base {
         .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
   roughnessFactor = clamp( roughnessFactor * ( 1.0 + ${p.micro.amount[1].toFixed(3)} * kitMicro ), 0.03, 1.0 );`);
     }
-    if (p.glass) {
+    if (p?.glass) {
       fs = fs.replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;',
         'vec3 outgoingLight = totalDiffuse * diffuseColor.a + totalSpecular + totalEmissiveRadiance;')
         .replace('#include <opaque_fragment>', 'gl_FragColor = vec4( outgoingLight, 1.0 );');

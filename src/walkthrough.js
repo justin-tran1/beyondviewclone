@@ -1233,7 +1233,10 @@ export class Walkthrough extends EventTarget {
 
   /** True while the governor has lowered the quality or the motion pixel ratio. */
   _lowered() {
-    return this._quality !== this._chosenQuality || this._motionRatio < this._baseRatio;
+    // Without WebGL 2 'fast' is as high as postfx.js can draw, whatever was chosen.
+    const qualities = this._postfx.qualities;
+    const top = qualities.includes(this._chosenQuality) ? this._chosenQuality : qualities[0];
+    return this._quality !== top || this._motionRatio < this._baseRatio;
   }
 
   _stepDown() {

@@ -1252,8 +1252,9 @@ export class Walkthrough extends EventTarget {
 
   _stepUp() {
     this._perf.since = 0;
-    // The pixel ratio comes back in one step; if that is too much, it steps down again in small ones.
-    if (this._motionRatio < this._baseRatio) this._setMotionRatio(this._baseRatio);
+    // The pixel ratio at most doubles per step (four times the pixels, not sixteen on a 2x screen);
+    // if that is too much, it steps down again in small ones.
+    if (this._motionRatio < this._baseRatio) this._setMotionRatio(Math.min(this._baseRatio, this._motionRatio * 2));
     else this._applyQuality(QUALITIES[QUALITIES.indexOf(this._quality) - 1], true);
   }
 

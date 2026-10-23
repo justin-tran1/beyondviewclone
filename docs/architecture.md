@@ -250,12 +250,14 @@ export function createPostFX(renderer, scene, camera, { quality = 'high', onRead
   setQuality(q), quality, camera     // quality: the level in use ('fast' where the chain cannot run)
   qualities                          // the levels this renderer can draw: QUALITIES, or ['fast']
   setSceneBounds(box3 | null)        // limit AO to the building, so the sky and far exterior skip it
+  meter()                            // median scene-linear luminance of the last frame, or null (for photos)
   passes                             // { composer, renderPass, ao, bloom, grade, output, smaa, finish, ... }
                                      // (the enabled ones run), or null when drawing straight to the canvas
   ready                              // resolves (and onReady() runs) once SMAA's lookup textures are decoded
   dispose()
 }
 export function useGradedToneMapping(renderer)   // the same grade and AgX curve for another renderer
+export function medianLuminance(renderer, texture) // median luminance of an HDR texture, or null
 ```
 
 | Level | UI name | What it draws |
@@ -307,6 +309,7 @@ export class Walkthrough extends EventTarget {
   get quality()                  // the level in use: the chosen one, or lower while frames are slow
   get chosenQuality()            // the level last set; automatic changes never go above it
   get renderContext()            // { renderer, scene, camera, built } of the current view, for photo.js
+  meterView()                    // median scene-linear luminance of the view (fresh frame), or null; photos expose to it
   get pose()                     // {x, y, yaw, pitch}
   renderer                       // the THREE.WebGLRenderer (tests read renderer.info)
   screenshot() -> Promise<Blob>  // PNG of the current view, post-processing included, at full resolution and the chosen quality
@@ -353,7 +356,7 @@ glass are not, and the walker stays within the plan bounds plus 15 m outdoors.
 
 ```js
 export async function renderPhoto({ scene, camera, width = 1280, height = 720, samples = 256,
-  onProgress, signal, exposure = PHOTO_EXPOSURE, bounces }) -> Promise<Blob>   // PNG
+  onProgress, signal, exposure = PHOTO_EXPOSURE, meter, bounces }) -> Promise<Blob>   // PNG
 export function photoSupport() -> { ok, reason }   // WebGL 2 with float render targets
 export class PhotoError extends Error { code }     // 'unsupported' | 'empty' | 'context-lost' | 'failed'
 export const PHOTO_EXPOSURE                        // the walkthrough's exposure, for callers without one
@@ -365,9 +368,13 @@ visible scene without overlays and real-time stand-ins (area lights, fake contac
 dome), lights it with a sky matching the real-time one plus the sun, turns emissive fixtures into
 area lights, renders in tiles, denoises (an edge-aware a-trous filter guided by depth, normals and
 albedo), adds the same subtle bloom and tone maps with the walkthrough's grade and AgX at the given
-exposure (the dialog passes the live view's `toneMappingExposure`), raised by `PHOTO_GAIN` (1.2
-stops, fitted together with the fixtures' output) because path traced walls and ceilings get no
-fill light and otherwise read darker than the live view. Opaque surfaces block sun and sky from
+exposure (the dialog passes the live view's `toneMappingExposure`). Path traced walls and ceilings
+get no fill light, so at that exposure photos read darker than the live view, by an amount that
+varies from room to room. The dialog therefore also passes `meter`, the live view's median
+scene-linear luminance (`walk.meterView()`, read back from the post chain's scene target through
+postfx.js `meter()`), and after a few samples the photo sets its exposure so its own median matches
+(within -1 to +3 stops). Without `meter` it is raised by `PHOTO_GAIN` (1.2 stops, fitted together
+with the fixtures' output) instead. Opaque surfaces block sun and sky from
 both sides, so none comes in through the single-sided ceilings and roof deck. The BVH is built in a
 worker and the setup yields between its steps, so the page stays responsive; rendering goes on while
 the tab is hidden. `onProgress(done, total,

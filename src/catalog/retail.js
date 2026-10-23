@@ -292,7 +292,7 @@ function printPanel(kit, g, i, x0, x1, y0, y1, z, s = 1) {
 
 /**
  * Printed sleeve of design i around a round pack of radius r from y0 to y0 + h at (x, z): the
- * artwork spans the half facing s (+z or -z) and its background wraps the back. Eight sides,
+ * artwork spans the half facing s (+z or -z) and its right edge wraps the back. Eight sides,
  * matching the packs' lathes so their corners stay inside it.
  */
 function printSleeve(kit, g, i, r, h, x, y0, z, s = 1) {
@@ -302,7 +302,8 @@ function printSleeve(kit, g, i, r, h, x, y0, z, s = 1) {
     const lathe = new T.LatheGeometry([new T.Vector2(r, 0), new T.Vector2(r, h)], 8, -Math.PI / 2);
     const uv = lathe.attributes.uv;
     // Vertices run around (8 + 1 columns from -90 degrees) and up (2 rows); columns past the front
-    // half all take the design's right edge, which is plain background.
+    // half all take the design's right edge, so its background, and any band that runs off that
+    // side, carries on around the back.
     for (let k = 0; k < uv.count; k++) {
       const col = Math.floor(k / 2), row = k % 2;
       uv.setXY(k, col <= 4 ? u0 + (col / 4) * (u1 - u0) : u1, row ? v1 : v0);

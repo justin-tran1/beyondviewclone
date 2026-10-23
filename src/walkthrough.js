@@ -57,8 +57,8 @@ const EXPOSURE = 1.8;
 // the floor by the glass and the view out are what blow out first, while a well lit office with
 // dark carpet and an open deck keeps its exposure. Exposure is EXPOSURE times
 // (reference / meter) ^ strength, within `range`; it eases over about `ease` seconds while walking
-// and is set at once on a jump or a rebuild. The overview keeps EXPOSURE. Photos take the live
-// exposure (src/ui/photo.js).
+// and is set at once on a jump or a rebuild. The overview keeps EXPOSURE. Photos start from the
+// live exposure and meter against meterView() (src/photo.js).
 const METER = { daylight: 2, reference: 7.3, strength: 0.9, range: [0.6, 1], ease: 0.3 };
 const MAX_DT = 0.25;
 const TRANSITION = 1.1;
@@ -523,6 +523,7 @@ export class Walkthrough extends EventTarget {
     this._fov = FOV.walk;
     this._fovTarget = FOV.walk;
     this._snapExposure = true;
+    this._moved = false;
     this._pointers = new Map();
     this._look = null;
     this._pinch = null;
@@ -1181,7 +1182,7 @@ export class Walkthrough extends EventTarget {
     let active = false, heavy = false;
     try {
       active = this._update(dt);
-      const moving = active || this._look?.moved || this._pinch;
+      const moving = this._moved || this._look?.moved || this._pinch;
       // Changing the 'fast' scene recompiles the lit materials, so it waits until the view is still.
       if (!moving) this._setFastScene(this._quality === 'fast');
       const ratio = moving ? this._motionRatio : this._baseRatio;
@@ -1198,12 +1199,13 @@ export class Walkthrough extends EventTarget {
     } finally {
       this._inFrame = false;
     }
-    if (active) {
+    if (this._moved) {
       this._governor(frameMs);
       // Compiling shaders or redrawing the shadow map is not the cost of moving.
       if (heavy) this._skipFrames();
     } else {
-      this._last = 0;
+      // An easing exposure keeps the clock running for its next step.
+      if (!active) this._last = 0;
       // The first frames of the next motion carry the work of starting it.
       this._skipFrames();
     }
@@ -1327,9 +1329,10 @@ export class Walkthrough extends EventTarget {
     }
     active = this._stepFov(dt) || active;
     if (this._poseDirty) this._poseChanged();
-    active = this._stepExposure(dt) || active;
+    // Motion as the governor and the motion pixel ratio see it: easing the exposure alone is not.
+    this._moved = active;
     this._updateRing(active);
-    return active;
+    return this._stepExposure(dt) || active;
   }
 
   /** The exposure for the current view: metered in Walk (see METER), EXPOSURE in the overview. */

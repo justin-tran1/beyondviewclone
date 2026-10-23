@@ -9,9 +9,10 @@
 //   scene, camera   what to draw (walk.renderContext); neither is changed. Objects flagged
 //                   userData.overlay are left out, with everything under them
 //   exposure        the live view's toneMappingExposure (default PHOTO_EXPOSURE)
-//   meter           the live view's median scene-linear luminance (walk.meterView()); after
-//                   METER_SAMPLES the photo is exposed so its median matches. Without it, photos
-//                   are exposed PHOTO_GAIN above the live exposure
+//   meter           the live view's median scene-linear luminance (walk.meterView()); from
+//                   METER_SAMPLES on, and again for each preview and the final image, the photo
+//                   is exposed so its median matches. Without it, photos are exposed PHOTO_GAIN
+//                   above the live exposure
 //   onProgress(done, total, { phase, preview, stats })   phase 'prepare' | 'compile' | 'render' |
 //                   'finish'; preview is a canvas with the image so far, when one was just drawn;
 //                   stats (scene and light counts) comes with 'finish'
@@ -43,12 +44,11 @@ export const PHOTO_EXPOSURE = 1.8;
 // exposed up by that much. The open office's views stay 0.7 to 1.5 stops darker than the live
 // view (its dark open deck, and more fixtures than become lights).
 const PHOTO_GAIN = 2 ** 1.2;
-// So each photo is metered instead: after this many samples its median luminance is set to the
-// live view's (the same exposure semantics, so the display medians match), less METER_BIAS stops
-// for the live view's ambient occlusion, which comes after the scene pass the meter reads, within
-// METER_RANGE stops of the live exposure. Previews before then use PHOTO_GAIN. Measured on the lab
-// lobby, open office and warehouse aisle (dev/photo-test.html): within about 0.15 stops of the
-// live view's median, against -1.2 to +0.1 with PHOTO_GAIN alone.
+// So each photo is metered instead: from this many samples on, and again for each preview and the
+// final image, the median luminance of its denoised image is set to the live view's (the same
+// exposure semantics, so the display medians match), less METER_BIAS stops, within METER_RANGE
+// stops of the live exposure. The bias was fitted against the Realistic live view, whose ambient
+// occlusion comes after the scene pass the meter reads. Previews wait for the first meter.
 const METER_SAMPLES = 4;
 const METER_BIAS = 0.25;
 const METER_RANGE = [-1, 3.5];
@@ -374,7 +374,18 @@ async function run(job, trash) {
   let issuedAt = 0;
   let lastPreview = 0;
   let started = false;
-  let metered = false;
+  // With a meter, the exposure is set from METER_SAMPLES on and again for each preview and for the
+  // final image: the denoised image keeps brightening a little as samples add up, and an early
+  // few-sample estimate varies by about a third of a stop from run to run.
+  let meteredAt = 0;
+  const meter = (n) => {
+    meteredAt = n;
+    const median = post.meter(n);
+    if (!median) return;
+    const stops = THREE.MathUtils.clamp(Math.log2(job.meter / median) - METER_BIAS, METER_RANGE[0], METER_RANGE[1]);
+    post.setExposure(job.liveExposure * 2 ** stops);
+    stats.meteredStops = Math.round(stops * 100) / 100;
+  };
   report(0, 'compile');
   while (finished < samples) {
     await clock.frame();
@@ -390,18 +401,13 @@ async function run(job, trash) {
     if (queued > finished) {
       finished = queued;
       started = true;
-      if (job.meter && !metered && finished >= Math.min(METER_SAMPLES, samples)) {
-        metered = true;
-        const median = post.meter(finished);
-        if (median) {
-          const stops = THREE.MathUtils.clamp(Math.log2(job.meter / median) - METER_BIAS, METER_RANGE[0], METER_RANGE[1]);
-          post.setExposure(job.liveExposure * 2 ** stops);
-          stats.meteredStops = Math.round(stops * 100) / 100;
-        }
-      }
+      if (job.meter && !meteredAt && finished >= Math.min(METER_SAMPLES, samples)) meter(finished);
       let preview = null;
-      // Previews are skipped while the page is hidden, where nobody sees them.
-      if (job.onProgress && finished < samples && !document.hidden && performance.now() - lastPreview > 1000) {
+      // Previews are skipped while the page is hidden, where nobody sees them. With a meter they
+      // wait for it, so they do not start a stop or so dark and then jump.
+      const exposed = !job.meter || meteredAt;
+      if (job.onProgress && finished < samples && exposed && !document.hidden && performance.now() - lastPreview > 1000) {
+        if (meteredAt && meteredAt !== finished) meter(finished);
         post.compose(finished);
         lastPreview = performance.now();
         preview = canvas;
@@ -425,6 +431,7 @@ async function run(job, trash) {
   }
   const done = finished;
   aborted();
+  if (meteredAt && meteredAt !== done) meter(done);
   post.compose(done);
   aborted();
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
@@ -1561,6 +1568,7 @@ function createPost(renderer, pt, geometry, camera, width, height, exposure) {
   const bloom = new UnrealBloomPass(new THREE.Vector2(width, height), BLOOM.strength, BLOOM.radius, BLOOM.threshold / exposure);
   bloom.highPassUniforms.smoothWidth.value = BLOOM.knee / exposure;
   let current = 0;
+  let denoisedAt = 0; // the sample count hdr holds, 0 when stale
 
   const draw = (quad, rt) => {
     renderer.setRenderTarget(rt);
@@ -1600,6 +1608,7 @@ function createPost(renderer, pt, geometry, camera, width, height, exposure) {
     },
 
     addSample(n) {
+      denoisedAt = 0;
       const u = momentsPass.material.uniforms;
       u.tMean.value = pt.target.texture;
       u.tPrev.value = moments[current].texture;
@@ -1633,8 +1642,10 @@ function createPost(renderer, pt, geometry, camera, width, height, exposure) {
       return postfx.medianLuminance?.(renderer, hdr.texture) ?? null;
     },
 
-    /** The denoised HDR image after n samples, into hdr. */
+    /** The denoised HDR image after n samples, into hdr (once per sample count). */
     denoise(n) {
+      if (denoisedAt === n) return;
+      denoisedAt = n;
       const color = pt.target.texture;
       const pu = preparePass.material.uniforms;
       pu.tColor.value = color;

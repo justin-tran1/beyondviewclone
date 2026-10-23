@@ -326,8 +326,9 @@ Rendering: AgX tone mapping at exposure 1.8 (`EXPOSURE`; keep `PHOTO_EXPOSURE` e
 In Walk the exposure is metered per view from the light map (`planLight.meter`, daylight counted
 twice): daylit spots by the windows come down to as little as 0.6 times that, views with little
 daylight keep 1.8; it eases over about 0.3 s while walking and is set at once on a jump, a rebuild
-and for `screenshot()`. Photos take the live exposure. PCF soft shadows updated
-only when the scene changes, and frames drawn only when something moved or changed. While moving
+and for `screenshot()`; easing alone does not count as moving. Photos start from the live exposure
+and are metered against the live view (see `renderPhoto`). PCF soft shadows updated only when the
+scene changes, and frames drawn only when something moved or changed. While moving
 stays slower than 40 ms a frame (the median of the last 20 motion frames, leaving out the first
 frames of each motion and frames that compile shaders or redraw the shadow map), the walkthrough
 steps the quality down one level at a time (never above the chosen level), then lowers the pixel
@@ -372,8 +373,9 @@ exposure (the dialog passes the live view's `toneMappingExposure`). Path traced 
 get no fill light, so at that exposure photos read darker than the live view, by an amount that
 varies from room to room. The dialog therefore also passes `meter`, the live view's median
 scene-linear luminance (`walk.meterView()`, read back from the post chain's scene target through
-postfx.js `meter()`), and after a few samples the photo sets its exposure so the median of its
-denoised image matches (less a quarter stop for the live view's AO, within -1 to +3.5 stops).
+postfx.js `meter()`), and from a few samples on, again for each preview and for the final image,
+the photo sets its exposure so the median of its denoised image matches (less a quarter stop,
+fitted against the Realistic view, within -1 to +3.5 stops); previews wait for the first meter.
 Without `meter` it is raised by `PHOTO_GAIN` (1.2 stops, fitted together with the fixtures' output)
 instead. Opaque surfaces block sun and sky from both sides, so none comes in through the
 single-sided ceilings and roof deck. The BVH is built in a

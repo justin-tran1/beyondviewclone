@@ -388,7 +388,7 @@ async function run(job, trash) {
       started = true;
       if (job.meter && !metered && finished >= Math.min(METER_SAMPLES, samples)) {
         metered = true;
-        const median = postfx.medianLuminance?.(renderer, pt.target.texture);
+        const median = post.meter(finished);
         if (median) {
           const stops = THREE.MathUtils.clamp(Math.log2(job.meter / median), METER_RANGE[0], METER_RANGE[1]);
           post.setExposure(job.liveExposure * 2 ** stops);
@@ -1614,6 +1614,23 @@ function createPost(renderer, pt, geometry, camera, width, height, exposure) {
 
     /** Denoise what has accumulated after n samples and draw it to the canvas. */
     compose(n) {
+      this.denoise(n);
+      bloom.render(renderer, null, hdr, 0, false);
+      draw(outputPass, null);
+    },
+
+    /**
+     * Median luminance of the denoised image after n samples. The raw accumulation is no use for
+     * this early on: with few samples most pixels are darker than they will settle and a few far
+     * brighter, so its median reads about a stop low.
+     */
+    meter(n) {
+      this.denoise(n);
+      return postfx.medianLuminance?.(renderer, hdr.texture) ?? null;
+    },
+
+    /** The denoised HDR image after n samples, into hdr. */
+    denoise(n) {
       const color = pt.target.texture;
       const pu = preparePass.material.uniforms;
       pu.tColor.value = color;
@@ -1634,8 +1651,6 @@ function createPost(renderer, pt, geometry, camera, width, height, exposure) {
       ru.tColor.value = color;
       ru.edgeKeep.value = Math.min(0.6, n / 512);
       draw(remodPass, hdr);
-      bloom.render(renderer, null, hdr, 0, false);
-      draw(outputPass, null);
     },
 
     dispose() {

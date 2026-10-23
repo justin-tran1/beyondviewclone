@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Photo renderer test</title>
+  <!--
+    Renders a sample's saved view with src/photo.js next to the real-time view of the same camera.
+    Query: sample (lab-suite), view (0), w (640), h (360), samples (32), bounces (by samples),
+    realtime (1 to show it, and meter the photo against it; meter=0 to skip that), quality (high,
+    the real-time level). window.photoResult reports
+    timings and scene statistics when done.
+  -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../assets/vendor/three/three.module.min.js",
+        "three/addons/": "../assets/vendor/three/addons/",
+        "three/examples/jsm/": "../assets/vendor/three/addons/",
+        "three-mesh-bvh": "../assets/vendor/three-mesh-bvh/index.module.js",
+        "three-gpu-pathtracer": "../assets/vendor/three-gpu-pathtracer/index.module.js"
+      }
+    }
+  </script>
+  <style>
+    body { margin: 0; padding: 12px; background: #1d2325; color: #dfe5e6; font: 13px/1.4 system-ui, sans-serif; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+    figure { margin: 0; }
+    figcaption { margin-top: 4px; opacity: 0.8; }
+    canvas, img { display: block; background: #2b3235; }
+    #status { margin-top: 8px; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <figure id="rt-fig" hidden><canvas id="rt"></canvas><figcaption>Real-time</figcaption></figure>
+    <figure><img id="photo" alt=""><figcaption>Photo</figcaption></figure>
+  </div>
+  <div id="status">Loading</div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { createKit } from '../src/kit3d.js';
+    import * as builder from '../src/builder3d.js';
+    import { createPostFX } from '../src/postfx.js';
+    import { renderPhoto, PHOTO_EXPOSURE } from '../src/photo.js';
+    import '../src/catalog/index.js';
+    import { SAMPLES } from '../src/samples/index.js';
+
+    // Let the page finish loading before the heavy work below.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const params = new URLSearchParams(location.search);
+    const W = +(params.get('w') || 640), H = +(params.get('h') || 360);
+    const target = +(params.get('samples') || 32);
+    const status = document.getElementById('status');
+    const say = (t) => { status.textContent = t; };
+
+    const sample = SAMPLES.find((s) => s.id === (params.get('sample') || 'lab-suite'));
+    const plan = await sample.build();
+    const cam = plan.cameras[+(params.get('view') || 0)] || { x: 0, y: 0, yaw: 0, pitch: 0 };
+
+    // The walkthrough's setup: renderer, environment, built plan, interior capture and camera.
+    const canvas = document.getElementById('rt');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(W, H, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.AgXToneMapping;
+    renderer.toneMappingExposure = PHOTO_EXPOSURE;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    const scene = new THREE.Scene();
+    const env = builder.setupEnvironment(renderer, scene);
+    const built = builder.buildPlanScene(plan, { kit: createKit(), quality: 'high' });
+    scene.add(built.root);
+    env.fit(built.bounds);
+    for (const c of built.ceilings) c.visible = true;
+    if (typeof builder.captureEnvironment === 'function') {
+      const capture = builder.captureEnvironment(renderer, scene, built);
+      if (capture?.texture) scene.environment = capture.texture;
+    }
+    const camera = new THREE.PerspectiveCamera(70, W / H, 0.05, 2000);
+    camera.rotation.order = 'YXZ';
+    camera.position.set(cam.x, 1.6, cam.y);
+    camera.rotation.set((cam.pitch * Math.PI) / 180, (-cam.yaw * Math.PI) / 180, 0);
+    camera.updateMatrixWorld();
+
+    // With the real-time view drawn, the photo is metered against it, as the Render photo dialog does.
+    let meter = null;
+    if (params.get('realtime') === '1') {
+      document.getElementById('rt-fig').hidden = false;
+      const fx = createPostFX(renderer, scene, camera, { quality: params.get('quality') || 'high' });
+      fx.setSize(W, H, 1);
+      await fx.ready;
+      fx.render(camera);
+      if (params.get('meter') !== '0') meter = fx.meter?.() ?? null;
+    }
+
+    const t0 = performance.now();
+    const times = {};
+    const log = [];
+    const blob = await renderPhoto({
+      scene, camera, width: W, height: H, samples: target, bounces: params.get('bounces') ? +params.get('bounces') : null, meter,
+      onProgress: (done, total, { phase, stats }) => {
+        if (stats) times.stats = stats;
+        times[phase] ??= Math.round(performance.now() - t0);
+        log.push([phase, done, Math.round(performance.now() - t0)]);
+        say(`${phase} ${done} of ${total} samples, ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+      },
+    });
+    const img = document.getElementById('photo');
+    img.src = URL.createObjectURL(blob);
+    await img.decode();
+    window.photoResult = { samples: target, ms: Math.round(performance.now() - t0), times, log, bytes: blob.size };
+    say(`Done: ${target} samples in ${(window.photoResult.ms / 1000).toFixed(1)} s`);
+  </script>
+</body>
+</html>

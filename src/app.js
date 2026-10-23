@@ -13,6 +13,7 @@ import { createLibrary, ITEM_MIME } from './ui/library.js';
 import { createProperties } from './ui/properties.js';
 import { createStatusBar } from './ui/statusbar.js';
 import { createWalkUI, WALK_STATUS } from './ui/walkui.js';
+import { createPhotoUI } from './ui/photo.js';
 import { openStartDialog, askCalibration, openSettings, openHelp, loadSample } from './ui/dialogs.js';
 import {
   readPlanFile, readImageFile, underlayFor, savePlanFile, renderPlanImage, imageFileName,
@@ -299,6 +300,7 @@ attachMenu($('#open-menu'), () => {
 }, { align: 'end' });
 $('#save').addEventListener('click', savePlan);
 $('#save-image').addEventListener('click', saveImage);
+createPhotoUI({ anchor: $('#save-image'), store, prefs, getWalk: ensureWalk });
 $('#settings').addEventListener('click', () => openSettings({
   store,
   getDisplay: () => ({ ...display }),

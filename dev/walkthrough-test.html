@@ -5,7 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Walkthrough Test</title>
   <script type="importmap">
-    { "imports": { "three": "../assets/vendor/three/three.module.min.js", "three/addons/": "../assets/vendor/three/addons/" } }
+    {
+      "imports": {
+        "three": "../assets/vendor/three/three.module.min.js",
+        "three/addons/": "../assets/vendor/three/addons/",
+        "three/examples/jsm/": "../assets/vendor/three/addons/",
+        "three-mesh-bvh": "../assets/vendor/three-mesh-bvh/index.module.js",
+        "three-gpu-pathtracer": "../assets/vendor/three-gpu-pathtracer/index.module.js"
+      }
+    }
   </script>
   <style>
     :root {
@@ -45,6 +53,7 @@
       font-size: 11px; text-align: center; background: var(--tint); color: var(--cement);
     }
     button[aria-pressed="true"] kbd { background: rgba(255, 255, 255, 0.16); color: #fff; }
+    button[data-auto="true"] { box-shadow: inset 0 0 0 2px var(--accent); }
     .hint {
       position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 4; padding: 9px 16px;
       border-radius: 999px; background: rgba(1, 42, 45, 0.82); color: #fff; font-size: 13px; white-space: nowrap;
@@ -66,6 +75,9 @@
     @media (max-width: 640px) {
       #views { display: none; }
     }
+    @media (max-width: 560px) {
+      #quality { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -75,6 +87,11 @@
     <div class="group" id="modes">
       <button type="button" data-mode="walk" aria-pressed="true">Walk</button>
       <button type="button" data-mode="overview" aria-pressed="false">Overview</button>
+    </div>
+    <div class="group" id="quality" role="group" aria-label="Rendering quality">
+      <button type="button" data-quality="high" aria-pressed="true">Realistic</button>
+      <button type="button" data-quality="balanced" aria-pressed="false">Balanced</button>
+      <button type="button" data-quality="fast" aria-pressed="false">Fast</button>
     </div>
     <div class="group" id="views"></div>
     <div class="spacer"></div>

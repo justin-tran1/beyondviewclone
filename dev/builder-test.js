@@ -2,11 +2,13 @@
 // renders it from eye height or from above. Open /dev/builder-test.html?view=1 (1 to 10, overview,
 // outside or stress); add &plan=shapes|items|steps or &sample=<sample id>, &exterior=city|campus|none,
 // &quality=low, &ceiling=tile|drywall|open, or &eye=x,y,yaw,pitch[,height] for any view. &checks=1 runs
-// the builder regression checks and lists the results over the view.
+// the builder regression checks and lists the results over the view. Rendering matches the walkthrough:
+// AgX at its exposure, the interior captured for reflections, and post-processing at &fx=high|balanced|fast.
 import * as THREE from 'three';
 import { createKit } from '../src/kit3d.js';
 import { createPlan, normalizePlan, addWall, addOpening, addRoom, addItem, DEFAULTS } from '../src/model.js';
-import { buildPlanScene, setupEnvironment } from '../src/builder3d.js';
+import { buildPlanScene, setupEnvironment, captureEnvironment } from '../src/builder3d.js';
+import { createPostFX } from '../src/postfx.js';
 import { getItem, hasItem, listItems, registerItems } from '../src/catalog/registry.js';
 
 const params = new URLSearchParams(location.search);
@@ -392,16 +394,19 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDraw
 renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = Number(params.get('exposure') || 1);
+// As in src/walkthrough.js: AgX at 1.8, applied once by the post-processing chain.
+renderer.toneMapping = THREE.AgXToneMapping;
+renderer.toneMappingExposure = Number(params.get('exposure') || 1.8);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#e8eff2');
 const env = setupEnvironment(renderer, scene);
 const kit = createKit();
 const camera = new THREE.PerspectiveCamera(60, canvas.clientWidth / canvas.clientHeight, 0.05, 2000);
+const fxLevel = ['high', 'balanced', 'fast'].includes(params.get('fx')) ? params.get('fx') : 'high';
+const fx = createPostFX(renderer, scene, camera, { quality: fxLevel });
+fx.setSize(canvas.clientWidth, canvas.clientHeight, renderer.getPixelRatio());
 
 const PLANS = { shapes: shapesPlan, items: itemsPlan, steps: stepsPlan, suite: suitePlan };
 const plan = view === 'stress' ? stressPlan() : sample || (PLANS[planName] || suitePlan)();
@@ -410,6 +415,10 @@ const built = buildPlanScene(plan, { kit, quality });
 const buildMs = performance.now() - t0;
 scene.add(built.root);
 env.fit(built.bounds);
+const t1 = performance.now();
+const capture = params.get('capture') === '0' ? null : captureEnvironment(renderer, scene, built);
+const captureMs = performance.now() - t1;
+if (capture) scene.environment = capture.texture;
 Object.assign(window, { built, testPlan: plan, testQuality: quality });
 
 const b = built.bounds;
@@ -439,11 +448,21 @@ if (view === 'overview' || view === 'stress') {
 }
 camera.updateProjectionMatrix();
 
+// Draw calls and triangles of the scene alone (one pass into a small target), then the full frame.
+const probeTarget = new THREE.WebGLRenderTarget(64, 40, { type: THREE.HalfFloatType });
+renderer.setRenderTarget(probeTarget);
 renderer.render(scene, camera);
-renderer.render(scene, camera);
-const info = renderer.info.render;
+const info = { ...renderer.info.render };
+renderer.setRenderTarget(null);
+probeTarget.dispose();
+await fx.ready;
+const f0 = performance.now();
+fx.render(camera);
+renderer.getContext().finish();
+const frameMs = performance.now() - f0;
 const stats = {
-  catalog, quality, buildMs: Math.round(buildMs), calls: info.calls, triangles: info.triangles,
+  catalog, quality, fx: fxLevel, buildMs: Math.round(buildMs), captureMs: Math.round(captureMs), frameMs: Math.round(frameMs),
+  calls: info.calls, triangles: info.triangles, lights: built.lights?.length ?? 0,
   walls: plan.walls.length, items: plan.items.length, colliders: built.colliders.length, obstacles: built.obstacles.length,
 };
 if (view === 'stress') {
@@ -459,15 +478,43 @@ if (view === 'stress') {
   camera.position.set(cx + span * 0.22, span * 1.05, cz + span * 0.82);
   camera.lookAt(cx, 0, cz + span * 0.04);
   camera.updateProjectionMatrix();
-  renderer.render(scene, camera);
+  fx.render(camera);
 }
 window.testStats = stats;
-window.rerender = () => renderer.render(scene, camera);
-window.testEnv = { THREE, renderer, scene, camera, kit, env, buildPlanScene };
-document.getElementById('stats').textContent = `${stats.buildMs} ms build · ${stats.calls} draw calls · ${(stats.triangles / 1000).toFixed(0)}k triangles · ${catalog}`;
+window.rerender = () => fx.render(camera);
+window.testEnv = { THREE, renderer, scene, camera, kit, env, fx, capture, buildPlanScene, captureEnvironment };
+document.getElementById('stats').textContent = `${stats.buildMs} ms build · ${stats.captureMs} ms capture · ${stats.calls} draw calls · ${(stats.triangles / 1000).toFixed(0)}k triangles · ${stats.lights} area lights · ${catalog}`;
 console.log('builder-test', JSON.stringify(stats));
 if (params.has('checks')) showChecks(await runChecks());
+if (params.get('light') === 'map') showLightMap(built);
 window.testReady = true;
+
+/**
+ * &light=map: the plan light map over the view, as seen from above: brightness is the diffuse light
+ * level (direct plus bounce, white at 10), outdoors is dark green.
+ */
+function showLightMap(b) {
+  const L = b.planLight;
+  if (!L) return;
+  const [nx, ny] = L.size;
+  const map = document.createElement('canvas');
+  map.width = nx;
+  map.height = ny;
+  Object.assign(map.style, { position: 'fixed', left: '16px', top: '60px', width: `${Math.min(900, nx * 4)}px`, imageRendering: 'pixelated', boxShadow: '0 2px 12px rgba(1, 42, 45, 0.18)' });
+  const g = map.getContext('2d'), img = g.createImageData(nx, ny);
+  // The map covers the building plus a margin; sample cell centers from its own origin.
+  const { x: ox, y: oy } = L.origin;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const x = ox + (i + 0.5) * L.cell, y = oy + (j + 0.5) * L.cell, k = (j * nx + i) * 4;
+      const inside = L.spaceAt(x, y) >= 0;
+      const v = Math.round(255 * Math.min(1, Math.sqrt(L.levelAt(x, y) / 10)));
+      img.data.set(inside ? [v, v, v, 255] : [1, 42, 45, 255], k);
+    }
+  }
+  g.putImageData(img, 0, 0);
+  document.body.append(map);
+}
 
 /** Regression checks for the builder, on small plans built in code and one sample. Returns [{ name, pass, detail }]. */
 async function runChecks() {
@@ -534,7 +581,7 @@ async function runChecks() {
     const b = build(plan);
     const h = hits(b.root, [5.6, 1.6, 3], [0, 0, -1]).find((x) => x.object.parent.name !== 'shading');
     b.dispose();
-    return [h?.object.material === kit.glass, `first hit behind the door: ${h ? h.object.material.name || h.object.material.type : 'nothing'}`];
+    return [h?.object.material.userData.kitFamily === 'glass', `first hit behind the door: ${h ? h.object.material.name || h.object.material.type : 'nothing'}`];
   });
 
   check('L-shaped rooms get ceiling lights', () => {
@@ -546,7 +593,7 @@ async function runChecks() {
     const b = build(plan);
     const centers = [];
     b.ceilings[0].traverse((o) => {
-      if (!o.isMesh || o.material !== kit.mat.led) return;
+      if (!o.isMesh || !(o.material.emissiveIntensity > 2)) return;
       const a = o.geometry.attributes.position;
       for (let i = 0; i < a.count; i++) if (!centers.some((c) => Math.hypot(c.x - a.getX(i), c.y - a.getZ(i)) < 0.8)) centers.push(P(a.getX(i), a.getZ(i)));
     });
@@ -599,8 +646,9 @@ async function runChecks() {
   });
   check('Raised ceilings meet painted walls', () => {
     const h = hits(bs.root, [6, 3.15, 9], [0, 0, 1])[0];
-    const color = h?.object.material.color?.getHexString();
-    return [color === 'f3f1ec', `wall face between the 3.0 m wall top and the 3.3 m ceiling: #${color}`];
+    // Indoor surfaces carry the light map's twin of the kit material; planSource names the original.
+    const m = h?.object.material;
+    return [(m?.planSource || m) === kit.paintMaterial('#efece6'), `wall face between the 3.0 m wall top and the 3.3 m ceiling: ${m ? m.name || m.type : 'nothing'}`];
   });
   bs.dispose();
 
@@ -611,7 +659,7 @@ async function runChecks() {
     const b = build(plan);
     let near = { round: 0, none: 0 };
     b.root.traverse((o) => {
-      if (!o.isMesh || !o.material.alphaMap || o.material.opacity < 0.4) return;
+      if (!o.isMesh || o.material.name !== 'shade-contact') return;
       const a = o.geometry.attributes.position;
       for (let i = 0; i < a.count; i++) {
         if (Math.hypot(a.getX(i) - 2, a.getZ(i) - 2) < 1.2) near.round = Math.max(near.round, Math.hypot(a.getX(i) - 2, a.getZ(i) - 2));
@@ -636,12 +684,146 @@ async function runChecks() {
     return [/km/.test(reason) && ms < 3000, `100 km plan: "${reason}"; desk 9 km away: ${Math.round(ms)} ms`];
   });
 
+  // Lighting: the suite is a 20 x 14 m shell with windows on every side.
+  const suite = buildPlanScene(suitePlan(), { kit });
+  check('Window daylight shines into the rooms, within its budget', () => {
+    // Window lights face into the suite; fixture lights face down from the ceiling.
+    const windows = suite.lights.filter((l) => l.name === 'window-light'), fixtures = suite.lights.filter((l) => l.name === 'fixture-light');
+    const facing = (l) => new THREE.Vector3(0, 0, -1).applyQuaternion(l.quaternion);
+    const inside = windows.filter((l) => {
+      const p = facing(l).add(l.position);
+      return p.x > 0 && p.x < 20 && p.z > 0 && p.z < 14;
+    }).length;
+    const down = fixtures.filter((l) => facing(l).y < -0.99).length;
+    const overlay = suite.root.getObjectByName('daylight').userData.overlay === true;
+    return [windows.length > 0 && suite.lights.length <= 10 && inside === windows.length && down === fixtures.length && overlay,
+      `${inside} of ${windows.length} window lights face in, ${down} of ${fixtures.length} fixture lights face down; flagged as a real-time overlay: ${overlay}`];
+  });
+  check('Window daylight follows the viewer', () => {
+    // The east facade's 3 m window sits at y = 3; after a render from beside it, a light covers it.
+    const s2 = new THREE.Scene();
+    const e2 = setupEnvironment(renderer, s2);
+    s2.add(suite.root);
+    const cam = new THREE.PerspectiveCamera(60, 1.6, 0.05, 2000);
+    cam.position.set(18.5, 1.6, 3);
+    cam.updateMatrixWorld();
+    s2.onBeforeRender(renderer, s2, cam, null);
+    const lit = suite.lights.some((l) => Math.abs(l.position.x - 20) < 0.3 && Math.abs(l.position.z - 3) < 0.2 && Math.abs(l.width - 2.9) < 0.15);
+    s2.remove(suite.root);
+    e2.dispose();
+    return [lit, lit ? 'the window beside the viewer has a light' : 'no light on the window beside the viewer'];
+  });
+  check('Environment capture leaves the scene as it was', () => {
+    const before = scene.environment;
+    const levels = [];
+    scene.traverse((o) => { if (o.isLight) levels.push([o, o.intensity]); });
+    const cap = captureEnvironment(renderer, scene, built);
+    const restored = levels.every(([o, v]) => o.intensity === v);
+    const ok = cap.texture?.mapping === THREE.CubeUVReflectionMapping && scene.environment === before && restored;
+    cap.dispose();
+    return [ok, `PMREM texture: ${cap.texture?.mapping === THREE.CubeUVReflectionMapping}, environment untouched: ${scene.environment === before}, light levels restored: ${restored}`];
+  });
+  check('Rounded trims face outward', () => {
+    let bad = 0, total = 0;
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3(), f = new THREE.Vector3();
+    suite.root.traverse((o) => {
+      if (!o.isMesh || (o.material.planSource || o.material) !== kit.material('#b9bdbf', { roughness: 0.34, metalness: 0.65 })) return;
+      const p = o.geometry.attributes.position, nr = o.geometry.attributes.normal, idx = o.geometry.index.array;
+      for (let i = 0; i < idx.length; i += 3) {
+        a.fromBufferAttribute(p, idx[i]);
+        b.fromBufferAttribute(p, idx[i + 1]);
+        c.fromBufferAttribute(p, idx[i + 2]);
+        f.subVectors(b, a).cross(c.clone().sub(a));
+        if (f.lengthSq() < 1e-14) continue;
+        n.fromBufferAttribute(nr, idx[i]).add(b.fromBufferAttribute(nr, idx[i + 1])).add(c.fromBufferAttribute(nr, idx[i + 2]));
+        total++;
+        if (f.dot(n) <= 0) bad++;
+      }
+    });
+    return [total > 0 && bad === 0, `${bad} of ${total} aluminum frame triangles wound inward`];
+  });
+  check('The sky keeps the gradient photos read', () => {
+    const sky = suite.root.getObjectByName('sky');
+    const pos = sky?.geometry.attributes.position, col = sky?.geometry.attributes.color;
+    if (!col) return [false, 'no sky dome with vertex colors'];
+    let top = 0, low = 0;
+    for (let i = 0; i < pos.count; i++) {
+      if (pos.getY(i) > pos.getY(top)) top = i;
+      if (pos.getY(i) >= 0 && pos.getY(i) < pos.getY(low)) low = i;
+    }
+    const bluer = col.getZ(top) - col.getX(top) > col.getZ(low) - col.getX(low);
+    return [bluer && col.getX(low) < 1, `zenith bluer than the horizon: ${bluer}; horizon kept in display range: ${col.getX(low) < 1}`];
+  });
+  check('Indoor surfaces are lit by the light map, outdoor ones are not', () => {
+    let indoor = 0, lit = 0, outdoorLit = 0;
+    suite.root.traverse((o) => {
+      if (!o.isMesh || !o.material.isMeshStandardMaterial) return;
+      const group = ['structure', 'furnishings', 'ceilings'].find((n) => o.parent.name === n);
+      if (group && !o.material.userData.outdoor) {
+        indoor++;
+        if (o.material.planSource) lit++;
+      } else if (o.parent.name === 'exterior' && o.material.planSource) {
+        outdoorLit++;
+      }
+    });
+    return [indoor > 0 && lit === indoor && outdoorLit === 0, `${lit} of ${indoor} indoor meshes use the light map, ${outdoorLit} outdoor meshes do`];
+  });
+  check('Area lights reflect only in their own room', () => {
+    const g = suite.root.getObjectByName('daylight');
+    // Binding the build points the kit's shared uniforms at its own light map and light spaces.
+    suite.root.userData.planLight.bind();
+    const spaces = g.userData.rectSpace, U = suite.root.userData.planUniforms;
+    const bound = U.planRectSpace.value === spaces;
+    const ok = bound && g.children.every((l, i) => {
+      const run = g.userData.pools.find((pool) => pool.lights.includes(l)).runs[l.userData.run];
+      return run && spaces[i] === run.space && run.space >= 0;
+    });
+    const fixtures = g.children.filter((l) => l.name === 'fixture-light').length;
+    return [ok && fixtures > 0 && suite.lights.length <= 12, `${g.children.length - fixtures} window and ${fixtures} fixture lights, each gated to its run's space: ${ok}`];
+  });
+  suite.dispose();
+
+  check('Walls block the light map, doorways let some through', () => {
+    // Two 6 x 5 m rooms side by side, with or without a window in the west room and a doorway between.
+    const make = (window, door) => {
+      const plan = createPlan({ settings: { wallHeight: 2.9, ceiling: 'drywall', exterior: 'none' } });
+      const [w0] = shell(plan, [P(0, 0), P(12, 0), P(12, 5), P(0, 5)]);
+      if (window) addOpening(plan, w0.id, 'window', 3, { width: 3 });
+      const mid = addWall(plan, P(6, 0), P(6, 5), { kind: 'interior' });
+      if (door) addOpening(plan, mid.id, 'opening', 1.5, { width: 1.2 });
+      addRoom(plan, [P(0, 0), P(6, 0), P(6, 5), P(0, 5)], { ceiling: 'drywall' });
+      addRoom(plan, [P(6, 0), P(12, 0), P(12, 5), P(6, 5)], { ceiling: 'drywall' });
+      const b = build(plan);
+      const L = b.planLight;
+      const out = { west: L.levelAt(3, 1.2), east: L.levelAt(9, 2.5), door: L.levelAt(6.6, 1.5), spaces: [L.spaceAt(3, 2.5), L.spaceAt(9, 2.5)] };
+      b.dispose();
+      return out;
+    };
+    const dark = make(false, false), solid = make(true, false), dim = make(false, true), open = make(true, true);
+    const blocked = Math.abs(solid.east - dark.east) < 0.01 && Math.abs(solid.door - dark.door) < 0.01;
+    const pass = solid.west > dark.west * 1.3 && blocked && open.door > dim.door + 0.05 && solid.spaces[0] !== solid.spaces[1];
+    const f = (v) => v.toFixed(2);
+    return [pass, `west room ${f(dark.west)} without its window, ${f(solid.west)} with it; east room behind the solid wall ${f(dark.east)} and ${f(solid.east)}; past a doorway ${f(dim.door)} and ${f(open.door)}`];
+  });
+
+  check('Windowless rooms are lit evenly by their fixtures', () => {
+    const plan = createPlan({ settings: { wallHeight: 2.9, ceiling: 'tile', exterior: 'none' } });
+    shell(plan, [P(0, 0), P(6, 0), P(6, 4), P(0, 4)]);
+    addRoom(plan, [P(0, 0), P(6, 0), P(6, 4), P(0, 4)], { ceiling: 'tile' });
+    const b = build(plan);
+    const L = b.planLight, levels = [];
+    for (let x = 0.8; x < 5.4; x += 0.4) for (let y = 0.8; y < 3.4; y += 0.4) levels.push(L.levelAt(x, y));
+    b.dispose();
+    const lo = Math.min(...levels), hi = Math.max(...levels);
+    return [lo > 1 && hi / lo < 1.8, `light level ${lo.toFixed(2)} to ${hi.toFixed(2)} across the room's middle (${b.planLight.ms.toFixed(0)} ms light map)`];
+  });
+
   const medical = await (await import('../src/samples/index.js')).SAMPLES.find((x) => x.id === 'medical-office').build();
   check('Collinear wall shading does not double up', () => {
     const b = buildPlanScene(medical, { kit });
     let overlaps = 0;
     b.root.traverse((o) => {
-      if (!o.isMesh || !o.material.alphaMap || o.material.opacity >= 0.4) return;
+      if (!o.isMesh || !/^shade-(floor|wall|ceiling)$/.test(o.material.name)) return;
       const a = o.geometry.attributes.position, lines = new Map();
       for (let i = 0; i + 3 < a.count; i += 4) {
         const dx = a.getX(i + 1) - a.getX(i), dz = a.getZ(i + 1) - a.getZ(i), L = Math.hypot(dx, dz);
@@ -657,6 +839,49 @@ async function runChecks() {
     });
     b.dispose();
     return [overlaps === 0, `${overlaps} overlapping shading strips`];
+  });
+
+  check('Rebuilding releases what each build made', () => {
+    // As the walkthrough does: textures items draw through the kit belong to the build, the rest
+    // of the kit's caches (and the builder's per-kit shared materials) outlive it.
+    let made = new Set();
+    const tracked = { ...kit, canvasTexture: (...args) => { const t = kit.canvasTexture(...args); made.add(t); return t; } };
+    const target = new THREE.WebGLRenderTarget(48, 30, { type: THREE.HalfFloatType });
+    const cam = new THREE.PerspectiveCamera(70, 1.6, 0.05, 2000);
+    const prev = renderer.getRenderTarget();
+    const memory = [], perBuild = [], stuck = [];
+    let previous = new Set();
+    for (let i = 0; i < 4; i++) {
+      const b = buildPlanScene(medical, { kit: tracked });
+      scene.add(b.root);
+      // Render from a saved view and from above, so every part has been uploaded once.
+      renderer.setRenderTarget(target);
+      for (const at of [{ x: medical.cameras[0].x, y: 1.6, z: medical.cameras[0].y }, { x: (b.bounds.minX + b.bounds.maxX) / 2, y: 40, z: (b.bounds.minY + b.bounds.maxY) / 2 }]) {
+        cam.position.set(at.x, at.y, at.z);
+        cam.lookAt(at.x + 1, at.y > 10 ? 0 : at.y, at.z + (at.y > 10 ? 0.01 : 1));
+        renderer.render(scene, cam);
+      }
+      renderer.setRenderTarget(prev);
+      const mats = new Set();
+      b.root.traverse((o) => { for (const m of [o.material].flat()) if (m) mats.add(m); });
+      const own = [...mats].filter((m) => !previous.has(m));
+      const released = new Set();
+      for (const m of own) m.addEventListener('dispose', () => released.add(m));
+      b.dispose();
+      for (const t of made) t.dispose();
+      made = new Set();
+      // From the second build on, materials the first did not use belong to this build alone.
+      if (i > 0) {
+        perBuild.push(own.length);
+        stuck.push(...own.filter((m) => !released.has(m)));
+      }
+      previous = mats;
+      memory.push({ ...renderer.info.memory });
+    }
+    target.dispose();
+    const level = memory.slice(1).every((m) => m.geometries === memory[1].geometries && m.textures === memory[1].textures);
+    const names = [...new Set(stuck.map((m) => m.name || m.type))].slice(0, 4).join(', ');
+    return [level && stuck.length === 0, `GPU geometries ${memory.map((m) => m.geometries).join(', ')}, textures ${memory.map((m) => m.textures).join(', ')} after builds 1 to 4; ${perBuild.join(', ')} per-build materials, ${stuck.length} not released${names ? ` (${names})` : ''}`];
   });
   return results;
 }

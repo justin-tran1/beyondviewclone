@@ -10,8 +10,11 @@ import {
 } from './geometry.js';
 import { createKit } from './kit3d.js';
 import { getItem, itemDims } from './catalog/registry.js';
-import { buildPlanScene, setupEnvironment } from './builder3d.js';
+import * as builder from './builder3d.js';
+import { createPostFX, QUALITIES } from './postfx.js';
 import { renderPlan, fitView, planBounds, toPlan } from './plan-render.js';
+
+const { buildPlanScene, setupEnvironment } = builder;
 
 const EYE = DEFAULTS.eyeHeight;
 const RADIUS = 0.25;
@@ -28,7 +31,35 @@ const REBUILD_DELAY = 300;
 const SLOW_BUILD = 120;
 const POSE_INTERVAL = 100;
 const SLOW_FRAME = 40;
+// The frame governor judges the median of the last GOVERNOR_FRAMES motion frames (or of fewer, once
+// they span GOVERNOR_SPAN ms), so a hitch or two, such as a garbage collection, never changes the level.
+const GOVERNOR_FRAMES = 20;
+const GOVERNOR_MIN_FRAMES = 5;
+const GOVERNOR_SPAN = 1000;
+// Frame times left out after work that has nothing to do with moving (the first render of a motion,
+// compiling shaders, redrawing the shadow map): the browser can report its cost a frame late.
+const SKIP_FRAMES = 2;
+// Motion time (ms) with three frames in four under HEADROOM_FRAME before a lowered level steps back
+// up one notch. It doubles each time a raised level turns out too slow within STEP_UP_TRIAL.
+const HEADROOM_FRAME = 24;
+const STEP_UP_AFTER = 3000;
+const STEP_UP_TRIAL = 10000;
 const MIN_RATIO = 0.5;
+// AgX keeps highlights from clipping and shadows from crushing, and the post grade adds the contrast
+// back. Calibrated against the plan light map over every sample's saved views: on average a little
+// brighter than the original ACES look (interiors read as well-lit offices, not dim ones), with sun
+// patches by the windows kept below clipping by the grade's shoulder. Keep photo.js PHOTO_EXPOSURE equal.
+const EXPOSURE = 1.8;
+// In Walk the exposure follows the light where the walker looks, as a photographer meters each
+// view: daylit spots by the windows come down toward the level the exposure was calibrated for,
+// so their floors and white casework keep their texture. The meter is the light map's view meter
+// (builder3d.js planLight.meter) with its daylight weighted `daylight` times, as the window reveals,
+// the floor by the glass and the view out are what blow out first, while a well lit office with
+// dark carpet and an open deck keeps its exposure. Exposure is EXPOSURE times
+// (reference / meter) ^ strength, within `range`; it eases over about `ease` seconds while walking
+// and is set at once on a jump or a rebuild. The overview keeps EXPOSURE. Photos start from the
+// live exposure and meter against meterView() (src/photo.js).
+const METER = { daylight: 2, reference: 7.3, strength: 0.9, range: [0.6, 1], ease: 0.3 };
 const MAX_DT = 0.25;
 const TRANSITION = 1.1;
 const OVERVIEW_ELEVATION = 52;
@@ -312,25 +343,25 @@ const sceneKey = (plan) => JSON.stringify([plan.walls, plan.openings, plan.rooms
 
 // ---- Scene helpers --------------------------------------------------------------------
 
-/** createKit() wrapped so every shared material it hands out can be released on dispose. */
+/**
+ * createKit() with the canvas textures items draw tracked per build. The kit's own caches
+ * (materials, maps, rounded box geometry) live as long as the walkthrough and go with kit.dispose().
+ * The wrapper object stays the same for the walkthrough's life: builder3d.js keys its per-kit
+ * shared materials on it.
+ */
 function trackedKit() {
-  const kit = createKit();
-  const materials = new Set([kit.glass, kit.frostedGlass]);
+  const base = createKit();
   let textures = new Set();
-  const keep = (m) => (m && materials.add(m), m);
-  const mat = new Proxy({}, { get: (_, name) => keep(kit.mat[name]) });
-  return {
-    kit: {
-      ...kit,
-      mat,
-      material: (color, opts) => keep(kit.material(color, opts)),
-      floorMaterial: (key) => keep(kit.floorMaterial(key)),
-      canvasTexture: (...args) => {
-        const t = kit.canvasTexture(...args);
-        textures.add(t);
-        return t;
-      },
+  const kit = {
+    ...base,
+    canvasTexture: (...args) => {
+      const t = base.canvasTexture(...args);
+      textures.add(t);
+      return t;
     },
+  };
+  return {
+    kit,
     /** Textures items made during the last build; they belong to that build. */
     takeTextures() {
       const out = textures;
@@ -338,15 +369,27 @@ function trackedKit() {
       return out;
     },
     dispose() {
-      for (const m of materials) {
-        m.map?.dispose();
-        m.dispose();
-      }
       for (const t of textures) t.dispose();
-      materials.clear();
       textures.clear();
+      // Through the wrapper: catalog modules chain their own kit caches onto its dispose().
+      kit.dispose();
     },
   };
+}
+
+/** Materials under obj and the textures they hold (maps and texture uniforms). */
+function sceneResources(obj) {
+  const materials = new Set(), textures = new Set();
+  const take = (v) => { if (v?.isTexture) textures.add(v); };
+  obj.traverse((o) => {
+    for (const m of [].concat(o.material || [])) {
+      if (materials.has(m)) continue;
+      materials.add(m);
+      for (const v of Object.values(m)) take(v);
+      for (const u of Object.values(m.uniforms || {})) take(u?.value);
+    }
+  });
+  return { materials, textures };
 }
 
 function ringMesh() {
@@ -361,12 +404,14 @@ function ringMesh() {
   for (const m of group.children) m.renderOrder = 3;
   group.visible = false;
   group.userData.mats = [ringMat, discMat];
+  group.userData.overlay = true; // UI, not part of the space: kept out of captures and photos
   return group;
 }
 
 /**
  * Small figure standing at the walker pose in overview, with a view wedge pointing forward (-z).
- * The wedge and base ring draw through walls so the position always reads.
+ * The wedge and base ring draw through walls so the position always reads. Like the walk target,
+ * it is drawn in the overlay scene, so the body is lit by that scene's own lights (see _setupScene).
  */
 function walkerFigure() {
   const group = new THREE.Group();
@@ -393,6 +438,7 @@ function walkerFigure() {
   torso.renderOrder = head.renderOrder = 11;
   group.add(wedge, base, torso, head);
   group.visible = false;
+  group.userData.overlay = true;
   return group;
 }
 
@@ -422,6 +468,13 @@ function fitDistance(cam, target, dir, box, margin = { x: 0.88, y: 0.8 }) {
   return hi;
 }
 
+/** World box AO is limited to: the plan bounds and the ceiling height, plus a margin. */
+function aoBounds(b, top) {
+  if (![b?.minX, b?.minY, b?.maxX, b?.maxY].every(Number.isFinite)) return null;
+  const m = 1;
+  return new THREE.Box3(new THREE.Vector3(b.minX - m, -m, b.minY - m), new THREE.Vector3(b.maxX + m, top + m, b.maxY + m));
+}
+
 function disposeTree(obj) {
   obj.traverse((o) => {
     o.geometry?.dispose();
@@ -438,8 +491,13 @@ function styled(tag, style) {
 // ---- Walkthrough ------------------------------------------------------------------------
 
 export class Walkthrough extends EventTarget {
-  constructor(container, store, { minimap = true } = {}) {
+  constructor(container, store, { minimap = true, quality = 'high' } = {}) {
     super();
+    if (!QUALITIES.includes(quality)) throw new Error(`Unknown walkthrough quality "${quality}"`);
+    this._chosenQuality = quality;
+    this._quality = quality;
+    this._envCapture = null;
+    this._orphans = null;
     this.container = container;
     this.store = store;
     this._mode = 'walk';
@@ -464,6 +522,8 @@ export class Walkthrough extends EventTarget {
     this._inertia = null;
     this._fov = FOV.walk;
     this._fovTarget = FOV.walk;
+    this._snapExposure = true;
+    this._moved = false;
     this._pointers = new Map();
     this._look = null;
     this._pinch = null;
@@ -483,7 +543,11 @@ export class Walkthrough extends EventTarget {
     this._world = collisionWorld([], []);
     this._occluders = new Grid();
     this._ringHit = false;
-    this._perf = { avg: 0, n: 0 };
+    // Frame governor state: recent motion frame times, frames to leave out, motion time with headroom,
+    // the headroom needed before stepping up, and the motion time since the last step up.
+    this._perf = { win: [], skip: 0, calm: 0, upAfter: STEP_UP_AFTER, since: Infinity };
+    this._fastScene = false;
+    this._casters = [];
     this._restore = {};
 
     this._setupDom();
@@ -504,6 +568,46 @@ export class Walkthrough extends EventTarget {
   }
 
   get mode() { return this._mode; }
+
+  /** The rendering quality in use: the chosen level, or lower while frames are too slow. */
+  get quality() { return this._quality; }
+
+  /** The level last set with setQuality (or the constructor); automatic changes never go above it. */
+  get chosenQuality() { return this._chosenQuality; }
+
+  /**
+   * 'high' (ambient occlusion, bloom, color grade, SMAA), 'balanced' (cheaper AO, no bloom) or
+   * 'fast' (the color grade only). Emits 'quality' {quality, chosen, auto}. Where post-processing
+   * cannot run (no WebGL 2), the level in use stays 'fast' and auto is true.
+   */
+  setQuality(quality) {
+    if (!QUALITIES.includes(quality)) throw new Error(`Unknown walkthrough quality "${quality}"`);
+    const chosenChanged = quality !== this._chosenQuality;
+    this._chosenQuality = quality;
+    // A deliberate choice starts the automatic changes over, from full motion resolution.
+    this._motionRatio = this._baseRatio;
+    this._perf.upAfter = STEP_UP_AFTER;
+    this._perf.since = Infinity;
+    this._resetGovernor(0);
+    if (quality !== this._quality || chosenChanged) this._applyQuality(quality, false);
+  }
+
+  /** What another renderer needs to draw the current view (the photo renderer, for example). */
+  get renderContext() {
+    this._syncWalkCamera();
+    return { renderer: this._renderer, scene: this._scene, camera: this._activeCamera(), built: this._built };
+  }
+
+  /**
+   * Median scene-linear luminance of the current view before exposure (postfx.js meter()), from a
+   * frame drawn fresh at the level in use, or null where it cannot be measured. Photos expose to it.
+   */
+  meterView() {
+    if (!this._built || this._disposed || !this._applySize()) return null;
+    this._render();
+    this._invalidate();
+    return this._postfx.meter();
+  }
 
   start() {
     if (this._running) return;
@@ -538,6 +642,7 @@ export class Walkthrough extends EventTarget {
     const textures = this._kit.takeTextures();
     if (this._built) this._disposeBuilt();
     this._built = built;
+    this._orphans = null;
     this._buildTextures = textures;
     this._key = sceneKey(plan);
     this._stale = false;
@@ -547,6 +652,15 @@ export class Walkthrough extends EventTarget {
     this._world = collisionWorld(built.colliders, built.obstacles, built.bounds);
     this._occluders = itemOccluders(plan);
     this._ceilTop = Math.max(plan.settings.wallHeight, ...plan.rooms.map((r) => r.height || 0)) + 1.2;
+    this._renderer.shadowMap.needsUpdate = true;
+    this._captureEnvironment(built);
+    // The item meshes this build lets cast sun shadows, which 'fast' turns off; the capture above saw
+    // the full scene, so the reflections are the same at every level.
+    this._casters = [];
+    built.root.getObjectByName('furnishings')?.traverse((o) => { if (o.isMesh && o.castShadow) this._casters.push(o); });
+    this._fastScene = false;
+    this._setFastScene(this._quality === 'fast');
+    this._postfx.setSceneBounds(aoBounds(built.bounds, this._ceilTop));
     const far = Math.max(600, (built.root.userData.horizon || 1000) * 1.3);
     for (const cam of [this._camera, this._orbitCam, this._tweenCam]) {
       cam.far = far;
@@ -567,6 +681,9 @@ export class Walkthrough extends EventTarget {
     }
     this._layoutMinimap();
     this._poseChanged();
+    this._snapExposure = true;
+    // The build and the shadow map redraw it asks for land in the next frame times.
+    this._skipFrames();
     this._invalidate();
   }
 
@@ -607,6 +724,7 @@ export class Walkthrough extends EventTarget {
     } else {
       Object.assign(cur, to);
       this._poseChanged();
+      this._snapExposure = true;
     }
     this._invalidate();
   }
@@ -627,29 +745,51 @@ export class Walkthrough extends EventTarget {
     return true;
   }
 
-  /** PNG of the current view, rendered fresh at full resolution. */
+  /**
+   * PNG of the current view, post-processing included, rendered fresh at full resolution and at the
+   * chosen quality: a still has no frame budget, so a level lowered for moving does not apply.
+   */
   screenshot() {
-    return new Promise((resolve, reject) => {
-      if (!this._built) {
-        reject(new Error('This plan could not be shown in 3D, so there is no 3D view to save.'));
-        return;
-      }
-      if (!this._applySize()) {
-        reject(new Error('The 3D view is not visible, so there is nothing to capture.'));
-        return;
-      }
+    const check = () => {
+      if (!this._built) throw new Error('This plan could not be shown in 3D, so there is no 3D view to save.');
+      if (this._disposed || !this._applySize()) throw new Error('The 3D view is not visible, so there is nothing to capture.');
+    };
+    try {
+      check();
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    // Asking for `ready` at the chosen level starts loading what that level's chain needs; frames
+    // drawn while it loads stay at the level in use.
+    const level = this._chosenQuality, inUse = this._postfx.quality;
+    if (inUse !== level) this._postfx.setQuality(level);
+    const ready = this._postfx.ready;
+    if (inUse !== level) this._postfx.setQuality(inUse);
+    return ready.then(() => new Promise((resolve, reject) => {
+      check();
       const renderer = this._renderer;
       if (renderer.getPixelRatio() !== this._baseRatio) {
         renderer.setPixelRatio(this._baseRatio);
         this._applySize();
       }
-      const ring = this._ring.visible;
+      const ring = this._ring.visible, fastScene = this._fastScene;
       this._ring.visible = false;
-      this._render();
-      this._canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not capture the 3D view.'))), 'image/png');
-      this._ring.visible = ring;
-      this._invalidate();
-    });
+      try {
+        if (this._postfx.quality !== level) this._postfx.setQuality(level);
+        this._setFastScene(this._postfx.quality === 'fast');
+        // The view as it settles, even if the exposure is still easing toward it.
+        this._snapExposure = true;
+        this._stepExposure(0);
+        this._render();
+        this._canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not capture the 3D view.'))), 'image/png');
+      } finally {
+        this._setFastScene(fastScene);
+        if (this._postfx.quality !== this._quality) this._postfx.setQuality(this._quality);
+        this._ring.visible = ring;
+        this._skipFrames();
+        this._invalidate();
+      }
+    }));
   }
 
   resize() {
@@ -660,6 +800,8 @@ export class Walkthrough extends EventTarget {
     if (this._size !== before) {
       this._layoutMinimap();
       if (this._canRender() && !this._raf) this._render();
+      // New buffers, and perhaps a frame drawn here: not the cost of moving.
+      this._skipFrames();
     }
     this._invalidate();
   }
@@ -675,11 +817,24 @@ export class Walkthrough extends EventTarget {
     for (const [target, type, fn, opts] of this._listeners) target.removeEventListener(type, fn, opts);
     this._listeners = [];
     this._controls.dispose();
+    // builder3d.js shares some materials (and their textures) across every build made with this
+    // kit and has no hook to release them, so whatever the last build used goes here too.
+    const shared = this._built ? sceneResources(this._built.root) : this._orphans;
     if (this._built) this._disposeBuilt();
     this._built = null;
     disposeTree(this._ring);
     disposeTree(this._figure);
     this._kit.dispose();
+    if (shared) {
+      for (const m of shared.materials) m.dispose();
+      for (const t of shared.textures) t.dispose();
+    }
+    this._postfx.dispose();
+    if (this._envCapture) {
+      if (this._scene.environment === this._envCapture.texture) this._scene.environment = null;
+      this._envCapture.dispose?.();
+      this._envCapture = null;
+    }
     this._env.dispose();
     this._renderer.dispose();
     this._renderer.forceContextLoss();
@@ -722,8 +877,10 @@ export class Walkthrough extends EventTarget {
     this._motionRatio = this._baseRatio;
     renderer.setPixelRatio(this._baseRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1;
+    // AgX, applied once by the post-processing chain after the grade at every level (postfx.js
+    // switches to the graded curve inside the materials where the chain cannot run).
+    renderer.toneMapping = THREE.AgXToneMapping;
+    renderer.toneMappingExposure = EXPOSURE;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.shadowMap.autoUpdate = false;
@@ -748,7 +905,20 @@ export class Walkthrough extends EventTarget {
     this._tweenCam = new THREE.PerspectiveCamera(FOV.walk, 1, 0.05, 1500);
     this._ring = ringMesh();
     this._figure = walkerFigure();
-    this._scene.add(this._ring, this._figure);
+    // UI drawn after post-processing, straight onto the canvas, so the accent keeps its exact color
+    // (toneMapped: false) instead of being graded and tone mapped with the scene. Not in the scene,
+    // so captures and photos never see it.
+    this._overlay = new THREE.Scene();
+    const key = new THREE.DirectionalLight(0xffffff, 7);
+    key.position.set(0.5, 1, 0.8);
+    // About as bright as the room lit the walker's body when it was part of the scene.
+    this._overlay.add(this._ring, this._figure, new THREE.HemisphereLight(0xffffff, 0x445544, 8), key);
+    this._postfx = createPostFX(this._renderer, this._scene, this._camera, {
+      quality: this._quality,
+      onReady: () => this._invalidate(),
+      overlay: this._overlay,
+    });
+    this._quality = this._postfx.quality;
     this._raycaster = new THREE.Raycaster();
     this._ndc = new THREE.Vector2();
 
@@ -867,7 +1037,33 @@ export class Walkthrough extends EventTarget {
     b.style.opacity = on ? '1' : '0';
   }
 
+  /**
+   * Reflections and ambient tint from the built interior, when builder3d.js offers a capture.
+   * Until one succeeds the current environment stays.
+   */
+  _captureEnvironment(built) {
+    const capture = builder.captureEnvironment;
+    if (typeof capture !== 'function') return;
+    let next = null;
+    try {
+      next = capture(this._renderer, this._scene, built);
+    } catch (err) {
+      console.warn('Could not capture the interior for reflections; keeping the previous environment.', err);
+    } finally {
+      this._renderer.setRenderTarget(null);
+    }
+    if (!next?.texture) {
+      next?.dispose?.();
+      return;
+    }
+    const prev = this._envCapture;
+    this._envCapture = next;
+    this._scene.environment = next.texture;
+    prev?.dispose?.();
+  }
+
   _disposeBuilt() {
+    this._casters = [];
     this._built.dispose();
     for (const t of this._buildTextures) t.dispose();
     this._buildTextures = new Set();
@@ -877,7 +1073,11 @@ export class Walkthrough extends EventTarget {
   _buildFailed(plan, err) {
     console.error('Could not build the 3D view', err);
     for (const t of this._kit.takeTextures()) t.dispose();
-    if (this._built) this._disposeBuilt();
+    if (this._built) {
+      // Kept for dispose(): the builder's shared materials the dropped scene used.
+      this._orphans = sceneResources(this._built.root);
+      this._disposeBuilt();
+    }
     this._built = null;
     this._key = sceneKey(plan);
     this._stale = false;
@@ -978,38 +1178,144 @@ export class Walkthrough extends EventTarget {
     this._last = now;
     this._inFrame = true;
     this._again = false;
-    let active = false;
+    const programs = this._renderer.info.programs;
+    let active = false, heavy = false;
     try {
       active = this._update(dt);
-      const ratio = active || this._look?.moved || this._pinch ? this._motionRatio : this._baseRatio;
+      const moving = this._moved || this._look?.moved || this._pinch;
+      // Changing the 'fast' scene recompiles the lit materials, so it waits until the view is still.
+      if (!moving) this._setFastScene(this._quality === 'fast');
+      const ratio = moving ? this._motionRatio : this._baseRatio;
       if (this._renderer.getPixelRatio() !== ratio) {
         this._renderer.setPixelRatio(ratio);
         this._applySize();
       }
-      if (active || this._dirty) this._render();
+      if (active || this._dirty) {
+        const compiled = programs.length;
+        heavy = this._renderer.shadowMap.needsUpdate;
+        this._render();
+        heavy ||= programs.length > compiled;
+      }
     } finally {
       this._inFrame = false;
     }
-    if (active) {
+    if (this._moved) {
       this._governor(frameMs);
+      // Compiling shaders or redrawing the shadow map is not the cost of moving.
+      if (heavy) this._skipFrames();
     } else {
-      this._last = 0;
-      this._perf.n = 0;
+      // An easing exposure keeps the clock running for its next step.
+      if (!active) this._last = 0;
+      // The first frames of the next motion carry the work of starting it.
+      this._skipFrames();
     }
     if (active || this._again) this._kick();
   }
 
-  /** Lowers the pixel ratio used while moving when frames are slow. Idle frames stay at full resolution. */
+  /**
+   * While moving stays slow, steps the quality down one level at a time (never above the chosen
+   * level), and once at 'fast' lowers the pixel ratio used while moving. After a few seconds of
+   * moving with headroom it undoes those steps one at a time, the pixel ratio first. Idle frames
+   * keep the full pixel ratio.
+   */
   _governor(frameMs) {
     if (!frameMs || frameMs > 5000) return;
     const g = this._perf;
-    const ms = Math.min(frameMs, 1000);
-    g.avg = g.n ? g.avg * 0.8 + ms * 0.2 : ms;
-    g.n++;
-    if (g.n >= 5 && g.avg > SLOW_FRAME && this._motionRatio > MIN_RATIO) {
-      this._motionRatio = Math.max(MIN_RATIO, Math.round(this._motionRatio * 80) / 100);
-      g.n = 0;
+    if (g.skip > 0) {
+      g.skip--;
+      return;
     }
+    const ms = Math.min(frameMs, 250);
+    g.since += ms;
+    const win = g.win;
+    win.push(ms);
+    if (win.length > GOVERNOR_FRAMES) win.shift();
+    if (win.length < GOVERNOR_FRAMES && (win.length < GOVERNOR_MIN_FRAMES || win.reduce((a, b) => a + b, 0) < GOVERNOR_SPAN)) return;
+    const sorted = win.slice().sort((a, b) => a - b);
+    // The lower median: more than half of the frames have to be slow.
+    if (sorted[(sorted.length - 1) >> 1] > SLOW_FRAME) {
+      g.calm = 0;
+      this._stepDown();
+    } else if (sorted[Math.ceil(sorted.length * 0.75) - 1] < HEADROOM_FRAME && this._lowered()) {
+      g.calm += ms;
+      if (g.calm >= g.upAfter) this._stepUp();
+    } else {
+      g.calm = 0;
+    }
+  }
+
+  /** True while the governor has lowered the quality or the motion pixel ratio. */
+  _lowered() {
+    // Without WebGL 2 'fast' is as high as postfx.js can draw, whatever was chosen.
+    const qualities = this._postfx.qualities;
+    const top = qualities.includes(this._chosenQuality) ? this._chosenQuality : qualities[0];
+    return this._quality !== top || this._motionRatio < this._baseRatio;
+  }
+
+  _stepDown() {
+    const g = this._perf;
+    const lower = QUALITIES[QUALITIES.indexOf(this._quality) + 1];
+    if (!lower && this._motionRatio <= MIN_RATIO) return;
+    // A step up that did not hold: wait twice as long before the next try, so the level settles.
+    if (g.since < STEP_UP_TRIAL) g.upAfter *= 2;
+    g.since = Infinity;
+    if (lower) this._applyQuality(lower, true);
+    else this._setMotionRatio(Math.max(MIN_RATIO, Math.round(this._motionRatio * 80) / 100));
+  }
+
+  _stepUp() {
+    this._perf.since = 0;
+    // The pixel ratio at most doubles per step (four times the pixels, not sixteen on a 2x screen);
+    // if that is too much, it steps down again in small ones.
+    if (this._motionRatio < this._baseRatio) this._setMotionRatio(Math.min(this._baseRatio, this._motionRatio * 2));
+    else this._applyQuality(QUALITIES[QUALITIES.indexOf(this._quality) - 1], true);
+  }
+
+  _setMotionRatio(ratio) {
+    this._motionRatio = ratio;
+    // The next frame reallocates the buffers at the new size.
+    this._resetGovernor(SKIP_FRAMES);
+  }
+
+  /** Forget the frames measured so far: they say nothing about a new level or pixel ratio. */
+  _resetGovernor(skip) {
+    const g = this._perf;
+    g.win.length = 0;
+    g.calm = 0;
+    g.skip = Math.max(g.skip, skip);
+  }
+
+  /** Leave the next frame times out: they carry work that is not the cost of moving. */
+  _skipFrames() {
+    this._perf.skip = Math.max(this._perf.skip, SKIP_FRAMES);
+  }
+
+  _applyQuality(quality, auto) {
+    this._postfx.setQuality(quality);
+    // The level postfx.js can draw here: 'fast' only, without WebGL 2.
+    const level = this._postfx.quality;
+    const changed = level !== this._quality;
+    this._quality = level;
+    // The first frames at a new level compile its shaders.
+    this._resetGovernor(changed ? SKIP_FRAMES : 0);
+    this.dispatchEvent(new CustomEvent('quality', { detail: { quality: level, chosen: this._chosenQuality, auto: auto || level !== quality } }));
+    this._invalidate();
+  }
+
+  /**
+   * In 'fast' the view also leaves out the window and fixture reflections (area lights, evaluated on
+   * every pixel) and the items' sun shadows, so redrawing the shadow map (as when the ceilings
+   * toggle) costs less. Each build starts with the full scene; rebuild() applies the level in use.
+   */
+  _setFastScene(on) {
+    const built = this._built;
+    if (!built || on === this._fastScene) return;
+    this._fastScene = on;
+    const daylight = built.root.userData.daylight;
+    if (daylight) daylight.visible = !on;
+    for (const mesh of this._casters) mesh.castShadow = !on;
+    if (this._casters.length) this._renderer.shadowMap.needsUpdate = true;
+    this._dirty = true;
   }
 
   _update(dt) {
@@ -1023,13 +1329,40 @@ export class Walkthrough extends EventTarget {
     }
     active = this._stepFov(dt) || active;
     if (this._poseDirty) this._poseChanged();
+    // Motion as the governor and the motion pixel ratio see it: easing the exposure alone is not.
+    this._moved = active;
     this._updateRing(active);
-    return active;
+    return this._stepExposure(dt) || active;
+  }
+
+  /** The exposure for the current view: metered in Walk (see METER), EXPOSURE in the overview. */
+  _exposureTarget() {
+    const L = this._built?.planLight;
+    if (this._mode !== 'walk' || !L?.meter) return EXPOSURE;
+    const p = this._pose, yaw = deg2rad(p.yaw);
+    const m = L.meter(p.x, p.y, Math.sin(yaw), -Math.cos(yaw));
+    const level = m.level + (METER.daylight - 1) * m.daylight;
+    if (!(level > 0)) return EXPOSURE;
+    return EXPOSURE * clamp((METER.reference / level) ** METER.strength, METER.range[0], METER.range[1]);
+  }
+
+  /**
+   * Ease the exposure toward its target (at once after a jump). True while it is still easing; a
+   * value set at once only marks this frame dirty, so it costs no extra frame.
+   */
+  _stepExposure(dt) {
+    const r = this._renderer, target = this._exposureTarget(), cur = r.toneMappingExposure;
+    const snap = this._snapExposure || Math.abs(target - cur) < 0.002 * target;
+    this._snapExposure = false;
+    if (cur === target) return false;
+    r.toneMappingExposure = snap ? target : cur + (target - cur) * (1 - Math.exp(-dt / METER.ease));
+    this._dirty = true;
+    return !snap;
   }
 
   _render() {
     this._syncWalkCamera();
-    this._renderer.render(this._scene, this._activeCamera());
+    this._postfx.render(this._activeCamera());
     this._dirty = false;
   }
 
@@ -1064,6 +1397,7 @@ export class Walkthrough extends EventTarget {
     if (s.w === w && s.h === h && s.ratio === ratio) return true;
     this._size = { w, h, ratio };
     this._renderer.setSize(w, h, false);
+    this._postfx.setSize(w, h, ratio);
     for (const cam of [this._camera, this._orbitCam, this._tweenCam]) {
       cam.aspect = w / h;
       cam.updateProjectionMatrix();

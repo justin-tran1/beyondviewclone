@@ -282,7 +282,7 @@ function circle(ctx, x, y, r, fill) {
 
 function ellipse(ctx, x, y, rx, ry, fill) {
   ctx.beginPath();
-  ctx.ellipse(x, y, rx, ry, 0, 0, TAU);
+  ctx.ellipse(x, y, Math.max(0, rx), Math.max(0, ry), 0, 0, TAU);
   paint(ctx, fill);
 }
 
@@ -1245,7 +1245,8 @@ function drawPantry(ctx, o) {
 
 // ---- Media display ------------------------------------------------------------------
 
-const MEDIA = { legH: 0.12, top: 0.62, screenW: 1.44, screenY: 0.77 };
+// screenZ and bar: depth spans of the screen and the soundbar, measured from the back edge.
+const MEDIA = { legH: 0.12, top: 0.62, screenW: 1.44, screenY: 0.77, screenZ: [0.1, 0.138], bar: [0.26, 0.36] };
 
 function buildMedia(kit, { w, d, h, color }) {
   const g = kit.group();
@@ -1268,11 +1269,16 @@ function buildMedia(kit, { w, d, h, color }) {
     barPull(kit, g, m.alu, px, top - 0.135, zf + 0.018, 0.12, { vertical: true, reach: 0.012 });
   }
   const sw = Math.min(MEDIA.screenW, w - 0.2), sh = sw * 0.5625, sy = Math.min(MEDIA.screenY, h - sh - 0.01), z0 = -d / 2;
-  kit.block(g, m.frame, -0.25, 0.25, sy + 0.15, sy + sh - 0.15, z0, z0 + 0.015);
-  kit.block(g, m.black, -sw / 2, sw / 2, sy, sy + sh, z0 + 0.015, z0 + 0.05);
-  kit.block(g, m.screen, -sw / 2 + 0.008, sw / 2 - 0.008, sy + 0.012, sy + sh - 0.008, z0 + 0.05, z0 + 0.053, false);
-  kit.block(g, m.black, -0.45, 0.45, top, top + 0.07, z0 + 0.09, z0 + 0.19);
-  kit.block(g, m.reveal, -0.44, 0.44, top + 0.012, top + 0.058, z0 + 0.19, z0 + 0.192, false);
+  const [s0, s1] = MEDIA.screenZ.map((z) => z0 + z), [b0, b1] = MEDIA.bar.map((z) => z0 + z);
+  // The screen stands on its own pedestal (a foot plate, a neck and a mounting plate on its back),
+  // so it holds itself up against a wall, free standing or in front of a glass partition.
+  slabTop(kit, g, m.frame, -0.24, 0.24, top, top + 0.012, z0 + 0.06, z0 + 0.24, { corner: 0.03, edge: 0.003 });
+  kit.block(g, m.frame, -0.035, 0.035, top + 0.012, sy + sh * 0.5, s0 - 0.035, s0);
+  kit.block(g, m.frame, -0.15, 0.15, sy + sh * 0.3, sy + sh * 0.55, s0 - 0.012, s0);
+  kit.block(g, m.black, -sw / 2, sw / 2, sy, sy + sh, s0, s1 - 0.003);
+  kit.block(g, m.screen, -sw / 2 + 0.008, sw / 2 - 0.008, sy + 0.012, sy + sh - 0.008, s1 - 0.003, s1, false);
+  kit.block(g, m.black, -0.45, 0.45, top, top + 0.07, b0, b1);
+  kit.block(g, m.reveal, -0.44, 0.44, top + 0.012, top + 0.058, b1, b1 + 0.002, false);
   book(kit, g, kit.material('#2f4a44', { roughness: 0.7 }), m.paper, -w / 2 + 0.12, -w / 2 + 0.38, top, top + 0.03, z0 + 0.22, z0 + 0.4);
   book(kit, g, kit.material('#c9c4a6', { roughness: 0.7 }), m.paper, -w / 2 + 0.14, -w / 2 + 0.36, top + 0.03, top + 0.055, z0 + 0.24, z0 + 0.39);
   turned(kit, g, kit.material('#dedbd3', { roughness: 0.3 }), [[0, 0], [0.045, 0], [0.05, 0.01], [0.056, 0.08], [0.045, 0.15], [0.026, 0.19], [0.028, 0.2], [0.022, 0.2], [0.02, 0.185], [0, 0.185]], w / 2 - 0.2, top, z0 + 0.3, { segments: 28 });
@@ -1284,11 +1290,11 @@ function drawMedia(ctx, o) {
   outline(ctx, o);
   pen(ctx, o);
   line(ctx, -w / 2, d / 2 - 0.035, w / 2, d / 2 - 0.035);
-  const sw = Math.min(MEDIA.screenW, w - 0.2);
-  rect(ctx, -sw / 2, -d / 2 + 0.015, sw / 2, -d / 2 + 0.053, o.theme.line);
+  const sw = Math.min(MEDIA.screenW, w - 0.2), [s0, s1] = MEDIA.screenZ, [b0, b1] = MEDIA.bar;
+  rect(ctx, -sw / 2, -d / 2 + s0, sw / 2, -d / 2 + s1, o.theme.line);
   if (roomy(o)) {
     pen(ctx, o, FINE, o.theme.muted);
-    rect(ctx, -0.45, -d / 2 + 0.09, 0.45, -d / 2 + 0.19);
+    rect(ctx, -0.45, -d / 2 + b0, 0.45, -d / 2 + b1);
     circle(ctx, w / 2 - 0.2, -d / 2 + 0.3, 0.05);
   }
 }

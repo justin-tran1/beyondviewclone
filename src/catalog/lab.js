@@ -540,8 +540,10 @@ export function officeChair(kit, g, x, z, yaw, { fabric = kit.mat.fabricCharcoal
       }
       bent(kit, bk, black, ring, 0.011, { segments: 32, radial: 6, closed: true });
     } else {
-      cushion(kit, bk, black, -0.238, 0.238, -0.004, back + 0.004, -0.04, -0.018, { r: 0.009, warp: warpAt(`chair-shell-${back}`, 0, back / 2, -0.029, backContour), mid: [4, 4, 1], k: 1 });
-      cushion(kit, bk, fabric, -0.228, 0.228, 0.006, back - 0.006, -0.024, 0.036, { r: 0.026, crown: 0.012, axis: 'z', warp: warpAt(`chair-back-${back}`, 0, back / 2, 0.006, backContour), mid: [4, 4, 1] });
+      // The contour's steep corner terms need a fine grid: at 4 segments a side the outline showed
+      // straight chords and kinks of up to 8 mm; 12 by 10 keeps it within 2 mm (the cushion within 1).
+      cushion(kit, bk, black, -0.238, 0.238, -0.004, back + 0.004, -0.04, -0.018, { r: 0.009, warp: warpAt(`chair-shell-${back}`, 0, back / 2, -0.029, backContour), mid: [12, 10, 1], k: 1 });
+      cushion(kit, bk, fabric, -0.228, 0.228, 0.006, back - 0.006, -0.024, 0.036, { r: 0.026, crown: 0.012, axis: 'z', warp: warpAt(`chair-back-${back}`, 0, back / 2, 0.006, backContour), mid: [12, 10, 1] });
     }
     if (!arms) return;
     for (const s of [-1, 1]) {
@@ -837,7 +839,7 @@ function circle(ctx, x, y, r, fill) {
 
 function rounded(ctx, x0, y0, x1, y1, r) {
   ctx.beginPath();
-  ctx.roundRect(x0, y0, x1 - x0, y1 - y0, Math.min(r, (x1 - x0) / 2, (y1 - y0) / 2));
+  ctx.roundRect(x0, y0, x1 - x0, y1 - y0, Math.max(0, Math.min(r, (x1 - x0) / 2, (y1 - y0) / 2)));
   ctx.stroke();
 }
 

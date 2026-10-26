@@ -522,7 +522,7 @@ export function createProperties(root, { store, editor, actions }) {
     const u = plan.underlay;
     if (!u) {
       return section('Floor plan image',
-        h('p', { class: 'prop-note', text: 'Import a floor plan drawing to find its walls, doors and rooms. PNG, JPG, WebP and SVG work. Export PDFs to PNG first.' }),
+        h('p', { class: 'prop-note', text: 'Import a floor plan drawing to find its walls, doors, rooms and furniture. PNG, JPG, WebP and SVG work. Export PDFs to PNG first.' }),
         actionsRow(h('button', { type: 'button', class: 'btn btn-primary btn-sm', on: { click: actions.importImage } }, iconEl('upload'), h('span', { class: 'btn-label', text: 'Import floor plan image' }))));
     }
     const setU = (label, fn, opts) => store.update((d) => { if (d.underlay) fn(d.underlay); }, { label, ...opts });
@@ -546,7 +546,7 @@ export function createProperties(root, { store, editor, actions }) {
       b.readout({ label: 'Image spans', get: span }),
       actionsRow(
         h('button', { type: 'button', class: 'btn btn-primary btn-sm', dataset: { tip: 'Click both ends of a known length on the image' }, on: { click: actions.calibrate } }, iconEl('calibrate'), h('span', { class: 'btn-label', text: 'Calibrate scale' })),
-        h('button', { type: 'button', class: 'btn btn-secondary btn-sm', dataset: { tip: 'Find the walls, doors and rooms in the image' }, on: { click: actions.detectWalls } }, iconEl('wand'), h('span', { class: 'btn-label', text: 'Detect walls' })),
+        h('button', { type: 'button', class: 'btn btn-secondary btn-sm', dataset: { tip: 'Find the walls, doors, rooms and furniture in the image' }, on: { click: actions.detectWalls } }, iconEl('wand'), h('span', { class: 'btn-label', text: 'Detect walls' })),
         h('button', { type: 'button', class: 'btn btn-secondary btn-sm icon-only', dataset: { tip: 'Replace the image' }, attrs: { 'aria-label': 'Replace the image' }, on: { click: actions.replaceImage } }, iconEl('upload')),
         h('button', { type: 'button', class: 'btn btn-secondary btn-sm btn-danger icon-only', dataset: { tip: 'Remove the image' }, attrs: { 'aria-label': 'Remove the image' }, on: { click: actions.removeImage } }, iconEl('trash'))));
   }

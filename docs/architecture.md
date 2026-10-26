@@ -18,6 +18,7 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
 | `src/plan-render.js` | Draws a plan onto a 2D canvas (editor and minimap share it) |
 | `src/editor2d.js` | `PlanEditor`: interactive 2D tracing and layout editor |
 | `src/autotrace.js` | `traceFloorPlan()`: the walls, doors, windows, rooms and scale in a floor plan image's pixels (no DOM) |
+| `src/autotrace-items.js` | `findItems()`: the furniture and fixtures drawn in the rooms, for the tracer |
 | `src/autotrace-worker.js`, `src/ui/trace.js` | Run the tracer on the underlay in a worker and add what it finds to the plan |
 | `src/builder3d.js` | Plan to Three.js scene: walls with openings, floors, ceilings, items, exterior; lighting and the plan light map |
 | `src/postfx.js` | Post-processing for the walkthrough: AO, bloom, color grade, AgX, SMAA, quality levels (`createPostFX()`) |
@@ -65,7 +66,8 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
                side: 1 | -1 }],          // door swings toward wallNormal(wall) * side
   rooms:    [{ id, name, points: [{x, y}, ...], floor: FloorKey, ceiling: 'tile' | 'drywall' | 'open',
                height? }],          // ceiling height (m); defaults to settings.wallHeight
-  items:    [{ id, type, x, y, rotation, w?, d?, h?, elevation?, color?, label? }],   // elevation: base height above floor (m)
+  items:    [{ id, type, x, y, rotation, w?, d?, h?, elevation?, color?, label?,
+               traced? }],    // elevation: base height above floor (m); traced: found in the underlay
   cameras:  [{ id, name, x, y, yaw, pitch }],
 }
 ```
@@ -152,8 +154,9 @@ export function traceFloorPlan({ width, height, data /* RGBA */ }, { onProgress,
   openings: [{ wall, type, offset, width, hinge, side }],  // side +1: toward +x (vertical walls) or +y
   rooms: [{ points, area }],
   scale: { metersPerPixel, source: 'doors' | 'walls' | null, doors },
+  items: [{ kind, x, y, w, d, rotation, sink, round, backed, at }],   // furniture, in image px
 }
-export function toPlanGeometry(trace, { metersPerPixel, origin }) // walls, openings, rooms in plan meters
+export function toPlanGeometry(trace, { metersPerPixel, origin }) // walls, openings, rooms, items in plan meters
 ```
 
 The tracer reads architectural drawings of straight walls at right angles, drawn as solid strokes,
@@ -168,19 +171,45 @@ enclose with their doors shut, found on a grid of half-wall cells: the outside i
 reaches once gaps of up to about 7 feet are sealed, and hatched areas are not floor. Walls with the
 outside along one face are exterior. The scale assumes the single doors are 3'-0" wide (their swing
 radius), else 5" partitions, and is rejected when the drawing would span less than 4 m or more than
-500 m. A 1,500 px plan takes under a second.
+500 m. A 1,500 px plan takes about a second and a half with its furniture.
+
+The furniture (`autotrace-items.js`) is what the lines inside the rooms close off once the walls
+and door swings are taken out: each patch of floor an outline closes off, other than the room's own
+floor, is a shape, first for solid lines, then with every line thickened to bridge the gaps of
+dashed ones. An L-, U- or C-shaped band a desk's depth wide (a reception desk, a workstation wrapped
+round its chairs) is split into its largest rectangles, one desk each; parts drawn end to end (a
+sofa's cushions, a counter run on either side of its sink, a desk's end panel) are joined. Shapes
+are named by size, by the walls along their sides, by the room's size and by what is drawn inside
+them: a counter is backed along a wall, and has a sink when a bowl's closed outline or dense lines
+sit in it; a toilet is a round bowl off a short wall in a small room; dashed shapes are loose
+furniture, or in a restroom the clear floor a fixture needs; a desk with chairs along two sides is a
+table. Chairs take their back from the strip drawn along it, or face the desk they are pulled up to.
+Each item is turned with its back to the wall it stands against. Thick, short interior walls drawn
+as two lines with nothing between them and no door (a row of chairs, a bench) are dropped, and the
+rooms and furniture found again, as are thin short walls along a piece of furniture's edge.
 
 `ui/trace.js` (loaded on first use) draws the underlay on white (SVGs at 2,400 px on the long side,
 rasters up to 3,200 px), traces it in `autotrace-worker.js`, a module worker (on the page if no worker
-starts), and `addTrace(draft, result)` adds the walls, openings and rooms where the underlay lies.
+starts), and `addTrace(draft, result)` adds the walls, openings and rooms where the underlay lies,
+and the furniture as catalog items with `traced: true`: desks (`desk`), counters (`exam-casework`
+with a sink, `casework` without), tables (`table`, `round-table`), chairs (`task-chair` at a desk or
+counter, else `side-chair`), lounge chairs, sofas, beds (`exam-table`), toilets, sinks (`vanity`),
+storage (`filing-cabinet`, `bookshelf`, side by side for a long run) and appliances
+(`lab-refrigerator`). Resizable items take the drawn size; models made at one size stretch to it only
+so far, keeping the edge against the wall (a toilet keeps its bowl's front, since its tank is not
+drawn as part of it).
 `app.js` traces every image imported into a plan with no walls or rooms: the image takes the scale
 its doors give unless it was calibrated, the plan gets the walls, doors, windows and rooms in one undo
 step (`Detect walls`) with `underlay.traced` set, and the app shows the plan in Split beside the 3D
 overview. An image with nothing to trace goes to the Calibrate tool as before. The image section's
-**Detect walls** button traces it again on demand, replacing the walls, openings and rooms (furniture
-and saved views stay) after asking. Calibrating a traced image scales the plan with it (`scalePlan`).
+**Detect walls** button traces it again on demand, replacing the walls, openings, rooms and the
+furniture found before (furniture added by hand and saved views stay) after asking. Calibrating a
+traced image scales the plan with it (`scalePlan`), and the sizes of the furniture measured from it.
 The detector's accuracy is measured with synthetic drawings of the samples in five CAD styles (not
 in the repo); on those it finds about 93% of the wall length, 83% of the doors and 93% of the windows.
+With each sample's furniture drawn in with the catalog's own plan symbols, it finds 81% of the items
+and names 60% of them right (or as a close kind: a desk for a counter, a chair for a lounge chair),
+with 2% of what it reports matching nothing drawn.
 
 ### `kit3d.js`
 

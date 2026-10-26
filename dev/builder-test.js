@@ -652,6 +652,34 @@ async function runChecks() {
   });
   bs.dispose();
 
+  check('Room finishes reach each side of the walls, the base, the floor and the ceiling', () => {
+    // A lab coated in celadon over a tile wainscot with a crash rail, beside a plain painted office.
+    const plan = createPlan({ settings: { wallHeight: 3, ceiling: 'tile', exterior: 'none' } });
+    shell(plan, [P(0, 0), P(10, 0), P(10, 4), P(0, 4)]);
+    addWall(plan, P(6, 0), P(6, 4), { kind: 'interior' });
+    addRoom(plan, [P(0, 0), P(6, 0), P(6, 4), P(0, 4)], {
+      name: 'Lab', floor: 'epoxy', floorColor: '#9eadb9', wall: 'coating', wallColor: '#80bbad', wainscot: 'tile', wainscotColor: '#9fb3c1',
+      base: 'cove', guard: 'rail', ceiling: 'clean',
+    });
+    addRoom(plan, [P(6, 0), P(10, 0), P(10, 4), P(6, 4)], { name: 'Office', floor: 'carpet', ceiling: 'drywall' });
+    const b = build(plan);
+    const at = (o, d) => { const m = hits(b.root, o, d)[0]?.object.material; return m?.planSource || m; };
+    const expect = [
+      ['lab wall', at([3, 1.8, 2], [0, 0, -1]), kit.wallMaterial('coating', '#80bbad')],
+      ['lab wainscot', at([3, 0.5, 2], [0, 0, -1]), kit.wallMaterial('tile', '#9fb3c1')],
+      ['lab crash rail', at([3, 0.83, 2], [0, 0, -1]), kit.material('#b3ada2', { roughness: 0.4 })],
+      ['lab cove base', at([3, 0.06, 2], [0, 0, -1]), kit.floorMaterial('epoxy', '#9eadb9', { perMeter: true })],
+      ['lab floor', at([3, 1.5, 2], [0, -1, 0]), kit.floorMaterial('epoxy', '#9eadb9')],
+      ['lab ceiling', hits(b.root, [3, 1.5, 1.95], [0, 1, 0]).map((h) => h.object.material.planSource || h.object.material).find((m) => m.name?.startsWith('ceiling-')), kit.ceilingMaterial('clean')],
+      ['lab side of the shared wall', at([3, 1.8, 2], [1, 0, 0]), kit.wallMaterial('coating', '#80bbad')],
+      ['office side of the shared wall', at([8, 1.8, 2], [-1, 0, 0]), kit.paintMaterial('#efece6')],
+      ['office floor', at([8, 1.5, 2], [0, -1, 0]), kit.floorMaterial('carpet')],
+    ];
+    b.dispose();
+    const wrong = expect.filter(([, got, want]) => got !== want);
+    return [wrong.length === 0, wrong.length ? wrong.map(([what, got]) => `${what}: ${got ? got.name || got.type : 'nothing'}`).join('; ') : `${expect.length} surfaces in their finish`];
+  });
+
   check('Round and absent contact shadows', () => {
     const plan = createPlan();
     addItem(plan, 'test-round', 2, 2);

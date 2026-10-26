@@ -2,7 +2,9 @@
 // media, plus building elements, greenery, printers and restroom fixtures.
 // Local frame: x = width, y = up, z = depth with the front facing +z (plan +y).
 import { registerItems } from './registry.js';
-import { tint, cushion, turned, slabTop, bent, leaves, assembly, barPull, roundSeat, officeChair, shaded } from './lab.js';
+import {
+  tint, cushion, turned, slabTop, bent, leaves, assembly, barPull, roundSeat, officeChair, shaded, caseworkFinish, topMaterial,
+} from './lab.js';
 
 const OUT = 1.25;       // plan outline weight in px
 const FINE = 0.75;      // plan detail weight in px
@@ -87,7 +89,7 @@ function fixed(def) {
   return {
     ...def,
     build(kit, o = {}) {
-      const g = build(kit, { w: def.w, d: def.d, h: def.h, color: o.color });
+      const g = build(kit, { w: def.w, d: def.d, h: def.h, color: o.color, top: o.top });
       const s = [(o.w || def.w) / def.w, (o.h || def.h) / def.h, (o.d || def.d) / def.d];
       if (s.some((v) => Math.abs(v - 1) > 1e-6)) g.scale.set(...s);
       return g;
@@ -1120,11 +1122,12 @@ function pantryLayout(w, d, h) {
   };
 }
 
-function buildPantry(kit, { w, d, h, color }) {
+function buildPantry(kit, { w, d, h, color, top: surface }) {
   const g = kit.group();
   const m = mats(kit);
   const P = pantryLayout(w, d, h);
-  const doors = finish(kit, color, m.sagePaint);
+  const doors = caseworkFinish(kit, color, m.sagePaint);
+  const counter = topMaterial(kit, surface, m.quartz);
   const { top, toe } = PANTRY;
   const ct = 0.03, base = top - ct, zf = P.zf, bowl = 0.2;
   kit.block(g, m.reveal, P.cx0, P.cx1, 0, toe, -d / 2, zf - 0.06);
@@ -1143,11 +1146,11 @@ function buildPantry(kit, { w, d, h, color }) {
     else if (i === 0 && P.n >= 3) drawerStack(kit, g, m, doors, a, b, toe, base, zf);
     else doorModule(kit, g, m, doors, a, b, toe, base, zf, i === P.sink);
   }
-  slab(kit, g, m.quartz, P.cx0, P.cx1, base, top, -d / 2, d / 2, hole);
+  slab(kit, g, counter, P.cx0, P.cx1, base, top, -d / 2, d / 2, hole);
   basin(kit, g, m, hole, top, bowl);
   faucet(kit, g, m, sx, top, -d / 2 + 0.07, Math.min(0.2, (hole.z0 + hole.z1) / 2 + d / 2 - 0.07));
   const uy = P.upperY;
-  kit.block(g, m.quartz, P.cx0, P.cx1, top, uy, -d / 2, -d / 2 + 0.012);
+  kit.block(g, counter, P.cx0, P.cx1, top, uy, -d / 2, -d / 2 + 0.012);
   upperRun(kit, g, m, P.cx0, P.cx1, uy, h, -d / 2, -d / 2 + P.upperD, P.n);
   if (P.coffee) coffeeMachine(kit, g, m, P.coffeeX, top, -d / 2 + 0.24);
   if (P.fridgeW) fridgeColumn(kit, g, m, P.cx1, w / 2, h, d, zf);
@@ -1686,17 +1689,17 @@ function vanityLayout(w, d) {
   return { n, pitch: w / n, bowlZ: clamp(d * 0.08, 0, 0.06), r: Math.min(0.19, w / n / 2 - 0.06, d * 0.35) };
 }
 
-function buildVanity(kit, { w, d, h, color }) {
+function buildVanity(kit, { w, d, h, color, top: surface }) {
   const g = kit.group();
   const m = mats(kit);
   const V = vanityLayout(w, d);
-  const apron = finish(kit, color, m.oak);
+  const apron = caseworkFinish(kit, color, m.oak), counter = topMaterial(kit, surface, m.quartz);
   const t = 0.04;
-  kit.block(g, m.quartz, -w / 2, w / 2, h - t, h, -d / 2, d / 2);
+  kit.block(g, counter, -w / 2, w / 2, h - t, h, -d / 2, d / 2);
   kit.block(g, apron, -w / 2, w / 2, h - 0.22, h - t, d / 2 - 0.03, d / 2 - 0.005);
   kit.block(g, apron, -w / 2, -w / 2 + 0.03, h - 0.22, h - t, -d / 2, d / 2 - 0.03);
   kit.block(g, apron, w / 2 - 0.03, w / 2, h - 0.22, h - t, -d / 2, d / 2 - 0.03);
-  kit.block(g, m.quartz, -w / 2, w / 2, h, h + 0.1, -d / 2, -d / 2 + 0.015);
+  kit.block(g, counter, -w / 2, w / 2, h, h + 0.1, -d / 2, -d / 2 + 0.015);
   for (let i = 0; i < V.n; i++) {
     const x = -w / 2 + V.pitch * (i + 0.5), R = V.r;
     // Vessel basin: a thin turned porcelain wall with a drain.
@@ -1837,7 +1840,7 @@ registerItems(shaded([
     build: buildPhoneBooth, draw2d: drawPhoneBooth,
   }),
   {
-    type: 'pantry-counter', name: 'Pantry counter', category: 'office',
+    type: 'pantry-counter', name: 'Pantry counter', category: 'office', colorable: 'casework', worksurface: 'quartz',
     w: 3.05, d: 0.66, h: 2.13, resizable: true,
     tags: ['kitchen', 'pantry', 'break room', 'sink', 'fridge'],
     build: buildPantry, draw2d: drawPantry,
@@ -1891,7 +1894,7 @@ registerItems(shaded([
     build: buildToilet, draw2d: drawToilet,
   }),
   {
-    type: 'vanity', name: 'Restroom vanity', category: 'general',
+    type: 'vanity', name: 'Restroom vanity', category: 'general', colorable: 'casework', worksurface: 'quartz',
     w: 1.22, d: 0.56, h: 0.86, resizable: true,
     tags: ['vanity', 'sink', 'restroom', 'lavatory', 'mirror'],
     build: buildVanity, draw2d: drawVanity,

@@ -1,8 +1,11 @@
 // Right panel: properties of the selection, or the plan overview when nothing is selected.
 // Every committed field change is one undoable store.update; sliders coalesce into one step.
 import {
-  WALL_KINDS, OPENING_TYPES, FLOORS, CEILINGS, findEntity, moveWallEndpoint, clampOpenings, addItem,
+  WALL_KINDS, OPENING_TYPES, CEILINGS, findEntity, moveWallEndpoint, clampOpenings, addItem,
 } from '../model.js';
+import {
+  FINISH_PARTS, GUARDS, PACKAGES, WALL_COLORS, CASEWORK_COLORS, WORKSURFACES, setFinish, applyPackage, packageOf, finishColor, copyFinishes, roomUse,
+} from '../finishes.js';
 import { getItem, itemDims, hasItem } from '../catalog/registry.js';
 import {
   formatLength, parseLength, formatArea, polygonArea, wallLength, wallDir, wallNormal, normDeg, clamp,
@@ -10,6 +13,7 @@ import {
 } from '../geometry.js';
 import { h, iconEl, MOD } from './dom.js';
 import { categoryLabel } from './library.js';
+import { toast } from './widgets.js';
 
 /** Finish colors offered for upholstered and soft items. */
 export const SWATCHES = [
@@ -206,10 +210,12 @@ export function createProperties(root, { store, editor, actions }) {
         return { row: (extra) => row(label, box, id, extra), input };
       },
 
-      select({ label, options, get, set, name }) {
+      /** options: [[value, text, disabled]]; groups: [[label, options]], listed after them. */
+      select({ label, options = [], groups = [], get, set, name }) {
         const id = `f${++fieldSerial}`;
+        const option = ([value, text, disabled]) => h('option', { value, text, disabled: !!disabled });
         const sel = h('select', { class: 'input select', id, dataset: { field: name || label } },
-          options.map(([value, text]) => h('option', { value, text })));
+          options.map(option), groups.map(([group, list]) => h('optgroup', { label: group }, list.map(option))));
         sel.addEventListener('change', () => { if (sel.value !== get()) set(sel.value); });
         sync(() => { sel.value = get(); });
         return row(label, h('div', { class: 'select-wrap' }, sel, iconEl('chevron-down', 'icon select-chevron')), id);
@@ -358,15 +364,40 @@ export function createProperties(root, { store, editor, actions }) {
 
   function roomPanel(b, r) {
     const id = r.id;
-    const get = (fn) => () => { const e = findEntity(store.plan, 'room', id); return e ? fn(e) : ''; };
+    const room = () => findEntity(store.plan, 'room', id);
+    const get = (fn) => () => { const e = room(); return e ? fn(e) : ''; };
+    const byGroup = (table) => [...new Set(Object.values(table).map((v) => v.group))]
+      .map((group) => [group, Object.entries(table).filter(([, v]) => v.group === group).map(([k, v]) => [k, v.label])]);
+    // The use its furniture tells, for applying these finishes to every room of that use.
+    const use = roomUse(store.plan, r);
+    const copyTo = (label, pick) => {
+      const src = room();
+      if (!src) return;
+      const targets = store.plan.rooms.filter((e) => e.id !== id && pick(e)).map((e) => e.id);
+      if (!targets.length) {
+        toast('There are no other rooms to apply these finishes to.', { type: 'info' });
+        return;
+      }
+      store.update((d) => { for (const e of d.rooms) if (targets.includes(e.id)) copyFinishes(src, e); }, { label });
+      toast(`Finishes applied to ${targets.length} more ${targets.length === 1 ? 'room' : 'rooms'}`, { action: { label: 'Undo', onClick: () => store.undo() } });
+    };
     return [
       section(null,
         b.text({ label: 'Name', name: 'name', get: get((e) => e.name), set: (v) => edit('room', id, 'Rename room', (e) => { e.name = v || 'Room'; }) }),
         b.readout({ label: 'Area', get: get((e) => formatArea(polygonArea(e.points), units())) })),
       section('Finishes',
         b.select({
-          label: 'Floor', name: 'floor', options: Object.entries(FLOORS).map(([k, v]) => [k, v.label]), get: get((e) => e.floor),
-          set: (v) => edit('room', id, 'Change floor finish', (e) => { e.floor = v; }),
+          label: 'Package', name: 'package', options: [['custom', 'Custom', true]], groups: byGroup(PACKAGES),
+          get: get((e) => packageOf(e) || 'custom'),
+          set: (v) => edit('room', id, `Use ${PACKAGES[v].label.toLowerCase()} finishes`, (e) => applyPackage(e, v)),
+        }),
+        finishField(b, id, 'floor', 'Floor', byGroup),
+        finishField(b, id, 'wall', 'Walls'),
+        finishField(b, id, 'wainscot', 'Wainscot'),
+        finishField(b, id, 'base', 'Base'),
+        b.select({
+          label: 'Protection', name: 'guard', options: Object.entries(GUARDS).map(([k, v]) => [k, v.label]), get: get((e) => e.guard ?? 'none'),
+          set: (v) => edit('room', id, 'Change wall protection', (e) => setFinish(e, 'guard', v)),
         }),
         b.select({
           label: 'Ceiling', name: 'ceiling', options: Object.entries(CEILINGS).map(([k, v]) => [k, v.label]), get: get((e) => e.ceiling),
@@ -374,11 +405,61 @@ export function createProperties(root, { store, editor, actions }) {
         }),
         b.length({
           label: 'Ceiling height', name: 'ceilingHeight', min: 2, max: 20,
-          get: () => { const e = findEntity(store.plan, 'room', id); return e ? e.height ?? store.plan.settings.wallHeight : 0; },
+          get: () => { const e = room(); return e ? e.height ?? store.plan.settings.wallHeight : 0; },
           set: (v) => edit('room', id, 'Change ceiling height', (e) => { e.height = v; }),
-        })),
+        }),
+        actionsRow(
+          use ? btn(`Apply to all ${PACKAGES[use].rooms}`, 'duplicate', () => copyTo(`Apply finishes to all ${PACKAGES[use].rooms}`, (e) => roomUse(store.plan, e) === use),
+            undefined, `Give the other ${PACKAGES[use].rooms} (known by their furniture) these finishes`) : null,
+          btn('Apply to all rooms', 'duplicate', () => copyTo('Apply finishes to all rooms', () => true), undefined, 'Give every room these finishes'))),
       actionsRow(deleteBtn('room')),
     ];
+  }
+
+  /**
+   * A room's finish of one part (FINISH_PARTS): its options, in groups when byGroup is given, and
+   * under them the colors that finish comes in. Paint and coatings take any color too.
+   */
+  function finishField(b, id, part, label, byGroup) {
+    const spec = FINISH_PARTS[part];
+    const room = () => findEntity(store.plan, 'room', id);
+    const key = () => room()?.[part] ?? spec.fallback;
+    const all = Object.entries(spec.options).map(([k, v]) => [k, v.label]);
+    const row = b.select({
+      label, name: part, options: byGroup ? [] : all, groups: byGroup ? byGroup(spec.options) : [], get: key,
+      set: (v) => edit('room', id, `Change ${label.toLowerCase()} finish`, (e) => setFinish(e, part, v)),
+    });
+    const colors = spec.options[key()]?.colors || [];
+    const anyColor = colors === WALL_COLORS;
+    if (colors.length > 1 || anyColor) {
+      const setColor = (hex, opts) => edit('room', id, `Change ${label.toLowerCase()} color`, (e) => setFinish(e, part, e[part], hex), opts);
+      const current = () => { const e = room(); return e ? finishColor(e, part) || '' : ''; };
+      const group = swatchRow(b, { label: `${label} color`, choices: colors, get: current, set: setColor });
+      if (anyColor) group.append(customColor(b, label, colors, current, setColor));
+      row.append(h('div', { class: 'prop-swatches' }, group));
+    }
+    return row;
+  }
+
+  /** A swatch that opens the color picker; it shows the color chosen when no swatch has it. */
+  function customColor(b, label, colors, current, set) {
+    const input = h('input', { type: 'color', class: 'swatch-input', attrs: { 'aria-label': `Other ${label.toLowerCase()} color` } });
+    const el = h('span', { class: 'swatch swatch-custom', dataset: { tip: 'Other color' } }, input);
+    let key = null;
+    // Dragging in the picker is one undo step.
+    input.addEventListener('input', () => {
+      if (!key) key = `color-${++sliderSerial}`;
+      set(input.value, { coalesce: key });
+    });
+    input.addEventListener('change', () => { key = null; store.endCoalesce(); });
+    b.watch(() => {
+      const c = current();
+      const other = !colors.some(([hex]) => hex.toLowerCase() === c.toLowerCase());
+      el.classList.toggle('is-custom', other);
+      el.style.setProperty('--swatch', c);
+      if (!key && c) input.value = c;
+    });
+    return el;
   }
 
   function itemPanel(b, it) {
@@ -415,6 +496,7 @@ export function createProperties(root, { store, editor, actions }) {
     }
     const out = [section(null, ...main), sizeSection];
     if (isFabric(def)) out.push(section('Finish', swatches(b, id)));
+    if (def.colorable === 'casework' || def.worksurface) out.push(section('Finish', ...caseworkFields(b, id, def)));
     out.push(actionsRow(
       btn('Duplicate', 'duplicate', () => duplicateItem(id), undefined, `Duplicate (${MOD}+D)`),
       deleteBtn('item')));
@@ -422,16 +504,44 @@ export function createProperties(root, { store, editor, actions }) {
     return out;
   }
 
+  /** Casework color (CASEWORK_COLORS, or as made) and the counter or bench top. */
+  function caseworkFields(b, id, def) {
+    const rows = [];
+    if (def.colorable === 'casework') {
+      const group = swatchRow(b, {
+        label: 'Casework color', choices: [['', 'As made'], ...CASEWORK_COLORS.map(([hex, name]) => [hex, name])],
+        get: () => findEntity(store.plan, 'item', id)?.color || '',
+        set: (value) => edit('item', id, 'Change casework color', (e) => { if (value) e.color = value; else delete e.color; }),
+      });
+      rows.push(h('div', { class: 'prop-row' }, h('span', { class: 'prop-label', text: 'Casework' }), h('div', { class: 'prop-control' }, group)));
+    }
+    if (def.worksurface) {
+      rows.push(b.select({
+        label: 'Worksurface', name: 'top', options: Object.entries(WORKSURFACES).map(([k, v]) => [k, v.label]),
+        get: () => findEntity(store.plan, 'item', id)?.top || def.worksurface,
+        set: (v) => edit('item', id, 'Change worksurface', (e) => { if (v === def.worksurface) delete e.top; else e.top = v; }),
+      }));
+    }
+    return rows;
+  }
+
   function swatches(b, id) {
-    const current = () => findEntity(store.plan, 'item', id)?.color || '';
-    const choices = [['', 'Default finish'], ...SWATCHES];
+    return swatchRow(b, {
+      label: 'Finish color', choices: [['', 'Default finish'], ...SWATCHES],
+      get: () => findEntity(store.plan, 'item', id)?.color || '',
+      set: (value) => edit('item', id, 'Change finish', (e) => { if (value) e.color = value; else delete e.color; }),
+    });
+  }
+
+  /** Color swatches as a radio group: choices [[hex, name]] ('' for a default finish), get() the color shown. */
+  function swatchRow(b, { label, choices, get, set }) {
     const els = choices.map(([value, name]) => h('button', {
       type: 'button', class: `swatch${value ? '' : ' swatch-default'}`, dataset: { tip: name, value },
       style: value ? { '--swatch': value } : {},
       attrs: { role: 'radio', 'aria-label': name },
-      on: { click: () => edit('item', id, 'Change finish', (e) => { if (value) e.color = value; else delete e.color; }) },
+      on: { click: () => set(value) },
     }));
-    const group = h('div', { class: 'swatches', attrs: { role: 'radiogroup', 'aria-label': 'Finish color' } }, els);
+    const group = h('div', { class: 'swatches', attrs: { role: 'radiogroup', 'aria-label': label } }, els);
     group.addEventListener('keydown', (e) => {
       const i = els.indexOf(document.activeElement);
       const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
@@ -442,12 +552,13 @@ export function createProperties(root, { store, editor, actions }) {
       next.click();
     });
     b.watch(() => {
-      const c = current().toUpperCase();
-      for (const el of els) {
-        const on = el.dataset.value.toUpperCase() === c;
-        el.setAttribute('aria-checked', String(on));
-        el.tabIndex = on ? 0 : -1;
-      }
+      const c = get().toUpperCase();
+      const on = els.map((el) => el.dataset.value.toUpperCase() === c);
+      els.forEach((el, k) => {
+        el.setAttribute('aria-checked', String(on[k]));
+        // The group stays reachable by Tab when another color is in use.
+        el.tabIndex = on[k] || (k === 0 && !on.includes(true)) ? 0 : -1;
+      });
     });
     return group;
   }
@@ -458,7 +569,7 @@ export function createProperties(root, { store, editor, actions }) {
     let newId = null;
     store.update((d) => {
       const props = { rotation: src.rotation };
-      for (const k of ['w', 'd', 'h', 'color', 'label']) if (src[k] !== undefined) props[k] = src[k];
+      for (const k of ['w', 'd', 'h', 'color', 'top', 'label']) if (src[k] !== undefined) props[k] = src[k];
       const copy = addItem(d, src.type, src.x + 0.3, src.y + 0.3, props);
       if (src.elevation !== undefined) copy.elevation = src.elevation;
       newId = copy.id;
@@ -513,9 +624,29 @@ export function createProperties(root, { store, editor, actions }) {
     return [
       section(null, b.text({ label: 'Name', name: 'planName', get: () => store.plan.name, set: (v) => store.update((d) => { d.name = v || 'Untitled plan'; }, { label: 'Rename plan' }) })),
       section('Summary', stats),
+      finishesSection(plan),
       imageSection(b, plan),
       viewsSection(plan),
     ];
+  }
+
+  function finishesSection(plan) {
+    if (!plan.rooms.length) return null;
+    const match = () => {
+      // Only rooms whose furniture tells their use, and that do not have its finishes yet.
+      const ids = store.plan.rooms.filter((r) => { const use = roomUse(store.plan, r); return use && packageOf(r) !== use; }).map((r) => r.id);
+      if (!ids.length) {
+        toast(store.plan.rooms.some((r) => roomUse(store.plan, r))
+          ? 'Every room whose furniture shows its use has the finishes for it.'
+          : 'No room has furniture that shows its use. Place exam tables, lab benches, toilets or desks, or select a room to choose its finishes.', { type: 'info', duration: 7000 });
+        return;
+      }
+      store.update((d) => { for (const r of d.rooms) if (ids.includes(r.id)) applyPackage(r, roomUse(d, r)); }, { label: 'Match finishes to room use' });
+      toast(`Finishes set for ${ids.length} ${ids.length === 1 ? 'room' : 'rooms'} from the furniture in them`, { action: { label: 'Undo', onClick: () => store.undo() } });
+    };
+    return section('Finishes',
+      h('p', { class: 'prop-note', text: 'Select a room to choose its floor, walls, base, wall protection and ceiling, or a package of finishes for its use.' }),
+      actionsRow(btn('Match finishes to room use', 'wand', match, undefined, 'Give exam rooms, restrooms, labs and other rooms the finishes their furniture calls for')));
   }
 
   function imageSection(b, plan) {
@@ -588,12 +719,14 @@ export function createProperties(root, { store, editor, actions }) {
     const plan = store.plan;
     if (!sel || !ent) {
       const u = plan.underlay;
-      return ['plan', !!u, plan.cameras.map((c) => `${c.id}:${c.name}`).join(',')].join('|');
+      return ['plan', !!u, plan.rooms.length > 0, plan.cameras.map((c) => `${c.id}:${c.name}`).join(',')].join('|');
     }
     if (sel.kind === 'opening') return `${ent.type}`;
     if (sel.kind === 'item') return `${ent.type}`;
     if (sel.kind === 'wall') return `${ent.kind}`;
-    if (sel.kind === 'room' || sel.kind === 'camera') return ent.name;
+    // A room's color swatches are those of its finishes.
+    if (sel.kind === 'room') return [ent.name, ent.floor, ent.wall, ent.wainscot, ent.base].join('|');
+    if (sel.kind === 'camera') return ent.name;
     return '';
   }
 

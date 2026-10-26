@@ -519,6 +519,151 @@ function textureLibrary() {
     return s;
   }
 
+  /** Linear blend of two sRGB triples. */
+  const mixC = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
+  function sheetVinyl(S, B) {
+    // Homogeneous sheet vinyl, as in exam rooms and labs: fine granules through the wear layer, a
+    // faint directional cast from the calender, and the heat-welded seam where 6 ft rolls meet.
+    const s = surface(S), r = rng(61);
+    const cloud = view(B.cloud, S, 120, 840), streak = view(B.streakU, S, 410, 90), fine = view(B.fine, S, 33, 777);
+    const base = hex('#cbc6bb'), grains = [hex('#b3ada1'), hex('#ddd9d0'), hex('#a39d92'), hex('#c4bfb4')];
+    for (let i = 0; i < S * S; i++) {
+      put(s, i, base, 0.97 + 0.05 * cloud[i] + 0.03 * (streak[i] - 0.5) + 0.02 * (fine[i] - 0.5), 0.02 * fine[i], 0.5 + 0.08 * cloud[i]);
+    }
+    for (let k = 0; k < S * S * 0.06; k++) chip(s, r() * S, r() * S, 0.5 + r() * 0.7, grains[(r() * grains.length) | 0]);
+    for (let y = 0; y < S; y++) {
+      const i = y * S;
+      s.R[i] *= 0.92;
+      s.G[i] *= 0.92;
+      s.B[i] *= 0.92;
+      s.H[i] = -0.12;
+      s.Ro[i] = 0.62;
+    }
+    return s;
+  }
+
+  function linoleumFloor(S, B) {
+    // Marbled linoleum: long streaks along the roll, pushed around by broad mottling.
+    const s = surface(S), step = BANK_S / S;
+    const cloud = view(B.cloud, S, 210, 55), mid = view(B.mid, S, 640, 300);
+    const base = hex('#c4b08c'), light = hex('#ddd1b5'), dark = hex('#a48f6b');
+    const { streakU } = B;
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const i = y * S + x;
+        const m = streakU[((((y + cloud[i] * 90) * step) | 0) & BANK_M) * BANK_S + ((x * step + 501) & BANK_M)];
+        const c = m > 0.6 ? mixC(base, light, smooth(0.6, 0.8, m)) : m < 0.38 ? mixC(base, dark, smooth(0.38, 0.2, m)) : base;
+        put(s, i, c, 0.98 + 0.04 * mid[i], 0.01 * mid[i], 0.55 + 0.06 * cloud[i]);
+      }
+    }
+    return s;
+  }
+
+  function terrazzoFloor(S, B) {
+    // Ground and polished terrazzo: marble chips of several sizes in a white cement matrix, with a
+    // zinc divider strip at the edge of each poured panel.
+    const s = surface(S), r = rng(83);
+    const cloud = view(B.cloud, S, 600, 600), fine = view(B.fine, S, 44, 101);
+    const matrix = hex('#dedbd3');
+    const chips = [hex('#8d8b87'), hex('#3f4142'), hex('#f2f1ec'), hex('#b9ab95'), hex('#cfcac0'), hex('#a7a49e')];
+    for (let i = 0; i < S * S; i++) put(s, i, matrix, 0.97 + 0.04 * cloud[i] + 0.02 * (fine[i] - 0.5), 0.01 * fine[i], 0.22 + 0.05 * cloud[i]);
+    for (let k = 0; k < S * S * 0.05; k++) chip(s, r() * S, r() * S, 0.6 + r() * r() * 2.6, chips[(r() * chips.length) | 0]);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        if (x > 0 && y > 0) continue;
+        put(s, y * S + x, hex('#9c9d9b'), 1, 0, 0.3);
+      }
+    }
+    return s;
+  }
+
+  function staticTile(S, B) {
+    // 24 in static-dissipative tiles: dark conductive veins through a light gray body, fine seams.
+    const s = surface(S), r = rng(73), tp = S / 2, f = S / 512;
+    const cloud = view(B.cloud, S, 777, 123), fine = view(B.fine, S, 12, 400);
+    const veins = new Float32Array(S * S);
+    for (let k = 0; k < 900 * f * f; k++) trail(veins, S, r, r() * S, r() * S, (2 + r() * 8) * f, r() * 6.28, { turn: 0.6, width: 0.5 });
+    const base = hex('#bcc0c1'), vein = hex('#3c4042');
+    const tones = [1.01, 0.985, 0.995, 1.012];
+    for (let y = 0; y < S; y++) {
+      const tj = Math.floor(y / tp), ly = y - tj * tp;
+      for (let x = 0; x < S; x++) {
+        const i = y * S + x, ti = Math.floor(x / tp), lx = x - ti * tp;
+        const seam = Math.min(lx, ly, tp - 1 - lx, tp - 1 - ly) < 1 ? 1 : 0;
+        const v = tones[tj * 2 + ti] * (0.97 + 0.05 * cloud[i] + 0.02 * (fine[i] - 0.5)) * (1 - 0.16 * seam);
+        put(s, i, mixC(base, vein, 0.8 * veins[i]), v, -0.3 * seam + 0.01 * fine[i], 0.48 + 0.08 * cloud[i]);
+      }
+    }
+    return s;
+  }
+
+  function resinousFloor(S, B) {
+    // Seamless urethane or epoxy slurry: one color, faint trowel sweeps and orange peel under gloss.
+    const s = surface(S);
+    const peel = stretch(blur(view(B.fine, S, 9, 615), S, 1)), cloud = view(B.cloud, S, 515, 44), trowel = view(B.streakV, S, 70, 870);
+    const base = hex('#c5c9c8');
+    for (let i = 0; i < S * S; i++) put(s, i, base, 0.985 + 0.03 * cloud[i] + 0.015 * (trowel[i] - 0.5), 0.03 * peel[i] + 0.02 * trowel[i], 0.3 + 0.08 * cloud[i]);
+    return s;
+  }
+
+  function frpPanel(S, B) {
+    // Fiberglass reinforced plastic wall panels: a fine pebbled face, and the H-molding where 4 ft
+    // panels meet.
+    const s = surface(S);
+    const pebble = stretch(blur(view(B.white, S, 21, 3), S, 1)), tone = view(B.cloud, S, 90, 260);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const i = y * S + x, p = smooth(0.4, 0.8, pebble[i]), seam = x < 2 ? 1 : 0;
+        put(s, i, [0.8, 0.8, 0.8], (0.96 + 0.05 * p + 0.02 * tone[i]) * (1 - 0.22 * seam), 0.12 * p - 0.2 * seam, 0.55 + 0.25 * (1 - p));
+      }
+    }
+    return s;
+  }
+
+  function wallTile(S, B) {
+    // 3 by 6 in glazed ceramic tile laid in running bond, with eased edges and 1/16 in grout.
+    const s = surface(S), r = rng(97);
+    const cloud = view(B.cloud, S, 360, 40), fine = view(B.fine, S, 81, 9);
+    const tw = S / 2, th = S / 4, g = Math.max(1.5, S / 190);
+    const tones = Array.from({ length: 16 }, () => 1 + (r() - 0.5) * 0.04);
+    for (let y = 0; y < S; y++) {
+      const row = Math.floor(y / th), ly = y + 0.5 - row * th, off = row % 2 ? tw / 2 : 0;
+      for (let x = 0; x < S; x++) {
+        const i = y * S + x, sx = (x + 0.5 + off) % S, col = Math.floor(sx / tw), lx = sx - col * tw;
+        const d = Math.min(lx, tw - lx, ly, th - ly);
+        if (d < g) {
+          put(s, i, [0.8, 0.8, 0.8], 0.74, -0.6, 0.9);
+          continue;
+        }
+        const ease = smooth(g, g + 5, d);
+        put(s, i, [0.8, 0.8, 0.8], tones[(row * 2 + col) % 16] * (0.975 + 0.03 * cloud[i] + 0.01 * (fine[i] - 0.5)), -0.3 * (1 - ease) + 0.01 * cloud[i], 0.12 + 0.05 * cloud[i]);
+      }
+    }
+    return s;
+  }
+
+  function cleanTile(S, B) {
+    // Washable vinyl-faced 24 in ceiling tiles in a gasketed white grid: smooth, no fissures.
+    const s = surface(S), tp = S / 2, f = S / 1024;
+    const cloud = view(B.cloud, S, 45, 600), fine = stretch(blur(view(B.fine, S, 5, 5), S, 1));
+    const face = hex('#eceae5'), tee = hex('#efefec');
+    const half = (0.024 / 2 / (2 * TILE)) * S;
+    for (let y = 0; y < S; y++) {
+      const ly = (y + 0.5) % tp, dy = Math.min(ly, tp - ly);
+      for (let x = 0; x < S; x++) {
+        const i = y * S + x, lx = (x + 0.5) % tp, d = Math.min(dy, Math.min(lx, tp - lx));
+        if (d < half) {
+          put(s, i, tee, 1, 2.2, 0.35);
+          continue;
+        }
+        const gasket = smooth(half + 1.5 * f, half, d);
+        put(s, i, face, (0.985 + 0.02 * cloud[i]) * (1 - 0.12 * gasket), 0.02 * fine[i] - 0.3 * gasket, 0.55 + 0.05 * cloud[i]);
+      }
+    }
+    return s;
+  }
+
   function paintFinish(S, B) {
     // Rolled paint: near-uniform color, fine orange peel, slight sheen variation.
     const s = surface(S);
@@ -699,7 +844,15 @@ function textureLibrary() {
     },
     tile: { size: 512, meters: 2 * TILE, make: (S, B) => porcelainFloor(S, B, 2) },
     rubber: { size: 512, meters: 1, make: rubberFloor },
+    'sheet-vinyl': { size: 512, meters: 6 * 0.3048, make: sheetVinyl },
+    linoleum: { size: 512, meters: 2, make: linoleumFloor },
+    terrazzo: { size: 512, meters: 1.5, make: terrazzoFloor },
+    esd: { size: 512, meters: 2 * TILE, make: staticTile },
+    resinous: { size: 512, meters: 1.5, make: resinousFloor },
     paint: { size: 512, meters: 0.5, make: paintFinish, normalize: true },
+    frp: { size: 512, meters: 4 * 0.3048, make: frpPanel, normalize: true },
+    'wall-tile': { size: 512, meters: 0.3048, make: wallTile, normalize: true },
+    'clean-tile': { size: 512, meters: 2 * TILE, make: cleanTile },
     'ceiling-tile': { size: 512, meters: 2 * TILE, make: ceilingTile },
     deck: { size: 512, meters: TILE, make: metalDeck },
     fabric: { size: 512, meters: 0.12, make: fabricWeave, normalize: true },
@@ -714,6 +867,10 @@ function textureLibrary() {
     leather: { size: 512, meters: 0.15, make: leatherGrain, normalize: true },
     'raw-concrete': { size: 512, meters: 1.5, make: (S, B) => concreteFloor(S, B, false), normalize: true },
   };
+  // Every floor also comes normalized, so a material color can give it another colorway.
+  for (const k of ['carpet', 'polished-concrete', 'concrete', 'epoxy', 'vinyl', 'wood', 'tile', 'rubber', 'sheet-vinyl', 'linoleum', 'terrazzo', 'esd', 'resinous']) {
+    RECIPES[`${k}:tint`] = { ...RECIPES[k], normalize: true };
+  }
 
   // sRGB transfer through lookup tables: recipes convert millions of texels.
   const LUT = 4096;
@@ -852,6 +1009,7 @@ const TEX = textureLibrary();
 const PREFETCH = [
   'polished-concrete', 'carpet', 'tile', 'vinyl', 'laminate', 'stipple', 'oak', 'brushed', 'powder', 'resin',
   'fabric', 'quartz', 'rubber', 'epoxy', 'walnut', 'paint', 'ceiling-tile', 'leather', 'deck',
+  'sheet-vinyl', 'wall-tile', 'frp', 'clean-tile', 'resinous',
 ];
 let prefetched = null;
 
@@ -1001,6 +1159,8 @@ const patched = (Base) => class extends Base {
 const KitStandardMaterial = patched(THREE.MeshStandardMaterial);
 const KitPhysicalMaterial = patched(THREE.MeshPhysicalMaterial);
 
+const isHex = (v) => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
+
 /** Clamp a color to real-world albedo, keeping its hue. Idempotent, so derived colors stay put. */
 function plausible(color, max = ALBEDO_MAX) {
   const c = color instanceof THREE.Color ? color.clone() : new THREE.Color(color);
@@ -1028,6 +1188,25 @@ const FLOOR_SPECS = {
   wood: { roughness: 0.5, normal: 0.8, macro: [0.06, 0.2], clearcoat: 0.8, clearcoatRoughness: 0.16 },
   tile: { roughness: 0.36, normal: 0.8, macro: [0.03, 0.15] },
   rubber: { roughness: 0.6, normal: 0.6, macro: [0.04, 0.12] },
+  'sheet-vinyl': { roughness: 0.5, normal: 0.5, macro: [0.04, 0.15] },
+  linoleum: { roughness: 0.55, normal: 0.4, macro: [0.05, 0.12] },
+  terrazzo: { roughness: 0.22, normal: 0.6, macro: [0.03, 0.2], clearcoat: 0.6, clearcoatRoughness: 0.08 },
+  esd: { roughness: 0.48, normal: 0.6, macro: [0.03, 0.12] },
+  resinous: { roughness: 0.3, normal: 0.5, macro: [0.03, 0.2], clearcoat: 0.8, clearcoatRoughness: 0.06 },
+};
+
+/**
+ * Wall finishes keyed like WALL_FINISHES in finishes.js, plus the impact-resistant wainscot panel.
+ * Paint and the epoxy coating are the kit's paint at two sheens; the others are textured surfaces
+ * whose color is their mean albedo (`dark` names the recipe for dark colors, as walnut for wood).
+ */
+const WALL_SPECS = {
+  paint: { paint: true, color: '#efece6', roughness: 0.6 },
+  coating: { paint: true, color: '#efece6', roughness: 0.26 },
+  frp: { recipe: 'frp', color: '#eceae4', roughness: 0.5, normal: 0.8, macro: [0.015, 0.06] },
+  tile: { recipe: 'wall-tile', color: '#eceae4', roughness: 0.14, normal: 0.7, clearcoat: 0.5, clearcoatRoughness: 0.08, macro: [0.01, 0.05] },
+  wood: { recipe: 'oak', dark: 'walnut', color: '#b48c60', roughness: 0.5, normal: 1, clearcoat: 0.45, clearcoatRoughness: 0.28 },
+  panel: { recipe: 'stipple', color: '#e3dfd5', roughness: 0.42, normal: 1, macro: [0.01, 0.05] },
 };
 
 /**
@@ -1040,6 +1219,8 @@ const PRESETS = {
   laminate: { color: '#e3e0d9', roughness: 0.46, detail: 'laminate' },
   epoxyTop: { color: '#26292b', roughness: 0.3, detail: 'resin' },
   quartz: { color: '#e4e2dc', roughness: 0.11, detail: 'quartz' },
+  solidSurface: { color: '#e9e7e2', roughness: 0.3, detail: 'laminate' },
+  phenolic: { color: '#3e4345', roughness: 0.34, detail: 'laminate' },
   steel: { color: '#c5c6c6', roughness: 0.32, metalness: 1, detail: 'brushed', anisotropy: 0.55 },
   darkSteel: { color: '#585e63', roughness: 0.42, metalness: 0.7, detail: 'powder' },
   chrome: { color: '#d2d4d6', roughness: 0.06, metalness: 1 },
@@ -1072,6 +1253,7 @@ const PRESETS = {
 
 const CEILINGS = {
   tile: { recipe: 'ceiling-tile', color: null, roughness: 0.92, normal: 0.8, macro: [0.03, 0.04] },
+  clean: { recipe: 'clean-tile', color: null, roughness: 0.6, normal: 0.6, macro: [0.015, 0.04] },
   drywall: { recipe: 'paint', color: '#edebe6', roughness: 0.86, normal: 0.6, macro: [0.015, 0.05] },
   open: { recipe: 'deck', color: null, roughness: 0.76, normal: 0.9, macro: [0.05, 0.08] },
 };
@@ -1079,6 +1261,7 @@ const CEILINGS = {
 /** Names for test pages and tools: kit.mat keys, floorMaterial keys, ceilingMaterial types. */
 export const MATERIAL_PRESETS = Object.keys(PRESETS);
 export const FLOOR_FINISHES = Object.keys(FLOOR_SPECS);
+export const WALL_TYPES = Object.keys(WALL_SPECS);
 export const CEILING_TYPES = Object.keys(CEILINGS);
 
 // ---- The kit ------------------------------------------------------------------------------------------
@@ -1232,20 +1415,48 @@ export function createKit() {
     },
   });
 
-  /** Floor material for a FLOORS key. Its maps assume UVs in plan meters / floorMeters(key). */
-  function floorMaterial(key) {
+  /**
+   * Floor material for a FLOORS key, as made or in another colorway (color: its mean albedo, hex).
+   * Its maps assume UVs in plan meters / floorMeters(key), or in meters with perMeter (an integral
+   * cove or tile base running up a wall).
+   */
+  function floorMaterial(key, color = null, { perMeter = false } = {}) {
     const k = Object.hasOwn(FLOOR_SPECS, key) ? key : 'carpet';
-    const cacheKey = `floor:${k}`;
+    const c = isHex(color) ? color.toLowerCase() : null;
+    const cacheKey = `floor:${k}|${c ?? ''}|${perMeter ? 'm' : 't'}`;
     let m = cache.get(cacheKey);
     if (!m) {
       const f = FLOOR_SPECS[k];
-      m = surfaceMaterial(textureSet(k, false), {
-        roughness: f.roughness, normal: f.normal, clearcoat: f.clearcoat || 0, clearcoatRoughness: f.clearcoatRoughness,
+      m = surfaceMaterial(textureSet(c ? `${k}:tint` : k, perMeter), {
+        color: c, roughness: f.roughness, normal: f.normal, clearcoat: f.clearcoat || 0, clearcoatRoughness: f.clearcoatRoughness,
         sheen: f.sheen || 0, macroAmount: f.macro,
       });
       m.name = `floor-${k}`;
       m.userData.meters = TEX.meters(k);
       remember(cacheKey, m);
+    }
+    return m;
+  }
+
+  /**
+   * Wall finish (a WALL_SPECS key) in a color (hex; null for its default), UVs in meters: paint,
+   * the epoxy coating, FRP, ceramic tile, wood veneer or the impact panel.
+   */
+  function wallMaterial(kind, color = null) {
+    const W = WALL_SPECS[kind] || WALL_SPECS.paint;
+    const c = isHex(color) ? color.toLowerCase() : W.color;
+    if (W.paint) return paintMaterial(c, { roughness: W.roughness });
+    const key = `wall:${kind}|${c}`;
+    let m = cache.get(key);
+    if (!m) {
+      const v = parseInt(c.slice(1), 16);
+      const dark = (0.2126 * (v >> 16) + 0.7152 * ((v >> 8) & 255) + 0.0722 * (v & 255)) / 255 < 0.4;
+      m = surfaceMaterial(textureSet(W.dark && dark ? W.dark : W.recipe, true), {
+        color: c, albedoMax: PAINT_MAX, roughness: W.roughness, normal: W.normal,
+        clearcoat: W.clearcoat || 0, clearcoatRoughness: W.clearcoatRoughness, macroAmount: W.macro,
+      });
+      m.name = `wall-${kind}`;
+      remember(key, m);
     }
     return m;
   }
@@ -1454,6 +1665,7 @@ export function createKit() {
     floorMaterial,
     floorMeters,
     paintMaterial,
+    wallMaterial,
     ceilingMaterial,
     glassMaterial,
     setEnvironmentIntensity,

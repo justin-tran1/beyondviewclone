@@ -47,17 +47,17 @@ export function buildLabSuite() {
   L.opening(corrEast, 27, { width: 6 });
   L.opening(corrEast, 43, { width: 6 });
 
-  // Rooms
-  L.room('Lab manager', [0, 0, 14, 12], 'carpet');
-  L.room('Write-up', [14, 0, 64, 12], 'carpet');
-  L.room('Wet lab', [0, 12, 46, 44], 'epoxy');
-  L.room('Tissue culture', [46, 12, 64, 28], 'epoxy');
-  L.room('Glass wash', [46, 28, 64, 44], 'epoxy');
-  L.room('Equipment corridor', [0, 44, 64, 54], 'epoxy');
-  L.room('Corridor', [64, 0, 70, 54], 'vinyl');
-  L.room('Conference', [70, 0, 92, 16], 'carpet');
-  L.room('Break area', [70, 16, 92, 38], 'vinyl', { ceiling: 'drywall' });
-  L.room('Lobby', [70, 38, 92, 54], 'tile', { ceiling: 'drywall' });
+  // Rooms, each in the finish package for its use
+  L.room('Lab manager', [0, 0, 14, 12], null, { finish: 'office' });
+  L.room('Write-up', [14, 0, 64, 12], null, { finish: 'office' });
+  L.room('Wet lab', [0, 12, 46, 44], null, { finish: 'wet-lab' });
+  L.room('Tissue culture', [46, 12, 64, 28], null, { finish: 'tissue-culture' });
+  L.room('Glass wash', [46, 28, 64, 44], null, { finish: 'lab-support' });
+  L.room('Equipment corridor', [0, 44, 64, 54], null, { finish: 'lab-support' });
+  L.room('Corridor', [64, 0, 70, 54], null, { finish: 'corridor' });
+  L.room('Conference', [70, 0, 92, 16], null, { finish: 'conference' });
+  L.room('Break area', [70, 16, 92, 38], null, { finish: 'breakroom' });
+  L.room('Lobby', [70, 38, 92, 54], null, { finish: 'lobby' });
 
   // Lab manager office
   L.against(shell.w, 4.5, 'executive-desk', 'e');

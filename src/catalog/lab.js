@@ -1,6 +1,7 @@
 // Lab and life sciences catalog: benches, hoods, cold storage, safety fixtures and lab seating.
 // Local frame: x = width, y = up, z = depth with the front facing +z (plan +y).
 import { registerItems } from './registry.js';
+import { CASEWORK_COLORS } from '../finishes.js';
 
 const TOP = 0.9;        // bench work surface height
 const TOP_T = 0.032;    // epoxy top thickness
@@ -39,17 +40,20 @@ function seq(seed) {
  * powder coated and enameled steel, molded plastics. A custom color tints the door fronts and the
  * equipment enamel, keeping their texture.
  */
-function palette(kit, color) {
+/** Lab materials; color recolors the casework (or an appliance's enamel), top picks the worksurface. */
+function palette(kit, color, top) {
   const custom = isColor(color) ? color : null;
   const steel = kit.mat.steel, plastic = kit.mat.plastic;
   const enamel = kit.paintMaterial(custom || '#e8e8e4', { roughness: 0.34 });
+  const door = caseworkFinish(kit, custom, kit.mat.casework);
   return {
     custom,
-    case: kit.mat.casework,
-    door: tint(kit, kit.mat.casework, custom),
+    // Panels and end panels match colored doors.
+    case: door,
+    door,
     body: enamel,
     white: tint(kit, plastic, '#e6e7e4'),
-    top: kit.mat.epoxyTop,
+    top: topMaterial(kit, top, kit.mat.epoxyTop),
     steel,
     darkSteel: kit.mat.darkSteel,
     chrome: kit.mat.chrome,
@@ -66,7 +70,8 @@ function palette(kit, color) {
     trim: tint(kit, plastic, '#dcdfde'),
     alu: tint(kit, steel, '#cfd2d3'),
     plate: tint(kit, plastic, '#ecebe7'),
-    basin: kit.mat.epoxyTop,
+    // Resin bowls in resin tops; a stainless top has a welded stainless bowl.
+    basin: top === 'stainless' ? steel : kit.mat.epoxyTop,
     lit: kit.material('#eef1f0', { roughness: 0.6, emissive: '#ffffff', emissiveIntensity: 0.22 }),
     interior: tint(kit, kit.mat.laminate, '#e2e5e3'),
     paper: kit.material('#efeee9', { roughness: 0.85 }),
@@ -124,6 +129,23 @@ export function tint(kit, base, color, f = 1, { sheen } = {}) {
   m.envMapIntensity = base.envMapIntensity;
   return m;
 }
+
+const WOOD_CASEWORK = new Map(CASEWORK_COLORS.filter((c) => c[2]).map(([hex, , wood]) => [hex, wood]));
+
+/**
+ * Casework doors and panels in a CASEWORK_COLORS color: wood colors on the kit's veneer, the
+ * others on its casework laminate; no color keeps `fallback`.
+ */
+export function caseworkFinish(kit, color, fallback) {
+  if (!isColor(color)) return fallback;
+  const wood = WOOD_CASEWORK.get(color.toLowerCase());
+  return tint(kit, wood ? kit.mat[wood] : kit.mat.casework, color);
+}
+
+const TOP_PRESETS = { quartz: 'quartz', 'solid-surface': 'solidSurface', epoxy: 'epoxyTop', phenolic: 'phenolic', stainless: 'steel', laminate: 'laminate' };
+
+/** The material of a WORKSURFACES key, or `fallback` for none. */
+export const topMaterial = (kit, key, fallback) => (Object.hasOwn(TOP_PRESETS, key ?? '') ? kit.mat[TOP_PRESETS[key]] : fallback);
 
 const SHAPES = new Map();
 const SHAPE_CAP = 400;
@@ -591,7 +613,7 @@ function fixed(def) {
   return {
     ...def,
     build(kit, o = {}) {
-      const g = build(kit, { w: def.w, d: def.d, h: def.h, color: o.color });
+      const g = build(kit, { w: def.w, d: def.d, h: def.h, color: o.color, top: o.top });
       const s = [(o.w || def.w) / def.w, (o.h || def.h) / def.h, (o.d || def.d) / def.d];
       if (s.some((v) => Math.abs(v - 1) > 1e-6)) g.scale.set(...s);
       return g;
@@ -895,9 +917,9 @@ function serviceSpine(kit, g, m, L, top, h, rnd) {
   }
 }
 
-function buildIsland(kit, { w, d, h, color }) {
+function buildIsland(kit, { w, d, h, color, top: surface }) {
   const g = kit.group();
-  const m = palette(kit, color);
+  const m = palette(kit, color, surface);
   const L = islandLayout(w, d);
   const top = Math.min(TOP, h), ct = top - TOP_T;
   const inset = 0.03, chase = 0.03, sinkDepth = 0.22;
@@ -957,9 +979,9 @@ function benchCentrifuge(kit, g, m, x, y, z) {
   display(kit, panel, m, -0.12, 0.04, 0.02, 0.08, 0.02);
 }
 
-function buildWallBench(kit, { w, d, h, color }) {
+function buildWallBench(kit, { w, d, h, color, top: surface }) {
   const g = kit.group();
-  const m = palette(kit, color);
+  const m = palette(kit, color, surface);
   const rnd = seq(Math.round(w * 100) + 3);
   const top = Math.min(TOP, h), ct = top - TOP_T;
   const back = -d / 2, sd = wallShelfDepth(d);
@@ -1359,9 +1381,9 @@ function eyewash(kit, g, m, x, y, z, r) {
   kit.block(g, m.yellow, x - 0.035, x + 0.035, y + 0.085, y + 0.135, z + r + 0.002, z + r + 0.01);
 }
 
-function buildLabSink(kit, { w, d, h, color }) {
+function buildLabSink(kit, { w, d, h, color, top: surface }) {
   const g = kit.group();
-  const m = palette(kit, color);
+  const m = palette(kit, color, surface);
   const S = sinkLayout(w, d);
   const top = TOP, ct = top - TOP_T, depth = 0.25;
   // The pocket under the bowl stops short of the back panel, so the back stays closed.
@@ -1628,13 +1650,13 @@ function drawAutoclave(ctx, o) {
 
 registerItems(shaded([
   {
-    type: 'lab-bench-island', name: 'Island lab bench', category: 'lab',
+    type: 'lab-bench-island', name: 'Island lab bench', category: 'lab', colorable: 'casework', worksurface: 'epoxy',
     w: 3.66, d: 1.52, h: 2.13, resizable: true,
     tags: ['bench', 'casework', 'wet lab', 'reagent shelf', 'sink'],
     build: buildIsland, draw2d: drawIsland,
   },
   {
-    type: 'lab-bench-wall', name: 'Wall lab bench', category: 'lab',
+    type: 'lab-bench-wall', name: 'Wall lab bench', category: 'lab', colorable: 'casework', worksurface: 'epoxy',
     w: 3.05, d: 0.76, h: 2.13, resizable: true,
     tags: ['bench', 'casework', 'perimeter', 'counter', 'shelving'],
     build: buildWallBench, draw2d: drawWallBench,
@@ -1664,13 +1686,13 @@ registerItems(shaded([
     build: buildLabFridge, draw2d: drawLabFridge,
   }),
   fixed({
-    type: 'tall-storage-cabinet', name: 'Tall storage cabinet', category: 'lab',
+    type: 'tall-storage-cabinet', name: 'Tall storage cabinet', category: 'lab', colorable: 'casework',
     w: 1.22, d: 0.61, h: 2.13,
     tags: ['cabinet', 'storage', 'casework', 'glass door'],
     build: buildTallCabinet, draw2d: drawTallCabinet,
   }),
   fixed({
-    type: 'lab-sink', name: 'Lab sink with eyewash', category: 'lab',
+    type: 'lab-sink', name: 'Lab sink with eyewash', category: 'lab', colorable: 'casework', worksurface: 'epoxy',
     w: 1.22, d: 0.76, h: 1.1,
     tags: ['sink', 'eyewash', 'safety', 'faucet'],
     build: buildLabSink, draw2d: drawLabSink,

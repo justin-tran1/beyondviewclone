@@ -2,7 +2,7 @@
 // dimensions, selection and the walkthrough marker. Pure drawing, no DOM listeners.
 // Shared by the editor and the walkthrough minimap. All drawing happens in CSS pixels;
 // the caller has already scaled ctx for devicePixelRatio.
-import { FLOORS } from './model.js';
+import { planColor } from './finishes.js';
 import { getItem, itemDims } from './catalog/registry.js';
 import {
   FOOT, INCH, add, sub, scale as mul, dot, cross, dist, len, clamp, deg2rad, rotate,
@@ -561,7 +561,7 @@ function drawRooms(ctx, view, rooms, alpha) {
     const path = new Path2D();
     polyPath(path, view, room.points);
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = FLOORS[room.floor]?.color2d || FLOORS.carpet.color2d;
+    ctx.fillStyle = planColor(room);
     ctx.fill(path);
     ctx.globalAlpha = 1;
     ctx.strokeStyle = THEME.roomEdge;
@@ -894,7 +894,7 @@ function drawRoomLabels(ctx, view, plan, { mini, sizes }) {
     const showDims = dims && bw > ctx.measureText(dims).width + 10 && bh > size * 4.2;
     const lines = 1 + (showArea ? 1 : 0) + (showDims ? 1 : 0);
     const y0 = p.y - ((lines - 1) * size * 1.15) / 2;
-    ctx.strokeStyle = FLOORS[room.floor]?.color2d || THEME.halo;
+    ctx.strokeStyle = planColor(room);
     ctx.font = fontSpec(size, 600);
     ctx.fillStyle = THEME.text;
     haloText(ctx, name, p.x, y0);

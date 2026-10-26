@@ -238,7 +238,7 @@ export function openHelp() {
     title: 'Help and shortcuts',
     cls: 'dialog-wide dialog-help',
     body: h('div', { class: 'help-grid' },
-      col('Tracing', 'Import a floor plan image from Open, or drop it on the window. Its walls, doors, rooms and the furniture drawn in it are found for you: check the scale with Calibrate scale, then fix or add anything with the tools.', [
+      col('Tracing', 'Import a floor plan image from Open, or drop it on the window. Its walls, doors, rooms and the furniture drawn in it are found for you, and rooms whose furniture shows their use get finishes for it: check the scale with Calibrate scale, then fix or add anything with the tools.', [
         ['Calibrate: click both ends of a known length, then type the real length', ''],
         ['Wall tool. Click each corner', 'W'],
         ['Type a length while drawing, then Enter, for an exact wall', '12\' 6"', 'Enter'],
@@ -251,7 +251,7 @@ export function openHelp() {
         ['Flip the door swing, or the hinge', 'F', 'Shift F'],
         ['Turn off snapping while you hold it', 'Shift'],
       ]),
-      col('Layout', 'Pick an item in the library and click the plan, or drag the item onto the plan.', [
+      col('Layout', 'Pick an item in the library and click the plan, or drag the item onto the plan. Select a room to choose its finishes, or a package of them for its use, such as an exam room, wet lab or clinical corridor.', [
         ['Select tool', 'V'],
         ['Pan tool, or hold Space and drag, or drag with the middle button', 'H', 'Space'],
         ['Rotate the selected or new item 15°, with Shift 90°. Also turns a selected viewpoint', 'Q', 'E'],

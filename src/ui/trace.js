@@ -6,6 +6,7 @@ import { addWall, addOpening, addRoom, addItem, clampOpenings } from '../model.j
 import { rotate, clamp, normDeg, deg2rad } from '../geometry.js';
 import { getItem, hasItem } from '../catalog/registry.js';
 import { loadUnderlayImage } from '../plan-render.js';
+import { matchFinishes } from '../finishes.js';
 
 const TRACE_SIDE = 3200; // px: larger images are traced at this size on their long side
 const SVG_SIDE = 2400; // px: drawings in SVG are drawn this large to be traced
@@ -129,7 +130,8 @@ function addFurniture(draft, f, turn, turnBy) {
 
 /**
  * Inside store.update: add a trace's walls, openings, rooms and furniture where the image lies on
- * the plan (draft.underlay's position, rotation and scale). Returns how many of each were added.
+ * the plan (draft.underlay's position, rotation and scale). Returns how many of each were added,
+ * and in how many rooms the furniture set the finishes (`finished`).
  */
 export function addTrace(draft, { trace, factor }) {
   const U = draft.underlay;
@@ -144,8 +146,10 @@ export function addTrace(draft, { trace, factor }) {
     addOpening(draft, wall.id, o.type, o.offset, { width: o.width, hinge: o.hinge, side: o.side });
     count[o.type === 'window' ? 'windows' : 'doors']++;
   }
-  for (const r of geo.rooms) addRoom(draft, r.points.map(turn));
+  const rooms = geo.rooms.map((r) => addRoom(draft, r.points.map(turn)));
   for (const f of geo.items) count.items += addFurniture(draft, f, turn, U.rotation || 0);
+  // Rooms whose furniture tells their use (an exam room's casework, a restroom's toilet) take its finishes.
+  count.finished = matchFinishes(draft, rooms);
   clampOpenings(draft);
   return count;
 }

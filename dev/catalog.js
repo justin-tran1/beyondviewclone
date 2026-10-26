@@ -2,9 +2,9 @@
 //   ?category=lab (or medical, office, retail, general; add &view=top): every item of a category in
 //   3D, framed to fit and labeled, with plan symbols below in cells sized to each symbol (&px= sets
 //   the plan scale in px per meter, 90 by default).
-//   ?item=fume-hood (add &w=, &d=, &h= in meters to try other sizes, up to 60, and &color=%23rrggbb
-//   for a custom finish): one item from four sides, its model bounds checked against the footprint,
-//   and its plan symbol at three zoom levels.
+//   ?item=fume-hood (add &w=, &d=, &h= in meters to try other sizes, up to 60, &color=%23rrggbb
+//   for a custom finish and &top= for a worksurface, a WORKSURFACES key): one item from four sides,
+//   its model bounds checked against the footprint, and its plan symbol at three zoom levels.
 //   &view=room (with ?category or ?item): the same items built into a daylit room by builder3d.js
 //   and drawn through the walkthrough's pipeline (captured environment, AO, grade and AgX), as in
 //   the walk view. For one item, &yaw= turns the camera around it (degrees, 0 = front, positive to
@@ -37,6 +37,7 @@ const itemType = params.get('item');
 const view = params.get('view') || 'front';
 const room = view === 'room' && typeof builder.buildPlanScene === 'function';
 const custom = /^#[0-9a-f]{6}$/i.test(params.get('color') || '') ? params.get('color') : undefined;
+const top = params.get('top') || undefined;
 const category = itemType && hasItem(itemType) ? getItem(itemType).category : params.get('category') || 'lab';
 
 const THEME = { line: '#435254', fill: '#ffffff', accent: '#003f2d', muted: '#7f8480', light: '#cad1d3', glass: '#80bbad' };
@@ -274,7 +275,7 @@ function renderGrid(items) {
   const camera = view === 'top' ? topCamera(W / H) : new THREE.PerspectiveCamera(35, W / H, 0.05, 500);
   // Laid out by footprint and by how tall each model really stands (mirrors and monitors included).
   const entries = items.map((def) => {
-    const obj = def.build(kit, { w: def.w, d: def.d, h: def.h, color: custom });
+    const obj = def.build(kit, { w: def.w, d: def.d, h: def.h, color: custom, top });
     obj.updateMatrixWorld(true);
     return { def, obj, w: def.w, d: def.d, h: Math.max(def.h, new THREE.Box3().setFromObject(obj).max.y) };
   });
@@ -390,7 +391,7 @@ function roomPlan(placed, { x0, x1, z0, z1, height, floor, open, exterior }) {
     settings: { wallHeight: height, ceiling: 'tile', exterior },
     walls, openings,
     rooms: [{ id: 'room', name: 'Room', points: corners, floor, ceiling: 'tile' }],
-    items: placed.map((p, i) => ({ id: `item-${i}`, type: p.def.type, x: p.x, y: p.z, rotation: 0, ...p.size, ...(custom ? { color: custom } : {}) })),
+    items: placed.map((p, i) => ({ id: `item-${i}`, type: p.def.type, x: p.x, y: p.z, rotation: 0, ...p.size, ...(custom ? { color: custom } : {}), ...(top ? { top } : {}) })),
     cameras: [],
   });
 }
@@ -446,7 +447,7 @@ async function renderRoomGrid(items) {
   const camera = new THREE.PerspectiveCamera(35, W / H, 0.05, 2000);
   const kit = createKit();
   const entries = items.map((def) => {
-    const obj = def.build(kit, { w: def.w, d: def.d, h: def.h, color: custom });
+    const obj = def.build(kit, { w: def.w, d: def.d, h: def.h, color: custom, top });
     obj.updateMatrixWorld(true);
     return { def, w: def.w, d: def.d, h: Math.max(def.h, new THREE.Box3().setFromObject(obj).max.y) };
   });
@@ -593,7 +594,7 @@ try {
     if (!hasItem(itemType)) throw new Error(`No item "${itemType}" in the catalog`);
     const def = getItem(itemType);
     const num = (k) => (Number(params.get(k)) > 0 ? Math.min(60, Number(params.get(k))) : def[k]);
-    const o = { w: num('w'), d: num('d'), h: num('h'), color: custom };
+    const o = { w: num('w'), d: num('d'), h: num('h'), color: custom, top };
     if (room) await renderRoomItem(def, o);
     else renderCloseUp(def, o);
     const fit = Math.min(300, Math.max(80, 400 / Math.max(o.w, o.d)));

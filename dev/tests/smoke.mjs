@@ -19,6 +19,13 @@ const samples = only.length ? only : ['lab-suite', 'medical-office', 'office-flo
 const DRAWING = fileURLToPath(new URL('../../assets/samples/trace-demo.svg', import.meta.url));
 const TRACED = { walls: 12, doors: 6, windows: 10, rooms: 6, items: 22, scale: 0.3048 / 24 };
 const FURNISHED = ['desk', 'table', 'round-table', 'task-chair', 'side-chair', 'exam-casework', 'toilet', 'vanity'];
+// Finish packages the traced rooms take from their furniture, and ones the samples' rooms are in.
+const MATCHED = ['office', 'restroom'];
+const SAMPLE_FINISHES = { 'medical-office': ['exam', 'corridor', 'restroom', 'procedure', 'imaging'], 'lab-suite': ['wet-lab', 'tissue-culture', 'lab-support', 'lobby'] };
+const packages = (page) => page.evaluate(async () => {
+  const { packageOf } = await import(new URL('src/finishes.js', document.baseURI).href);
+  return window.cbre.store.plan.rooms.map((r) => packageOf(r)).filter(Boolean);
+});
 
 /**
  * Wait until the walkthrough has nothing left to draw (no frame pending or running and nothing
@@ -70,6 +77,10 @@ async function importDrawing(page) {
   const missing = FURNISHED.filter((t) => !found.types.includes(t));
   if (missing.length) errors.push(`import: no ${missing.join(', ')} among the furniture found (${found.types.join(', ')})`);
   if (Math.abs(found.scale / TRACED.scale - 1) > 0.03) errors.push(`import: traced scale ${found.scale} m/px, expected ${TRACED.scale}`);
+  const matched = await packages(page);
+  const unmatched = MATCHED.filter((k) => !matched.includes(k));
+  if (unmatched.length) errors.push(`import: no room took the ${unmatched.join(', ')} finishes from its furniture (${matched.join(', ') || 'none'})`);
+  console.log(`import finishes: ${matched.join(', ')}`);
 }
 
 async function capture(page, id) {
@@ -82,6 +93,9 @@ async function capture(page, id) {
     const name = SAMPLES.find((s) => s.id === id).name;
     await page.getByRole('button', { name: new RegExp(`^${name}(?! image)`) }).first().click();
     await page.waitForFunction((n) => window.cbre.store.plan.walls.length > 0 && !document.querySelector('dialog[open]'), name, { timeout: 15000 });
+    const used = await packages(page);
+    const missing = (SAMPLE_FINISHES[id] || []).filter((k) => !used.includes(k));
+    if (missing.length) errors.push(`${id}: no room in the ${missing.join(', ')} finishes`);
   }
   await page.waitForTimeout(800);
   const stats = await page.evaluate(() => { const p = window.cbre.store.plan; return { name: p.name, walls: p.walls.length, openings: p.openings.length, rooms: p.rooms.length, items: p.items.length, cameras: p.cameras.length }; });

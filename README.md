@@ -28,19 +28,42 @@ without a code change, run the workflow from the Actions tab.
    found in the drawing, its scale is taken from the door widths (3'-0" doors), and the plan opens
    in Split beside the 3D view. Furniture and fixtures drawn in the rooms (desks, counters with
    their sinks, tables, chairs, sofas, exam tables, toilets, sinks, cabinets, refrigerators) are
-   placed as library items, sized to the drawing and turned to face the way it shows. **Detect
-   walls** in the image panel traces it again; Undo removes what was found.
+   placed as library items, sized to the drawing and turned to face the way it shows. Rooms whose
+   furniture shows their use (an exam room's casework, a restroom's toilet, a lab's benches) get
+   the finishes for it. **Detect walls** in the image panel traces it again; Undo removes what was
+   found.
 3. **Check the scale**: use **Calibrate scale** to click two points of a known distance and type the
    real length, for example `24' 6"` or `7.5m`; a traced plan is resized with its image.
 4. **Trace**: fix or add anything the detection missed. Draw walls (exterior, interior, glass
-   partition or half-height), place doors, windows and openings on them, and outline rooms to set
-   floor finishes and ceilings. Type a length while drawing a wall and press Enter for exact
-   dimensions.
-5. **Furnish**: pick items from the library (lab and life sciences, medical office, general office,
-   retail and industrial, general). Items snap flush to walls; `Q` and `E` rotate.
-6. **Walk**: switch to **Walk** or **Split**. Drag to look, `W A S D` to move, click the floor to
+   partition or half-height), place doors, windows and openings on them, and outline rooms. Type a
+   length while drawing a wall and press Enter for exact dimensions.
+5. **Finish**: select a room to set its interior finishes.
+   - **Packages** set every finish at once for a type of space:
+     - Healthcare: exam, patient, procedure and operating rooms, imaging, clinical corridor, waiting
+       and reception, nurse station, restroom, clean and soiled utility.
+     - Lab: wet and dry labs, tissue culture (BSL-2), cleanroom, vivarium, glass wash and lab support.
+     - Workplace and support: office, conference, break room, lobby, storage.
+   - **Floor**: sheet vinyl, rubber, epoxy flake, seamless resinous, static-control tile and
+     linoleum, then luxury vinyl plank, carpet tile, porcelain tile, terrazzo, wood and concrete.
+     Each comes in its own colors.
+   - **Walls**: paint or a washable epoxy coating in any color, FRP panels, ceramic tile or wood
+     veneer.
+   - **Wainscot** (ceramic tile, FRP, impact panel or wood) with a cap along its top.
+   - **Base**: rubber, an integral cove (the floor run up the wall), tile, or none.
+   - **Wall protection**: corner guards, a crash rail or a handrail on brackets.
+   - **Ceiling**: acoustic tile, washable tile, drywall or open to structure, and its height.
+   - **Apply to all exam rooms** (or whatever use the room's furniture shows) and **Apply to all
+     rooms** copy one room's finishes to others. **Match finishes to room use** in the plan overview
+     sets each room from the furniture in it.
+   - The plan tints each room by its floor color.
+6. **Furnish**: pick items from the library (lab and life sciences, medical office, general office,
+   retail and industrial, general). Items snap flush to walls; `Q` and `E` rotate. Casework, lab
+   benches and sinks, pantry counters, vanities, nurse stations and reception desks take a casework
+   color (laminates or wood veneers) and a worksurface: quartz, solid surface, epoxy or phenolic
+   resin, stainless steel or laminate.
+7. **Walk**: switch to **Walk** or **Split**. Drag to look, `W A S D` to move, click the floor to
    walk there, save viewpoints, and use **Overview** for a dollhouse view. Save images of any view.
-7. **Render photo**: the camera button beside Save image path traces the current view into a
+8. **Render photo**: the camera button beside Save image path traces the current view into a
    photographic still for client decks (1280 x 720 up to 4K; Draft, Standard or High quality). It
    takes a minute or more on the graphics card while the 3D view keeps running; save the PNG when
    it is done.

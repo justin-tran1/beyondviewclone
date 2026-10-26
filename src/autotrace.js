@@ -1,6 +1,6 @@
-// Automatic tracing of a floor plan drawing: the walls, doors, windows and rooms found in its
-// pixels, so an imported plan can be walked through straight away. Plain functions on RGBA data
-// with no DOM, so it runs in a worker (src/autotrace-worker.js), on the page or in Node.
+// Automatic tracing of a floor plan drawing: the walls, doors, windows, rooms and furniture found
+// in its pixels, so an imported plan can be walked through straight away. Plain functions on RGBA
+// data with no DOM, so it runs in a worker (src/autotrace-worker.js), on the page or in Node.
 //
 // traceFloorPlan({ width, height, data }) -> {
 //   width, height,                     // image size in px
@@ -11,6 +11,8 @@
 //                                      // toward +x (vertical walls) or +y (horizontal walls)
 //   rooms: [{ points: [{x, y}], area }],                       // outlines in px, area in px²
 //   scale: { metersPerPixel, source: 'doors' | 'walls' | null, doors },
+//   items: [{ kind, x, y, w, d, rotation, ... }],              // furniture and fixtures, in px:
+//                                      // see src/autotrace-items.js
 // }
 // toPlanGeometry(trace, { metersPerPixel, origin }) converts the result to plan meters in the
 // shape the model's addWall, addOpening and addRoom take.
@@ -21,7 +23,10 @@
 // of one width that repeat at the same place over many rows: text, furniture, dimension lines,
 // door swings and hatching do not. Doors are gaps between wall ends with a quarter circle drawn
 // from one jamb; their widths, taken as 3'-0" doors, give the drawing's scale. Windows are gaps
-// with lines across, or stretches of an outside wall drawn as its faces and glass lines.
+// with lines across, or stretches of an outside wall drawn as its faces and glass lines. The
+// furniture is what the lines left inside the rooms close off (src/autotrace-items.js).
+
+import { findItems } from './autotrace-items.js';
 
 const DOOR_WIDTH = 0.9144; // m: the 3'-0" door most commercial plans use, for the scale
 const PARTITION = 0.125; // m: a stud partition with board both sides, the scale without doors
@@ -30,7 +35,7 @@ const MIN_SPAN = 4;
 const MIN_ROOM = 0.9; // m²: smaller enclosed areas are wall cavities or symbols, not rooms
 
 /**
- * Trace walls, doors, windows and rooms in a floor plan image. See the top of this file.
+ * Trace walls, doors, windows, rooms and furniture in a floor plan image. See the top of this file.
  * onProgress(fraction, phase) is called between the steps.
  */
 export function traceFloorPlan(image, { onProgress = null, debug = false } = {}) {
@@ -79,18 +84,16 @@ export function traceFloorPlan(image, { onProgress = null, debug = false } = {})
   snap('short');
   segs = dropStrays(segs, T, gaps);
   segs = dropOutliers(segs, T);
-  const openings = placeOpenings(gaps, segs, T);
-
-  const scale = drawingScale(openings, segs, T, W, H);
   step(0.7, 'rooms');
-  const mpp = scale.metersPerPixel;
-  const { rooms, exterior, beyond } = findRooms(segs, ink, W, H, T, mpp);
-
-  // Walls wholly outside the building (a neighbor's, the site's) are context, not the space, when
-  // nothing joins them to it; a wing the outside seems to reach is still joined to the rest.
-  const group = groups(segs, T);
-  const joined = new Set(segs.map((s, i) => (beyond[i] ? null : group[i])));
-  const keep = segs.map((s, i) => !beyond[i] || joined.has(group[i]));
+  // Rooms and furniture; the outline of a cabinet or appliance can pass for short walls, which go
+  // once the furniture shows them to be its edges, and the rooms are found again without them.
+  let laid = arrange(segs, gaps, ink, faint, W, H, T);
+  const edges = furnitureWalls(segs, laid, T, wallInk, W, H);
+  if (edges.size) {
+    segs = segs.filter((s, i) => !edges.has(i));
+    laid = arrange(segs, gaps, ink, faint, W, H, T);
+  }
+  const { openings, scale, mpp, rooms, exterior, beyond, keep, furnished } = laid;
   const index = [];
   const walls = [];
   segs.forEach((s, i) => {
@@ -112,19 +115,94 @@ export function traceFloorPlan(image, { onProgress = null, debug = false } = {})
   // it (casework, a column); only outside walls get windows.
   const kept = openings.filter((o) => keep[o.wall] && (o.type !== 'window' || exterior[o.wall]));
   step(1, 'done');
-  const extra = debug ? { debug: { segments: segs.map((s, i) => ({ ends: segEnds(s), t: s.t, exterior: exterior[i], beyond: beyond[i] })), gaps, checked, stages } } : {};
+  const extra = debug ? { debug: { segments: segs.map((s, i) => ({ ends: segEnds(s), t: s.t, exterior: exterior[i], beyond: beyond[i] })), gaps, checked, stages, shapes: furnished.shapes.map(({ pixels, ...rest }) => rest), itemMasks: furnished.debug } } : {};
   return {
     ...extra,
     width: W, height: H, thickness: T, walls,
     openings: kept.map((o) => ({ wall: index[o.wall], type: o.type, offset: o.offset, width: o.width, hinge: o.hinge, side: o.side })),
-    rooms, scale,
+    rooms, scale, items: furnished.items,
   };
 }
 
 /**
+ * The openings on the final walls, the scale, the rooms and outside, and the furniture: what the
+ * tracer works out once it has its walls.
+ */
+function arrange(segs, gaps, ink, faint, W, H, T) {
+  const openings = placeOpenings(gaps, segs, T);
+  const scale = drawingScale(openings, segs, T, W, H);
+  const mpp = scale.metersPerPixel;
+  const { rooms, exterior, beyond, roomAt } = findRooms(segs, ink, W, H, T, mpp);
+  // Walls wholly outside the building (a neighbor's, the site's) are context, not the space, when
+  // nothing joins them to it; a wing the outside seems to reach is still joined to the rest.
+  const group = groups(segs, T);
+  const joined = new Set(segs.map((s, i) => (beyond[i] ? null : group[i])));
+  const keep = segs.map((s, i) => !beyond[i] || joined.has(group[i]));
+  const m = mpp || PARTITION / T;
+  const furnished = findItems({
+    lines: faint, W, H, T, mpp: m, roomAt, roomAreas: rooms.map((r) => r.area * m * m),
+    walls: segs.filter((s, i) => keep[i]), doors: openings.filter((o) => o.type !== 'window').map((o) => o.gap),
+  });
+  return { openings, scale, mpp, rooms, exterior, beyond, keep, furnished };
+}
+
+/**
+ * Interior walls that are furniture drawn with double lines. Short, thin ones that run along the
+ * edge of a piece of furniture: a refrigerator's or cabinet's outline, a table's edge with the
+ * chairs drawn along it; a partition is as thick as the others and runs on past the furniture
+ * against it. And short, thick ones with nothing between their lines and no door: a row of
+ * chairs, a run of low cabinets.
+ */
+function furnitureWalls(segs, laid, T, mask, W, H) {
+  const out = new Set();
+  const m = laid.mpp || PARTITION / T;
+  segs.forEach((s, i) => {
+    if (laid.exterior[i]) return;
+    // Lines across a gap in an interior wall are no window (see traceFloorPlan), and the seat
+    // fronts of two chairs side by side can pass for a narrow door's swing.
+    const door = laid.openings.some((o) => o.wall === i && o.type !== 'window' && o.width * m >= 0.75);
+    if (s.t >= 2 * T && len(s) * m <= 1.6 && !door && hollow(s, mask, W, H)) {
+      out.add(i);
+      return;
+    }
+    if (s.t >= 0.8 * T || len(s) * m > 1.6) return;
+    const [a, b] = segEnds(s);
+    for (const f of laid.furnished.shapes) {
+      // The wall lies on one of the shape's sides and does not run much past it.
+      const tol = Math.max(3, s.t);
+      const onSide = s.axis === 'v'
+        ? (Math.abs(s.c - f.x0) <= tol || Math.abs(s.c - f.x1) <= tol) && a.y >= f.y0 - 2 * tol && b.y <= f.y1 + 2 * tol
+        : (Math.abs(s.c - f.y0) <= tol || Math.abs(s.c - f.y1) <= tol) && a.x >= f.x0 - 2 * tol && b.x <= f.x1 + 2 * tol;
+      if (onSide && f.L * m <= 2.6) {
+        out.add(i);
+        break;
+      }
+    }
+  });
+  return out;
+}
+
+/** Whether a wall track is two lines with paper between them. */
+function hollow(s, mask, W, H) {
+  const v0 = Math.round(s.c - s.t / 2) + 2, v1 = Math.round(s.c + s.t / 2) - 3;
+  if (v1 - v0 < 2) return false;
+  let n = 0, dark = 0;
+  for (let u = Math.ceil(s.s0); u < s.s1; u++) {
+    for (let v = v0; v <= v1; v++) {
+      const x = s.axis === 'v' ? v : u, y = s.axis === 'v' ? u : v;
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      n++;
+      dark += mask[y * W + x];
+    }
+  }
+  return n > 0 && dark < 0.15 * n;
+}
+
+/**
  * The trace in plan meters: walls ({a, b, kind, thickness}), openings ({wall, type, offset,
- * width, hinge, side} with side in the model's sense, toward wallNormal) and rooms ({points}).
- * origin is where the image's top-left corner sits on the plan.
+ * width, hinge, side} with side in the model's sense, toward wallNormal), rooms ({points}) and
+ * furniture (items as findItems gives them, at and sized in meters). origin is where the image's
+ * top-left corner sits on the plan.
  */
 export function toPlanGeometry(trace, { metersPerPixel, origin = { x: 0, y: 0 } }) {
   const k = metersPerPixel;
@@ -143,7 +221,8 @@ export function toPlanGeometry(trace, { metersPerPixel, origin = { x: 0, y: 0 } 
     return { wall: o.wall, type: o.type, offset: o.offset * k, width: o.width * k, hinge: o.hinge, side: vertical ? -o.side : o.side };
   });
   const rooms = trace.rooms.map((r) => ({ points: r.points.map(P), area: r.area * k * k }));
-  return { walls, openings, rooms };
+  const items = (trace.items || []).map((f) => ({ ...f, ...P(f), w: f.w * k, d: f.d * k }));
+  return { walls, openings, rooms, items };
 }
 
 // ---- Ink ----------------------------------------------------------------------------------------
@@ -1041,7 +1120,7 @@ function placeOpenings(gaps, segs, T) {
     const width = g.g1 - g.g0;
     if (width < 1.5 * T) continue;
     if (out.some((o) => o.wall === wall && Math.abs(o.mid - (g.g0 + g.g1) / 2) < width / 2)) continue;
-    out.push({ wall, type: g.type, offset: (g.g0 + g.g1) / 2 - s.s0, width, hinge: g.hinge, side: g.side, leaf: g.leaf, mid: (g.g0 + g.g1) / 2 });
+    out.push({ wall, type: g.type, offset: (g.g0 + g.g1) / 2 - s.s0, width, hinge: g.hinge, side: g.side, leaf: g.leaf, mid: (g.g0 + g.g1) / 2, gap: g });
   }
   return out;
 }
@@ -1166,6 +1245,8 @@ function findRooms(segs, ink, W, H, T, mpp) {
 
   const minCells = mpp ? MIN_ROOM / (mpp * mpp) / (cs * cs) : (6 * T * 6 * T) / (cs * cs);
   const rooms = [];
+  // Which room each cell is part of (an index into rooms), -1 for none.
+  const cellRoom = new Int32Array(N).fill(-1);
   for (const cells of members) {
     if (cells.length < minCells || hatched(cells, ink, W, H, cs, nx, P)) {
       // Too small for a room, or hatched: poché, a shaft, a neighbor's space. It is not floor.
@@ -1174,6 +1255,7 @@ function findRooms(segs, ink, W, H, T, mpp) {
     }
     const outline = roomOutline(cells, wall, nx, ny);
     if (outline.length >= 4) {
+      for (const k of cells) cellRoom[k] = rooms.length;
       rooms.push({ points: outline.map((p) => ({ x: (p.x - P) * cs, y: (p.y - P) * cs })), area: cells.length * cs * cs });
     }
   }
@@ -1198,7 +1280,12 @@ function findRooms(segs, ink, W, H, T, mpp) {
     exterior.push(hi >= 0.6 * n && lo < 0.6 * n);
     beyond.push(lo >= 0.8 * n);
   }
-  return { rooms, exterior, beyond };
+  /** The room a pixel lies in (an index into rooms), or -1. */
+  const roomAt = (x, y) => {
+    const cx = Math.floor(x / cs) + P, cy = Math.floor(y / cs) + P;
+    return cx < 0 || cy < 0 || cx >= nx || cy >= ny ? -1 : cellRoom[cy * nx + cx];
+  };
+  return { rooms, exterior, beyond, roomAt };
 }
 
 /**

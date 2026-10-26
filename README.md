@@ -1,8 +1,8 @@
 # CBRE Virtual Walkthrough
 
 Internal CBRE tool for turning a floor plan into a space you can walk through. Import a plan image
-and its walls, doors, windows and rooms are found for you; lay out furniture and equipment, then
-explore it in 3D at eye height or from an overview.
+and its walls, doors, windows, rooms and the furniture drawn in it are found for you; add or change
+furniture and equipment, then explore it in 3D at eye height or from an overview.
 
 ## Run it
 
@@ -26,8 +26,10 @@ without a code change, run the workflow from the Actions tab.
    (PNG, JPG, WebP or SVG; export PDFs to PNG first).
 2. **Detect**: an imported image is traced straight away. Its walls, doors, windows and rooms are
    found in the drawing, its scale is taken from the door widths (3'-0" doors), and the plan opens
-   in Split beside the 3D view. **Detect walls** in the image panel traces it again; Undo removes
-   what was found.
+   in Split beside the 3D view. Furniture and fixtures drawn in the rooms (desks, counters with
+   their sinks, tables, chairs, sofas, exam tables, toilets, sinks, cabinets, refrigerators) are
+   placed as library items, sized to the drawing and turned to face the way it shows. **Detect
+   walls** in the image panel traces it again; Undo removes what was found.
 3. **Check the scale**: use **Calibrate scale** to click two points of a known distance and type the
    real length, for example `24' 6"` or `7.5m`; a traced plan is resized with its image.
 4. **Trace**: fix or add anything the detection missed. Draw walls (exterior, interior, glass
@@ -66,6 +68,7 @@ src/app.js, src/ui/              Wiring, panels, dialogs, file handling
 src/model.js, src/geometry.js    Plan data model, undo/redo, geometry and units
 src/editor2d.js, plan-render.js  2D tracing and layout editor
 src/autotrace.js, src/ui/trace.js  Finding walls, doors, windows and rooms in a plan image
+src/autotrace-items.js           Finding the furniture and fixtures drawn in it
 src/builder3d.js, kit3d.js       Plan to 3D scene and lighting, shared materials and primitives
 src/walkthrough.js, postfx.js    First-person and overview viewer, post-processing and quality
 src/photo.js, src/ui/photo.js    Ray-traced Render photo

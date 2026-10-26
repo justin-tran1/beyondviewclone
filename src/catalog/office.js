@@ -832,6 +832,55 @@ function buildCoffeeTable(kit, { w, d, h, color }) {
   return g;
 }
 
+// ---- Tables -------------------------------------------------------------------------
+
+/** Four-legged table: a top with eased corners on an apron, square legs on glides. */
+function buildTable(kit, { w, d, h, color }) {
+  const g = kit.group();
+  const m = mats(kit);
+  const t = 0.03, under = h - t, leg = 0.022;
+  roundedSlab(kit, g, finish(kit, color, m.oak), -w / 2, w / 2, under, h, -d / 2, d / 2, 0.02);
+  const lx = w / 2 - 0.06, lz = d / 2 - 0.06;
+  kit.block(g, m.frame, -lx, lx, under - 0.07, under, -lz - 0.008, -lz + 0.008);
+  kit.block(g, m.frame, -lx, lx, under - 0.07, under, lz - 0.008, lz + 0.008);
+  kit.block(g, m.frame, -lx - 0.008, -lx + 0.008, under - 0.07, under, -lz, lz);
+  kit.block(g, m.frame, lx - 0.008, lx + 0.008, under - 0.07, under, -lz, lz);
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      kit.block(g, m.frame, sx * lx - leg, sx * lx + leg, 0.006, under, sz * lz - leg, sz * lz + leg);
+      kit.block(g, m.black, sx * lx - leg + 0.003, sx * lx + leg - 0.003, 0, 0.006, sz * lz - leg + 0.003, sz * lz + leg - 0.003, true, { bevel: false });
+    }
+  }
+  return g;
+}
+
+function drawTable(ctx, o) {
+  pen(ctx, o, OUT);
+  rrect(ctx, -o.w / 2, -o.d / 2, o.w / 2, o.d / 2, 0.02, o.theme.fill);
+}
+
+/** Pedestal table with a round (or, stretched, a racetrack) top and no chairs of its own. */
+function buildPedestalTable(kit, { w, d, h, color }) {
+  const g = kit.group();
+  const m = mats(kit);
+  const r = Math.min(w, d) / 2;
+  slabTop(kit, g, finish(kit, color, m.oak), -w / 2, w / 2, h - 0.03, h, -d / 2, d / 2, { corner: r, edge: 0.006 });
+  const base = Math.min(0.26, r * 0.62);
+  kit.cyl(g, m.frame, Math.min(0.14, r * 0.4), 0.02, 0, h - 0.05, 0, { segments: 24 });
+  turned(kit, g, m.frame, [[base, 0], [base + 0.01, 0.004], [base + 0.005, 0.016], [base - 0.02, 0.026], [0.05, 0.034], [0.04, 0.06], [0.04, h - 0.06], [0.06, h - 0.05], [0, h - 0.05]], 0, 0, 0, { segments: 40 });
+  return g;
+}
+
+function drawPedestalTable(ctx, o) {
+  pen(ctx, o, OUT);
+  rrect(ctx, -o.w / 2, -o.d / 2, o.w / 2, o.d / 2, Math.min(o.w, o.d) / 2, o.theme.fill);
+  if (roomy(o)) {
+    pen(ctx, o, FINE, o.theme.muted, DASH);
+    circle(ctx, 0, 0, Math.min(0.26, Math.min(o.w, o.d) * 0.31));
+    ctx.setLineDash([]);
+  }
+}
+
 /** Hardcover lying flat: cover boards around a paper block that shows on three sides. */
 function book(kit, g, cover, paper, x0, x1, y0, y1, z0, z1) {
   const t = Math.min(0.003, (y1 - y0) / 6);
@@ -1751,6 +1800,18 @@ registerItems(shaded([
     tags: ['armchair', 'lounge', 'seating', 'club chair'],
     build: buildLounge, draw2d: drawLounge,
   }),
+  {
+    type: 'table', name: 'Table', category: 'office',
+    w: 1.52, d: 0.76, h: 0.75, resizable: true,
+    tags: ['table', 'dining', 'break room', 'work table', 'meeting'],
+    build: buildTable, draw2d: drawTable,
+  },
+  {
+    type: 'round-table', name: 'Round table', category: 'office', planFill: false, contactShadow: 'round',
+    w: 0.91, d: 0.91, h: 0.75, resizable: true,
+    tags: ['table', 'round', 'cafe', 'bistro', 'break room'],
+    build: buildPedestalTable, draw2d: drawPedestalTable,
+  },
   fixed({
     type: 'coffee-table', name: 'Coffee table', category: 'office',
     w: 1.22, d: 0.61, h: 0.41,

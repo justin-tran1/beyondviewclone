@@ -363,23 +363,24 @@ function drawExamTable(ctx, o) {
 
 // ---- Exam room casework -------------------------------------------------------------
 
-function caseworkLayout(w, d, h) {
+function caseworkLayout(w, d, h, withSink = true) {
   const n = repeats(Math.round(w / 0.6));
   const mw = w / n;
-  const sink = n === 1 ? 0 : Math.floor(n / 2);
+  const sink = !withSink ? -1 : n === 1 ? 0 : Math.floor(n / 2);
   const fz = d / 2 - 0.025;
   const sx = -w / 2 + (sink + 0.5) * mw;
   // The bowl stays 3 cm inside its module, so an end module keeps a closed side, and on shallow
   // counters it gets shallower so the faucet behind it stays on the counter.
   const bowlW = Math.min(clamp(mw - 0.16, 0.28, 0.5), mw - 0.06);
   const bowlD = Math.min(clamp(d - 0.25, 0.22, 0.38), d - 0.19);
-  const hole = { x0: sx - bowlW / 2, x1: sx + bowlW / 2, z0: fz - 0.06 - bowlD, z1: fz - 0.06 };
+  const hole = withSink ? { x0: sx - bowlW / 2, x1: sx + bowlW / 2, z0: fz - 0.06 - bowlD, z1: fz - 0.06 } : null;
   const upperY = TOP + 0.46;
-  const glove = sink > 0 ? sink - 1 : (n > 1 ? 1 : -1);
-  const towel = [sink + 1, sink + 2, sink - 1].find((i) => i >= 0 && i < n && i !== glove) ?? -1;
+  // Gloves, towels and a sharps box hang by the sink; a run without one keeps its wall clear.
+  const glove = !withSink ? -1 : sink > 0 ? sink - 1 : (n > 1 ? 1 : -1);
+  const towel = !withSink ? -1 : [sink + 1, sink + 2, sink - 1].find((i) => i >= 0 && i < n && i !== glove) ?? -1;
   return {
     n, mw, sink, fz, sx, hole, glove, towel,
-    faucetZ: hole.z0 - 0.055,
+    faucetZ: hole ? hole.z0 - 0.055 : 0,
     upperD: Math.min(0.33, d * 0.55), upperY, uppers: h - upperY >= 0.3,
     mid: (i) => -w / 2 + (i + 0.5) * mw,
   };
@@ -413,19 +414,19 @@ function sharpsBox(kit, g, m, x, y, z) {
   kit.block(g, m.slot, x - 0.06, x + 0.06, y + 0.235, y + 0.255, z + 0.11, z + 0.112, false);
 }
 
-function buildCasework(kit, { w, d, h, color }) {
+function buildCasework(kit, { w, d, h, color }, withSink = true) {
   const g = kit.group();
   const m = palette(kit);
   const door = finish(kit, color, m.case);
-  const L = caseworkLayout(w, d, h);
+  const L = caseworkLayout(w, d, h, withSink);
   const ct = TOP - 0.03, bowlDepth = 0.18, cutY = TOP - bowlDepth - 0.03;
   const back = -d / 2, carcass = L.fz - FRONT_T - 0.004;
   const sb = -w / 2 + (L.sink + 1) * L.mw;
 
   kit.block(g, m.plinth, -w / 2 + 0.01, w / 2 - 0.01, 0, TOE, back, L.fz - 0.06);
   // Only a pocket around the bowl drops below the counter, so the back and both ends stay closed.
-  const p = { x0: L.hole.x0 - 0.01, x1: L.hole.x1 + 0.01, z0: Math.max(back, L.hole.z0 - 0.01), z1: Math.min(carcass, L.hole.z1 + 0.01) };
-  const parts = [
+  const p = L.hole && { x0: L.hole.x0 - 0.01, x1: L.hole.x1 + 0.01, z0: Math.max(back, L.hole.z0 - 0.01), z1: Math.min(carcass, L.hole.z1 + 0.01) };
+  const parts = !p ? [[-w / 2, w / 2, ct, back, carcass]] : [
     [-w / 2, p.x0, ct, back, carcass], [p.x1, w / 2, ct, back, carcass],
     [p.x0, p.x1, ct, back, p.z0], [p.x0, p.x1, ct, p.z1, carcass], [p.x0, p.x1, cutY, p.z0, p.z1],
   ];
@@ -449,12 +450,14 @@ function buildCasework(kit, { w, d, h, color }) {
 
   slab(kit, g, m.quartz, -w / 2, w / 2, ct, TOP, back, d / 2, L.hole);
   kit.block(g, m.quartz, -w / 2, w / 2, TOP, TOP + 0.1, back, back + 0.02);
-  basin(kit, g, m, L.hole, TOP, bowlDepth);
-  const bowlZ = (L.hole.z0 + L.hole.z1) / 2;
-  gooseneck(kit, g, m, L.sx, TOP, L.faucetZ, 0.2, Math.min(0.22, bowlZ - L.faucetZ));
-  if (L.hole.x1 + 0.1 < sb) {
-    kit.cyl(g, m.chrome, 0.018, 0.09, L.hole.x1 + 0.05, TOP, L.faucetZ, { segments: 12 });
-    kit.block(g, m.chrome, L.hole.x1 + 0.044, L.hole.x1 + 0.056, TOP + 0.075, TOP + 0.087, L.faucetZ, L.faucetZ + 0.06);
+  if (L.hole) {
+    basin(kit, g, m, L.hole, TOP, bowlDepth);
+    const bowlZ = (L.hole.z0 + L.hole.z1) / 2;
+    gooseneck(kit, g, m, L.sx, TOP, L.faucetZ, 0.2, Math.min(0.22, bowlZ - L.faucetZ));
+    if (L.hole.x1 + 0.1 < sb) {
+      kit.cyl(g, m.chrome, 0.018, 0.09, L.hole.x1 + 0.05, TOP, L.faucetZ, { segments: 12 });
+      kit.block(g, m.chrome, L.hole.x1 + 0.044, L.hole.x1 + 0.056, TOP + 0.075, TOP + 0.087, L.faucetZ, L.faucetZ + 0.06);
+    }
   }
 
   const wallY = TOP + 0.13;
@@ -483,8 +486,8 @@ function buildCasework(kit, { w, d, h, color }) {
   return g;
 }
 
-function drawCasework(ctx, o) {
-  const L = caseworkLayout(o.w, o.d, o.h);
+function drawCasework(ctx, o, withSink = true) {
+  const L = caseworkLayout(o.w, o.d, o.h, withSink);
   const { hole } = L;
   const back = -o.d / 2;
   if (L.uppers) {
@@ -493,10 +496,16 @@ function drawCasework(ctx, o) {
   }
   pen(ctx, o);
   line(ctx, -o.w / 2, back + 0.02, o.w / 2, back + 0.02);
-  rounded(ctx, hole.x0, hole.z0, hole.x1, hole.z1, 0.04);
-  circle(ctx, L.sx, (hole.z0 + hole.z1) / 2, 0.025);
-  circle(ctx, L.sx, L.faucetZ, 0.022);
-  line(ctx, L.sx, L.faucetZ, L.sx, L.faucetZ + Math.min(0.22, (hole.z0 + hole.z1) / 2 - L.faucetZ));
+  if (hole) {
+    rounded(ctx, hole.x0, hole.z0, hole.x1, hole.z1, 0.04);
+    circle(ctx, L.sx, (hole.z0 + hole.z1) / 2, 0.025);
+    circle(ctx, L.sx, L.faucetZ, 0.022);
+    line(ctx, L.sx, L.faucetZ, L.sx, L.faucetZ + Math.min(0.22, (hole.z0 + hole.z1) / 2 - L.faucetZ));
+  } else {
+    // Module joints across the counter front.
+    pen(ctx, o, FINE, o.theme.light);
+    for (let i = 1; i < L.n; i++) line(ctx, -o.w / 2 + i * L.mw, L.fz - 0.04, -o.w / 2 + i * L.mw, L.fz);
+  }
   outline(ctx, o);
 }
 
@@ -1265,6 +1274,12 @@ registerItems(shaded([
     w: 2.13, d: 0.61, h: 2.13, resizable: true,
     tags: ['casework', 'sink', 'cabinets', 'counter', 'gloves'],
     build: buildCasework, draw2d: drawCasework,
+  },
+  {
+    type: 'casework', name: 'Cabinets and counter', category: 'medical',
+    w: 1.83, d: 0.61, h: 2.13, resizable: true,
+    tags: ['casework', 'cabinets', 'counter', 'storage', 'uppers', 'supplies'],
+    build: (kit, o) => buildCasework(kit, o, false), draw2d: (ctx, o) => drawCasework(ctx, o, false),
   },
   fixed({
     type: 'physician-stool', name: 'Physician stool', category: 'medical', colorable: true, planFill: false, contactShadow: 'round',

@@ -198,6 +198,8 @@ export function normalizePlan(input) {
     }
     if (typeof i.color === 'string' && /^#(?:[0-9a-f]{3}){1,2}$/i.test(i.color)) out.color = i.color;
     if (typeof i.label === 'string') out.label = i.label;
+    // Found in the floor plan image: detecting its walls again replaces it.
+    if (i.traced === true) out.traced = true;
     return out;
   }).filter(Boolean);
 
@@ -306,6 +308,7 @@ export function addRoom(draft, points, props = {}) {
 export function addItem(draft, type, x, y, props = {}) {
   const item = { id: uid('i'), type, x, y, rotation: props.rotation ?? 0 };
   for (const k of ['w', 'd', 'h', 'color', 'label']) if (props[k] !== undefined) item[k] = props[k];
+  if (props.traced) item.traced = true;
   draft.items.push(item);
   return item;
 }
@@ -530,8 +533,8 @@ export function followRooms(draft, beforeWalls) {
 
 /**
  * Scale the plan by k about point p: wall ends, opening offsets and widths, room outlines, and the
- * positions of items and viewpoints (items keep their sizes, walls their thickness). Used when the
- * image a plan was traced from is calibrated.
+ * positions of items and viewpoints (walls keep their thickness, and items their sizes unless they
+ * were measured from the image). Used when the image a plan was traced from is calibrated.
  */
 export function scalePlan(draft, p, k) {
   const at = (q) => ({ x: p.x + k * (q.x - p.x), y: p.y + k * (q.y - p.y) });
@@ -545,6 +548,10 @@ export function scalePlan(draft, p, k) {
   }
   for (const r of draft.rooms) r.points = r.points.map(at);
   for (const e of [...draft.items, ...draft.cameras]) Object.assign(e, at(e));
+  for (const e of draft.items) {
+    if (!e.traced) continue;
+    for (const key of ['w', 'd']) if (e[key]) e[key] = clamp(e[key] * k, 0.05, LIMITS.itemSize);
+  }
   clampOpenings(draft);
 }
 

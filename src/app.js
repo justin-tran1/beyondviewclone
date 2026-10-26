@@ -565,12 +565,13 @@ let traceModule = null;
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** "12 walls, 5 doors and 4 rooms" (the kinds found, in that order). */
+/** "12 walls, 5 doors, 4 rooms and 9 pieces of furniture" (the kinds found, in that order). */
 function foundText(c) {
   const parts = [plural(c.walls, 'wall')];
   if (c.doors) parts.push(plural(c.doors, 'door'));
   if (c.windows) parts.push(plural(c.windows, 'window'));
   if (c.rooms) parts.push(plural(c.rooms, 'room'));
+  if (c.items) parts.push(plural(c.items, 'piece of furniture', 'pieces of furniture'));
   return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0];
 }
 
@@ -580,9 +581,12 @@ function confirmRetrace() {
     let go = false;
     const replace = h('button', { type: 'button', class: 'btn btn-primary', text: 'Replace walls and rooms', on: { click: () => { go = true; dlg.close('replace'); } } });
     const n = store.plan.walls.length;
+    const found = store.plan.items.some((i) => i.traced);
     const dlg = openDialog({
       title: 'Detect the walls again?',
-      subtitle: `This plan's ${plural(n, 'wall')} and its doors, windows and rooms are replaced with the ones found in the image. Furniture and saved views stay.`,
+      subtitle: found
+        ? `This plan's ${plural(n, 'wall')}, its doors, windows and rooms, and the furniture found in the image before are replaced with what is found now. Furniture you added and saved views stay.`
+        : `This plan's ${plural(n, 'wall')} and its doors, windows and rooms are replaced with the ones found in the image, and the furniture found in it is added. Furniture already in the plan and saved views stay.`,
       cls: 'dialog-narrow',
       actions: [
         h('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', on: { click: () => dlg.close('cancel') } }),
@@ -595,10 +599,10 @@ function confirmRetrace() {
 }
 
 /**
- * Find the walls, doors, windows and rooms in the floor plan image and add them to the plan, so it
- * can be walked through straight away. The image takes the scale its doors give, unless it was
- * calibrated. auto: right after an import into a plan with no walls; nothing is asked, and when
- * the image has no walls to find, the user is shown how to trace it by hand.
+ * Find the walls, doors, windows, rooms and furniture in the floor plan image and add them to the
+ * plan, so it can be walked through straight away. The image takes the scale its doors give,
+ * unless it was calibrated. auto: right after an import into a plan with no walls; nothing is
+ * asked, and when the image has no walls to find, the user is shown how to trace it by hand.
  */
 async function traceImage({ auto = false } = {}) {
   const u = store.plan.underlay;
@@ -613,7 +617,7 @@ async function traceImage({ auto = false } = {}) {
   const run = ++traceRuns;
   tracing = { src: u.src, run };
   dismissImportHint?.();
-  const working = toast('Finding the walls, doors and rooms in the image...', { type: 'info', duration: 600000 });
+  const working = toast('Finding the walls, doors, rooms and furniture in the image...', { type: 'info', duration: 600000 });
   let result = null;
   try {
     traceModule ||= await import('./ui/trace.js');
@@ -644,6 +648,7 @@ async function traceImage({ auto = false } = {}) {
       d.walls = [];
       d.openings = [];
       d.rooms = [];
+      d.items = d.items.filter((i) => !i.traced);
     }
     if (adopt) d.underlay.scale = result.metersPerPixel;
     d.underlay.traced = true;

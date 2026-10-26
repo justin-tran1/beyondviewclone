@@ -64,7 +64,7 @@ export function openStartDialog({ welcome = false, onSample, onTrace, onBlank })
       h('button', { type: 'button', class: 'start-action start-action-primary', on: { click: pick(onTrace) } },
         iconEl('upload', 'icon start-icon'),
         h('span', { class: 'start-text' }, h('span', { class: 'start-title', text: 'Trace a floor plan image' }),
-          h('span', { class: 'start-desc', text: 'Import a PNG, JPG, WebP or SVG drawing. Its walls, doors and rooms are found for you to walk through.' }))),
+          h('span', { class: 'start-desc', text: 'Import a PNG, JPG, WebP or SVG drawing. Its walls, doors, rooms and furniture are found for you to walk through.' }))),
       h('button', { type: 'button', class: 'start-action', on: { click: pick(onBlank) } },
         iconEl('file-new', 'icon start-icon'),
         h('span', { class: 'start-text' }, h('span', { class: 'start-title', text: 'Start a blank plan' }),
@@ -238,7 +238,7 @@ export function openHelp() {
     title: 'Help and shortcuts',
     cls: 'dialog-wide dialog-help',
     body: h('div', { class: 'help-grid' },
-      col('Tracing', 'Import a floor plan image from Open, or drop it on the window. Its walls, doors and rooms are found for you: check the scale with Calibrate scale, then fix or add anything with the tools.', [
+      col('Tracing', 'Import a floor plan image from Open, or drop it on the window. Its walls, doors, rooms and the furniture drawn in it are found for you: check the scale with Calibrate scale, then fix or add anything with the tools.', [
         ['Calibrate: click both ends of a known length, then type the real length', ''],
         ['Wall tool. Click each corner', 'W'],
         ['Type a length while drawing, then Enter, for an exact wall', '12\' 6"', 'Enter'],

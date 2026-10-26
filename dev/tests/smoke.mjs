@@ -14,10 +14,11 @@ const DRAW_TIMEOUT = 300000;
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const errors = [];
 const samples = only.length ? only : ['lab-suite', 'medical-office', 'office-floor', 'retail-warehouse', 'trace-demo', 'import'];
-// The trace demo's drawing (24 px per foot) and what tracing it finds: 15 walls, 8 doors, 12 windows
-// and 8 rooms. The test allows for a few misses.
+// The trace demo's drawing (24 px per foot) and what tracing it finds: 15 walls, 8 doors, 12 windows,
+// 8 rooms and 28 pieces of furniture, among them these. The test allows for a few misses.
 const DRAWING = fileURLToPath(new URL('../../assets/samples/trace-demo.svg', import.meta.url));
-const TRACED = { walls: 12, doors: 6, windows: 10, rooms: 6, scale: 0.3048 / 24 };
+const TRACED = { walls: 12, doors: 6, windows: 10, rooms: 6, items: 22, scale: 0.3048 / 24 };
+const FURNISHED = ['desk', 'table', 'round-table', 'task-chair', 'side-chair', 'exam-casework', 'toilet', 'vanity'];
 
 /**
  * Wait until the walkthrough has nothing left to draw (no frame pending or running and nothing
@@ -58,11 +59,16 @@ async function importDrawing(page) {
   const found = await page.evaluate(() => {
     const p = window.cbre.store.plan;
     const windows = p.openings.filter((o) => o.type === 'window').length;
-    return { walls: p.walls.length, doors: p.openings.length - windows, windows, rooms: p.rooms.length, scale: p.underlay.scale };
+    return {
+      walls: p.walls.length, doors: p.openings.length - windows, windows, rooms: p.rooms.length, items: p.items.length,
+      types: [...new Set(p.items.map((i) => i.type))], scale: p.underlay.scale,
+    };
   });
-  for (const key of ['walls', 'doors', 'windows', 'rooms']) {
+  for (const key of ['walls', 'doors', 'windows', 'rooms', 'items']) {
     if (found[key] < TRACED[key]) errors.push(`import: traced ${found[key]} ${key}, expected at least ${TRACED[key]}`);
   }
+  const missing = FURNISHED.filter((t) => !found.types.includes(t));
+  if (missing.length) errors.push(`import: no ${missing.join(', ')} among the furniture found (${found.types.join(', ')})`);
   if (Math.abs(found.scale / TRACED.scale - 1) > 0.03) errors.push(`import: traced scale ${found.scale} m/px, expected ${TRACED.scale}`);
 }
 

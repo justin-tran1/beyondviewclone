@@ -3,7 +3,7 @@
 // See docs/architecture.md for the contract.
 import {
   OPENING_TYPES, WALL_KINDS, OPENING_GAP, addWall, addOpening, addRoom, addItem, addCamera,
-  moveWall, moveWallEndpoint, isWallJoined, findEntity, clonePlan, nextName,
+  moveWall, moveWallEndpoint, isWallJoined, findEntity, clonePlan, nextName, scalePlan,
 } from './model.js';
 import { getItem, itemDims } from './catalog/registry.js';
 import {
@@ -350,6 +350,9 @@ export class PlanEditor extends EventTarget {
       U.scale *= k;
       U.x = a.x - k * (a.x - U.x);
       U.y = a.y - k * (a.y - U.y);
+      U.calibrated = true;
+      // A plan traced from the image is resized with it.
+      if (U.traced) scalePlan(d, a, k);
     }, { label: 'Calibrate image scale' });
     if (this._draft?.type === 'calibrate') this._draft = null;
     this.zoomToFit();

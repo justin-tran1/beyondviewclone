@@ -1,7 +1,8 @@
 # CBRE Virtual Walkthrough
 
-Internal CBRE tool for turning a floor plan into a space you can walk through. Trace a plan image,
-lay out furniture and equipment, then explore it in 3D at eye height or from an overview.
+Internal CBRE tool for turning a floor plan into a space you can walk through. Import a plan image
+and its walls, doors, windows and rooms are found for you; lay out furniture and equipment, then
+explore it in 3D at eye height or from an overview.
 
 ## Run it
 
@@ -23,16 +24,21 @@ without a code change, run the workflow from the Actions tab.
 
 1. **Start**: open a sample from the welcome screen, start a blank plan, or import a floor plan image
    (PNG, JPG, WebP or SVG; export PDFs to PNG first).
-2. **Set the scale**: after importing an image, click two points of a known distance and type the
-   real length, for example `24' 6"` or `7.5m`.
-3. **Trace**: draw walls (exterior, interior, glass partition or half-height), place doors, windows
-   and openings on them, and outline rooms to set floor finishes and ceilings. Type a length while
-   drawing a wall and press Enter for exact dimensions.
-4. **Furnish**: pick items from the library (lab and life sciences, medical office, general office,
+2. **Detect**: an imported image is traced straight away. Its walls, doors, windows and rooms are
+   found in the drawing, its scale is taken from the door widths (3'-0" doors), and the plan opens
+   in Split beside the 3D view. **Detect walls** in the image panel traces it again; Undo removes
+   what was found.
+3. **Check the scale**: use **Calibrate scale** to click two points of a known distance and type the
+   real length, for example `24' 6"` or `7.5m`; a traced plan is resized with its image.
+4. **Trace**: fix or add anything the detection missed. Draw walls (exterior, interior, glass
+   partition or half-height), place doors, windows and openings on them, and outline rooms to set
+   floor finishes and ceilings. Type a length while drawing a wall and press Enter for exact
+   dimensions.
+5. **Furnish**: pick items from the library (lab and life sciences, medical office, general office,
    retail and industrial, general). Items snap flush to walls; `Q` and `E` rotate.
-5. **Walk**: switch to **Walk** or **Split**. Drag to look, `W A S D` to move, click the floor to
+6. **Walk**: switch to **Walk** or **Split**. Drag to look, `W A S D` to move, click the floor to
    walk there, save viewpoints, and use **Overview** for a dollhouse view. Save images of any view.
-6. **Render photo**: the camera button beside Save image path traces the current view into a
+7. **Render photo**: the camera button beside Save image path traces the current view into a
    photographic still for client decks (1280 x 720 up to 4K; Draft, Standard or High quality). It
    takes a minute or more on the graphics card while the 3D view keeps running; save the PNG when
    it is done.
@@ -59,6 +65,7 @@ index.html, assets/css/app.css   App shell and styles
 src/app.js, src/ui/              Wiring, panels, dialogs, file handling
 src/model.js, src/geometry.js    Plan data model, undo/redo, geometry and units
 src/editor2d.js, plan-render.js  2D tracing and layout editor
+src/autotrace.js, src/ui/trace.js  Finding walls, doors, windows and rooms in a plan image
 src/builder3d.js, kit3d.js       Plan to 3D scene and lighting, shared materials and primitives
 src/walkthrough.js, postfx.js    First-person and overview viewer, post-processing and quality
 src/photo.js, src/ui/photo.js    Ray-traced Render photo
@@ -75,7 +82,7 @@ Module contracts and coordinate conventions are in [docs/architecture.md](docs/a
 ```bash
 npm install                      # Playwright, for tests only
 npm start                        # in one terminal
-npm run smoke                    # opens every sample in Plan, Split and Walk; screenshots to smoke-out/, fails on any error
+npm run smoke                    # opens every sample, and an imported drawing it traces, in Plan, Split and Walk; screenshots to smoke-out/, fails on any error
 node scripts/shot.mjs <url> <out.png> [--wait=expr]   # screenshot any page and report console errors
 ```
 

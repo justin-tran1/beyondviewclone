@@ -4,6 +4,7 @@
 // and returns a plan that has been through normalizePlan.
 import { FOOT } from '../geometry.js';
 import { createPlan, normalizePlan, uid, WALL_KINDS, OPENING_TYPES } from '../model.js';
+import { applyPackage } from '../finishes.js';
 
 /** Default footprint (meters) of every catalog type a sample may place. */
 export const ITEM_SIZES = {
@@ -162,13 +163,16 @@ export class Layout {
     return out;
   }
 
-  /** Rectangular room [x0, y0, x1, y1] on wall centerlines. */
+  /**
+   * Rectangular room [x0, y0, x1, y1] on wall centerlines. floor: a FLOORS key; opts.finish: a
+   * finish package (PACKAGES key) that sets its floor, walls, base, wall protection and ceiling.
+   */
   room(name, [x0, y0, x1, y1], floor, opts = {}) {
     return this.polygonRoom(name, [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], floor, opts);
   }
 
-  polygonRoom(name, points, floor, { ceiling, height } = {}) {
-    const room = { name, points: points.map(([x, y]) => ({ x, y })), floor, ceiling };
+  polygonRoom(name, points, floor, { ceiling, height, finish } = {}) {
+    const room = { name, points: points.map(([x, y]) => ({ x, y })), floor, ceiling, finish };
     if (height) room.height = height;
     this.rooms.push(room);
     return room;
@@ -252,6 +256,7 @@ export class Layout {
     n = 0;
     for (const r of this.rooms) {
       const room = { id: `r${++n}`, name: r.name, points: r.points.map(P), floor: r.floor, ceiling: r.ceiling ?? plan.settings.ceiling };
+      if (r.finish) applyPackage(room, r.finish);
       if (r.height) room.height = m(r.height);
       plan.rooms.push(room);
     }

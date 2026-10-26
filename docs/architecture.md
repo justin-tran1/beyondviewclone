@@ -11,6 +11,7 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
 | --- | --- |
 | `index.html`, `assets/css/app.css`, `src/app.js`, `src/ui/*.js` | App shell, panels, dialogs, file handling, wiring |
 | `src/model.js` | Plan schema, defaults, `normalizePlan`, entity helpers, `PlanStore` (undo/redo, selection) |
+| `src/finishes.js` | Interior finishes: floors, walls, wainscots, bases, wall protection, ceilings, their colors, finish packages by room use, casework colors and worksurfaces |
 | `src/geometry.js` | Plan-space math, snapping, unit formatting and parsing |
 | `src/kit3d.js` | Physically based materials, procedural textures and primitive builders (`createKit()`) |
 | `src/catalog/registry.js` | `registerItems`, `getItem`, `itemDims`, `searchItems`, `CATEGORIES` |
@@ -47,7 +48,7 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
 ```js
 {
   version: 1, id, name, units: 'imperial' | 'metric',
-  settings: { wallHeight: 2.9, ceiling: 'tile' | 'drywall' | 'open', exterior: 'city' | 'campus' | 'none' },
+  settings: { wallHeight: 2.9, ceiling: 'tile' | 'clean' | 'drywall' | 'open', exterior: 'city' | 'campus' | 'none' },
   underlay: null | {
     src,              // data URL of the traced image
     width, height,    // natural size in px
@@ -64,15 +65,24 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
                width, height, sill,
                hinge: 'start' | 'end',   // hinge at the end of the opening nearer wall.a or wall.b
                side: 1 | -1 }],          // door swings toward wallNormal(wall) * side
-  rooms:    [{ id, name, points: [{x, y}, ...], floor: FloorKey, ceiling: 'tile' | 'drywall' | 'open',
+  rooms:    [{ id, name, points: [{x, y}, ...],
+               floor: FloorKey, floorColor?,          // floor finish and its colorway (hex)
+               wall: 'paint' | 'coating' | 'frp' | 'tile' | 'wood', wallColor?,
+               wainscot: 'none' | 'tile' | 'frp' | 'panel' | 'wood', wainscotColor?,
+               base: 'rubber' | 'cove' | 'tile' | 'none', baseColor?,
+               guard: 'none' | 'corners' | 'rail' | 'handrail',   // wall protection
+               ceiling: 'tile' | 'clean' | 'drywall' | 'open',
                height? }],          // ceiling height (m); defaults to settings.wallHeight
-  items:    [{ id, type, x, y, rotation, w?, d?, h?, elevation?, color?, label?,
-               traced? }],    // elevation: base height above floor (m); traced: found in the underlay
+  items:    [{ id, type, x, y, rotation, w?, d?, h?, elevation?, color?, top?, label?,
+               traced? }],    // elevation: base height above floor (m); top: worksurface key; traced: found in the underlay
   cameras:  [{ id, name, x, y, yaw, pitch }],
 }
 ```
 
-`FloorKey` is a key of `FLOORS` in `model.js`. Walls are independent segments; corners are walls
+`FloorKey` is a key of `FLOORS` in `finishes.js` (re-exported by `model.js`). A room stores a color
+only when it differs from its finish as made (the first color the finish offers): paint and the
+coating take any hex, every other finish only the colors it offers, and `normalizePlan` drops the
+rest. Walls are independent segments; corners are walls
 whose endpoints coincide; a wall ending on another wall's span is a tee, and `moveWall` keeps tees
 attached and rooms following. `normalizePlan` accepts untrusted input and always returns a valid
 plan: it drops non-finite values and entities beyond 10,000 m, clamps item sizes to 60 m and camera
@@ -93,11 +103,31 @@ pitch to ±70°, caps each collection at 20,000 entries, and keeps an underlay o
   - `replace(plan)`, `undo()`, `redo()`, `canUndo`, `canRedo`, `select(sel)`, `deleteSelection()`
   - Events: `change` (`detail: {label, replaced?, undo?, redo?}`), `selection`, `history`
 
+### `finishes.js`
+
+```js
+export const FLOORS, WALL_FINISHES, WAINSCOTS, BASES, GUARDS, CEILINGS   // { key: { label, colors?: [[hex, name]], ... } }
+export const FINISH_PARTS      // { floor | wall | wainscot | base | guard | ceiling: { options, color, fallback } }
+export const PACKAGES          // finish packages by room use: { key: { label, rooms, group, floor, wall, ... } }
+export const WALL_COLORS, CASEWORK_COLORS, WORKSURFACES
+export function setFinish(room, part, key, color)   // in a draft; drops a color the new finish does not offer
+export function applyPackage(room, key), packageOf(room) -> key | null, copyFinishes(from, to)
+export function finishColor(room, part), defaultColor(part, key), planColor(room)   // planColor: the plan's room fill
+export function suggestPackage(points, itemTypes) -> key | null   // the use a room's furniture shows
+export function roomUse(plan, room), matchFinishes(draft, rooms) -> rooms changed
+```
+
+Packages are matched, not stored: a room shows a package while its finishes are exactly that
+package's. Tracing calls `matchFinishes` on the rooms it adds.
+
 ### `catalog/registry.js`
 
 See the ItemDef comment in the file. Key rules: models are built from `kit` primitives and materials
 only (no external assets), sized to the `opts.w/d/h` passed in (so resized items still fit their
-footprint), base at `y = 0`, front `+z`. `draw2d` draws an architectural plan symbol inside the
+footprint), base at `y = 0`, front `+z`. `colorable: true` recolors an item's fabric or finish from
+the fabric swatches; `colorable: 'casework'` recolors its cabinet doors and panels from
+`CASEWORK_COLORS`, and `worksurface` (the key of its top as made) lets `opts.top` pick another top
+from `WORKSURFACES`. `draw2d` draws an architectural plan symbol inside the
 footprint. Unknown types fall back to a placeholder box.
 
 ### `plan-render.js`
@@ -225,10 +255,12 @@ export function createKit() -> {
   THREE,
   material(color, opts)            // cached MeshStandardMaterial in a plain color (merged by the builder)
   mat.<preset>                     // cached preset finishes (MATERIAL_PRESETS): white, oak, steel, fabricGrey, ...
-  floorMaterial(key)               // FLOORS key: maps, macro variation, clearcoat on polished floors
+  floorMaterial(key, color = null, { perMeter = false })  // FLOORS key in a colorway: maps, macro variation,
+                                   // clearcoat on polished floors; perMeter for UVs in meters (a cove or tile base)
   floorMeters(key)                 // the tile size (m) the floor's UVs repeat over
   paintMaterial(color = '#f1efea', { roughness = 0.6 })   // satin wall paint, orange peel, UVs in meters
-  ceilingMaterial('tile' | 'drywall' | 'open')            // acoustic tile on a 0.6096 m grid, gypsum, metal deck
+  wallMaterial(kind, color = null) // WALL_TYPES: paint, coating (semi-gloss), frp, tile (3x6 subway), wood, panel
+  ceilingMaterial('tile' | 'clean' | 'drywall' | 'open')  // acoustic or washable tile on a 0.6096 m grid, gypsum, metal deck
   glassMaterial({ tint = '#edf1ef', frosted = false })    // reflections add over the background; glass, frostedGlass are the defaults
   setEnvironmentIntensity(v)       // envMapIntensity of every kit material (default 0.5; the builder sets 0.75)
   block(parent, material, x0, x1, y0, y1, z0, z1, shadows = true, { bevel = 'auto' })
@@ -239,7 +271,7 @@ export function createKit() -> {
   dispose()                        // frees every material, texture (albedo, normal, roughness, macro)
                                    // and cached box geometry the kit made
 }
-export const MATERIAL_PRESETS, FLOOR_FINISHES, CEILING_TYPES   // names, for test pages
+export const MATERIAL_PRESETS, FLOOR_FINISHES, WALL_TYPES, CEILING_TYPES   // names, for test pages
 export function disposeObject(obj)  // disposes geometries under obj except the kit's shared ones
 export function prefetchTextures() -> Promise, rng(seed) -> () => [0, 1)
 ```
@@ -306,6 +338,13 @@ before exposure.
   `position` (default `built.probe`) for reflections and ambient tint, lit by the neutral base
   environment so rebuilds converge on the same look. It leaves the scene as it found it; the
   caller assigns `texture` to `scene.environment` and disposes the previous capture.
+
+Rooms carry their finishes into 3D. Each face of a wall takes the finish of the room it looks into,
+over that room's wainscot (with a cap), and its window reveals take the finish of the room the
+window lights. Along each face run the room's base (rubber, the floor run up the wall as an
+integral cove with a curved foot, or tile) and its wall protection: corner guards at outside
+corners and around free wall ends, a crash rail or a handrail on brackets, short of doors and
+outside corners. The untraced building area takes painted walls and a rubber base.
 
 `buildPlanScene` throws an `Error` with a readable message when a plan cannot be built (for example
 a plan too large to show); the walkthrough displays that message in place of the 3D view.

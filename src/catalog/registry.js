@@ -25,9 +25,12 @@ const REGISTRY = new Map();
  *   contactShadow optional: true (default) draws a soft floor shadow over the footprint, 'round' an
  *             elliptical one (round tables, stools, plants), false none (open fixtures, table sets
  *             whose footprint includes chairs).
- *   colorable optional: true when opts.color recolors the main fabric or finish (shows color swatches).
+ *   colorable optional: true when opts.color recolors the main fabric or finish (shows color swatches);
+ *             'casework' when it recolors cabinet doors and panels in CASEWORK_COLORS (finishes.js).
+ *   worksurface optional: the WORKSURFACES key (finishes.js) of its counter or bench top as made;
+ *             opts.top picks another.
  *   build(kit, opts) -> THREE.Object3D
- *             opts = { w, d, h, color }. Model is centered on its footprint, base at y = 0,
+ *             opts = { w, d, h, color, top }. Model is centered on its footprint, base at y = 0,
  *             front facing +z, fitting inside [-w/2, w/2] x [0, h] x [-d/2, d/2].
  *   draw2d(ctx, opts) -> void
  *             Plan symbol. ctx is pre-transformed: origin at the item center, 1 unit = 1 meter,

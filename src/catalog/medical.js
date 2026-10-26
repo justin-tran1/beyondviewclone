@@ -1,7 +1,9 @@
 // Medical office catalog: exam rooms, reception and waiting, patient care and imaging.
 // Local frame: x = width, y = up, z = depth with the front facing +z (plan +y).
 import { registerItems } from './registry.js';
-import { tint, cushion, turned, bent, assembly, barPull, roundSeat, officeChair, warpAt, smooth01, shaded } from './lab.js';
+import {
+  tint, cushion, turned, bent, assembly, barPull, roundSeat, officeChair, warpAt, smooth01, shaded, caseworkFinish, topMaterial,
+} from './lab.js';
 
 const TOP = 0.9;        // casework counter height
 const DESK = 0.74;      // work surface height
@@ -72,7 +74,7 @@ function fixed(def) {
   return {
     ...def,
     build(kit, o = {}) {
-      const g = build(kit, { w: def.w, d: def.d, h: def.h, color: o.color });
+      const g = build(kit, { w: def.w, d: def.d, h: def.h, color: o.color, top: o.top });
       const s = [(o.w || def.w) / def.w, (o.h || def.h) / def.h, (o.d || def.d) / def.d];
       if (s.some((v) => Math.abs(v - 1) > 1e-6)) g.scale.set(...s);
       return g;
@@ -414,10 +416,12 @@ function sharpsBox(kit, g, m, x, y, z) {
   kit.block(g, m.slot, x - 0.06, x + 0.06, y + 0.235, y + 0.255, z + 0.11, z + 0.112, false);
 }
 
-function buildCasework(kit, { w, d, h, color }, withSink = true) {
+function buildCasework(kit, { w, d, h, color, top }, withSink = true) {
   const g = kit.group();
   const m = palette(kit);
-  const door = finish(kit, color, m.case);
+  // Colored casework carries its color onto the cabinet bodies and end panels.
+  const door = caseworkFinish(kit, color, m.case), body = door;
+  const surface = topMaterial(kit, top, m.quartz);
   const L = caseworkLayout(w, d, h, withSink);
   const ct = TOP - 0.03, bowlDepth = 0.18, cutY = TOP - bowlDepth - 0.03;
   const back = -d / 2, carcass = L.fz - FRONT_T - 0.004;
@@ -430,7 +434,7 @@ function buildCasework(kit, { w, d, h, color }, withSink = true) {
     [-w / 2, p.x0, ct, back, carcass], [p.x1, w / 2, ct, back, carcass],
     [p.x0, p.x1, ct, back, p.z0], [p.x0, p.x1, ct, p.z1, carcass], [p.x0, p.x1, cutY, p.z0, p.z1],
   ];
-  for (const [a, b, y, za, zb] of parts) if (b - a > 0.002 && zb - za > 0.002) kit.block(g, m.case, a, b, TOE, y, za, zb);
+  for (const [a, b, y, za, zb] of parts) if (b - a > 0.002 && zb - za > 0.002) kit.block(g, body, a, b, TOE, y, za, zb);
   kit.block(g, m.reveal, -w / 2 + 0.005, w / 2 - 0.005, TOE, ct, carcass, L.fz - FRONT_T, false);
   for (let i = 0; i < L.n; i++) {
     const a = -w / 2 + i * L.mw, b = a + L.mw, cx = (a + b) / 2;
@@ -448,8 +452,8 @@ function buildCasework(kit, { w, d, h, color }, withSink = true) {
     doors(kit, g, m, door, a, b, TOE, ct - 0.16, L.fz, ct - 0.25, i % 2 ? -1 : 1);
   }
 
-  slab(kit, g, m.quartz, -w / 2, w / 2, ct, TOP, back, d / 2, L.hole);
-  kit.block(g, m.quartz, -w / 2, w / 2, TOP, TOP + 0.1, back, back + 0.02);
+  slab(kit, g, surface, -w / 2, w / 2, ct, TOP, back, d / 2, L.hole);
+  kit.block(g, surface, -w / 2, w / 2, TOP, TOP + 0.1, back, back + 0.02);
   if (L.hole) {
     basin(kit, g, m, L.hole, TOP, bowlDepth);
     const bowlZ = (L.hole.z0 + L.hole.z1) / 2;
@@ -475,7 +479,7 @@ function buildCasework(kit, { w, d, h, color }, withSink = true) {
 
   if (L.uppers) {
     const uf = back + L.upperD, uc = uf - FRONT_T - 0.004;
-    kit.block(g, m.case, -w / 2, w / 2, L.upperY, h, back, uc);
+    kit.block(g, body, -w / 2, w / 2, L.upperY, h, back, uc);
     kit.block(g, m.reveal, -w / 2 + 0.005, w / 2 - 0.005, L.upperY + 0.005, h - 0.005, uc, uf - FRONT_T, false);
     for (let i = 0; i < L.n; i++) {
       const a = -w / 2 + i * L.mw;
@@ -631,11 +635,11 @@ function sanitizer(kit, g, m, x, y, z) {
   kit.block(g, m.trim, x - 0.006, x + 0.006, y + 0.135, y + 0.15, z, z + 0.045);
 }
 
-function buildDesk(kit, { w, d, h, color }, variant) {
+function buildDesk(kit, { w, d, h, color, top }, variant) {
   const g = kit.group();
   const m = palette(kit);
   const L = deskLayout(w, d, variant.pitch);
-  const face = finish(kit, color, variant.face(kit));
+  const face = caseworkFinish(kit, color, variant.face(kit));
   const work = m.laminate;
   const fz = L.front - 0.012;
   const ledgeY = h - 0.03;
@@ -643,7 +647,7 @@ function buildDesk(kit, { w, d, h, color }, variant) {
   kit.block(g, m.plinth, -w / 2 + 0.015, w / 2 - 0.015, 0, 0.08, L.inner + 0.01, fz - 0.025);
   kit.block(g, m.laminate, -w / 2, w / 2, 0.08, ledgeY, L.inner, fz - 0.02);
   variant.dress(kit, g, m, w, fz, ledgeY, face);
-  kit.block(g, m.quartz, -w / 2, w / 2, ledgeY, h, L.ledge0, L.front);
+  kit.block(g, topMaterial(kit, top, m.quartz), -w / 2, w / 2, ledgeY, h, L.ledge0, L.front);
   kit.block(g, m.led, -w / 2 + 0.06, w / 2 - 0.06, ledgeY - 0.006, ledgeY, L.ledge0 + 0.02, L.ledge0 + 0.04, false);
   const brackets = repeats(Math.round(w / 0.9) + 1, 2);
   for (let i = 0; i < brackets; i++) {
@@ -1270,13 +1274,13 @@ registerItems(shaded([
     build: buildExamTable, draw2d: drawExamTable,
   }),
   {
-    type: 'exam-casework', name: 'Exam room casework', category: 'medical',
+    type: 'exam-casework', name: 'Exam room casework', category: 'medical', colorable: 'casework', worksurface: 'quartz',
     w: 2.13, d: 0.61, h: 2.13, resizable: true,
     tags: ['casework', 'sink', 'cabinets', 'counter', 'gloves'],
     build: buildCasework, draw2d: drawCasework,
   },
   {
-    type: 'casework', name: 'Cabinets and counter', category: 'medical',
+    type: 'casework', name: 'Cabinets and counter', category: 'medical', colorable: 'casework', worksurface: 'quartz',
     w: 1.83, d: 0.61, h: 2.13, resizable: true,
     tags: ['casework', 'cabinets', 'counter', 'storage', 'uppers', 'supplies'],
     build: (kit, o) => buildCasework(kit, o, false), draw2d: (ctx, o) => drawCasework(ctx, o, false),
@@ -1294,7 +1298,7 @@ registerItems(shaded([
     build: buildSideChair, draw2d: drawSideChair,
   }),
   {
-    type: 'reception-desk', name: 'Reception desk', category: 'medical',
+    type: 'reception-desk', name: 'Reception desk', category: 'medical', colorable: 'casework', worksurface: 'quartz',
     w: 3.05, d: 0.91, h: 1.07, resizable: true,
     tags: ['reception', 'front desk', 'check-in', 'transaction counter'],
     build: (kit, o) => buildDesk(kit, o, RECEPTION), draw2d: (ctx, o) => drawDesk(ctx, o, RECEPTION),
@@ -1306,7 +1310,7 @@ registerItems(shaded([
     build: buildWaitingChairs, draw2d: drawWaitingChairs,
   },
   {
-    type: 'nurse-station', name: 'Nurse station', category: 'medical',
+    type: 'nurse-station', name: 'Nurse station', category: 'medical', colorable: 'casework', worksurface: 'quartz',
     w: 2.44, d: 0.91, h: 1.07, resizable: true,
     tags: ['nurse', 'care station', 'charting', 'desk'],
     build: (kit, o) => buildDesk(kit, o, NURSE), draw2d: (ctx, o) => drawDesk(ctx, o, NURSE),

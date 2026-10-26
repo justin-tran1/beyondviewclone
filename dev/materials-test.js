@@ -6,18 +6,16 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { createKit, MATERIAL_PRESETS, FLOOR_FINISHES, CEILING_TYPES } from '../src/kit3d.js';
+import { createKit, MATERIAL_PRESETS, FLOOR_FINISHES, WALL_TYPES, CEILING_TYPES } from '../src/kit3d.js';
+import { FLOORS, WALL_FINISHES, CEILINGS } from '../src/finishes.js';
 
 const params = new URLSearchParams(location.search);
 const section = params.get('section') || 'all';
 const focus = params.get('focus');
 const t0 = performance.now();
 
-const FLOOR_LABELS = {
-  carpet: 'Carpet tile', 'polished-concrete': 'Polished concrete', concrete: 'Raw concrete', epoxy: 'Epoxy (lab)',
-  vinyl: 'Luxury vinyl', wood: 'Wood', tile: 'Porcelain tile', rubber: 'Rubber (clinical)',
-};
-const CEILING_LABELS = { tile: 'Acoustic ceiling tile', drywall: 'Drywall ceiling', open: 'Open to structure deck' };
+const label = (table, k) => table[k]?.label || k;
+const WALL_LABELS = { panel: 'Impact panel' };
 
 const nav = document.getElementById('views');
 for (const [key, label] of [['all', 'All'], ['floors', 'Floors'], ['architecture', 'Walls and ceilings'], ['items', 'Items']]) {
@@ -77,14 +75,20 @@ function run() {
   const rows = [];
   const add = (title, list) => rows.push({ title, list });
   if (section === 'all' || section === 'floors') {
-    add('Floors', FLOOR_FINISHES.map((k) => ({ name: FLOOR_LABELS[k] || k, sub: `floorMaterial('${k}')`, kind: 'floor', mat: kit.floorMaterial(k), meters: kit.floorMeters(k) })));
+    add('Floors', FLOOR_FINISHES.map((k) => ({ name: label(FLOORS, k), sub: `floorMaterial('${k}')`, kind: 'floor', mat: kit.floorMaterial(k), meters: kit.floorMeters(k) })));
+    // Each floor in its last colorway, as a room can choose it.
+    add('', FLOOR_FINISHES.map((k) => {
+      const [hex, name] = FLOORS[k].colors.at(-1);
+      return { name: `${label(FLOORS, k)}, ${name.toLowerCase()}`, sub: `floorMaterial('${k}', '${hex}')`, kind: 'floor', mat: kit.floorMaterial(k, hex), meters: kit.floorMeters(k) };
+    }));
   }
   if (section === 'all' || section === 'architecture') {
     add('Walls and ceilings', [
       { name: 'Warm white paint', sub: 'paintMaterial()', mat: kit.paintMaterial() },
       { name: 'Celadon accent paint', sub: "paintMaterial('#80bbad')", mat: kit.paintMaterial('#80bbad') },
       { name: 'Dark grey paint', sub: "paintMaterial('#435254')", mat: kit.paintMaterial('#435254') },
-      ...CEILING_TYPES.map((t) => ({ name: CEILING_LABELS[t] || t, sub: `ceilingMaterial('${t}')`, kind: 'ceiling', mat: kit.ceilingMaterial(t) })),
+      ...WALL_TYPES.filter((t) => t !== 'paint').map((t) => ({ name: WALL_LABELS[t] || label(WALL_FINISHES, t), sub: `wallMaterial('${t}')`, mat: kit.wallMaterial(t) })),
+      ...CEILING_TYPES.map((t) => ({ name: label(CEILINGS, t), sub: `ceilingMaterial('${t}')`, kind: 'ceiling', mat: kit.ceilingMaterial(t) })),
       { name: 'Clear glass', sub: 'glassMaterial()', kind: 'glass', mat: kit.glassMaterial() },
       { name: 'Tinted glass', sub: "glassMaterial({ tint: '#9fb8b4' })", kind: 'glass', mat: kit.glassMaterial({ tint: '#9fb8b4' }) },
       { name: 'Frosted glass', sub: 'glassMaterial({ frosted })', kind: 'glass', mat: kit.glassMaterial({ frosted: true }) },

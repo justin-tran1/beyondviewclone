@@ -4,6 +4,7 @@ import {
   FOOT, INCH, add, sub, scale, dot, cross, norm, dist, samePoint, clamp, normDeg,
   projectToSegment, wallLength, wallDir, wallNormal,
 } from './geometry.js';
+import { FINISH_PARTS, CEILINGS, WORKSURFACES, setFinish } from './finishes.js';
 
 export const PLAN_VERSION = 1;
 /** Top-level marker written by serializePlan so files can be recognized as plans. */
@@ -40,23 +41,8 @@ export const OPENING_TYPES = {
   window: { label: 'Window', width: 5 * FOOT, height: 5 * FOOT, sill: 3 * FOOT, passable: false },
 };
 
-/** Floor finishes. color2d tints the plan; the 3D builder owns the real materials. */
-export const FLOORS = {
-  carpet: { label: 'Carpet tile', color2d: '#e3e6e2' },
-  'polished-concrete': { label: 'Polished concrete', color2d: '#e8e6e1' },
-  concrete: { label: 'Raw concrete', color2d: '#dcdad5' },
-  epoxy: { label: 'Epoxy (lab)', color2d: '#e6ecee' },
-  vinyl: { label: 'Luxury vinyl', color2d: '#ece4d8' },
-  wood: { label: 'Wood', color2d: '#eadcc6' },
-  tile: { label: 'Porcelain tile', color2d: '#ececea' },
-  rubber: { label: 'Rubber (clinical)', color2d: '#dfe7e4' },
-};
-
-export const CEILINGS = {
-  tile: { label: 'Acoustic tile' },
-  drywall: { label: 'Drywall' },
-  open: { label: 'Open to structure' },
-};
+// Floor, wall, base and ceiling finishes and the finish packages live in finishes.js.
+export { FLOORS, CEILINGS } from './finishes.js';
 
 export const ENTITY_KINDS = ['wall', 'opening', 'room', 'item', 'camera'];
 const COLLECTION = { wall: 'walls', opening: 'openings', room: 'rooms', item: 'items', camera: 'cameras' };
@@ -182,8 +168,7 @@ export function normalizePlan(input) {
       id: id(r.id, 'r'),
       name: typeof r.name === 'string' ? r.name : 'Room',
       points,
-      floor: oneOf(r.floor, FLOORS, 'carpet'),
-      ceiling: oneOf(r.ceiling, CEILINGS, settings.ceiling),
+      ...roomFinishes(r, settings.ceiling),
       ...(Number.isFinite(+r.height) && +r.height > 0 ? { height: clamp(+r.height, 2, 20) } : {}),
     };
   }).filter(Boolean);
@@ -197,6 +182,8 @@ export function normalizePlan(input) {
       if (v > 0) out[k] = Math.min(v, LIMITS.itemSize);
     }
     if (typeof i.color === 'string' && /^#(?:[0-9a-f]{3}){1,2}$/i.test(i.color)) out.color = i.color;
+    // Counter or bench top (a WORKSURFACES key).
+    if (Object.hasOwn(WORKSURFACES, i.top ?? '')) out.top = i.top;
     if (typeof i.label === 'string') out.label = i.label;
     // Found in the floor plan image: detecting its walls again replaces it.
     if (i.traced === true) out.traced = true;
@@ -297,17 +284,29 @@ export function addRoom(draft, points, props = {}) {
     id: uid('r'),
     name: props.name ?? nextName(draft.rooms, 'Room'),
     points: points.map((p) => ({ x: p.x, y: p.y })),
-    floor: oneOf(props.floor, FLOORS, 'carpet'),
-    ceiling: oneOf(props.ceiling, CEILINGS, draft.settings.ceiling),
+    ...roomFinishes(props, draft.settings.ceiling),
   };
   if (props.height > 0) room.height = props.height;
   draft.rooms.push(room);
   return room;
 }
 
+/**
+ * A room's finishes from untrusted fields: each finish one of its options (else the default, the
+ * plan's ceiling for the ceiling), each color a hex its finish offers (paint any hex).
+ */
+function roomFinishes(r, ceiling) {
+  const out = {};
+  for (const [part, spec] of Object.entries(FINISH_PARTS)) {
+    const key = oneOf(r[part], spec.options, part === 'ceiling' ? ceiling : spec.fallback);
+    setFinish(out, part, key, spec.color ? r[spec.color] ?? null : undefined);
+  }
+  return out;
+}
+
 export function addItem(draft, type, x, y, props = {}) {
   const item = { id: uid('i'), type, x, y, rotation: props.rotation ?? 0 };
-  for (const k of ['w', 'd', 'h', 'color', 'label']) if (props[k] !== undefined) item[k] = props[k];
+  for (const k of ['w', 'd', 'h', 'color', 'top', 'label']) if (props[k] !== undefined) item[k] = props[k];
   if (props.traced) item.traced = true;
   draft.items.push(item);
   return item;

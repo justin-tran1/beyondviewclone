@@ -14,6 +14,7 @@
 import * as THREE from 'three';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { OPENING_TYPES } from './model.js';
+import { WAINSCOTS, BASES } from './finishes.js';
 import {
   add, sub, dot, norm, clamp, cross, samePoint, wallLength, wallDir, openingSpan, pointOnWall, pointInPolygon,
   polygonArea, polygonSignedArea, polygonCentroid, boundsOf, unionBounds, emptyBounds, itemCorners, normDeg, projectToSegment,
@@ -45,7 +46,17 @@ const JOIN = 0.002;
 const LEAF_T = 0.044;
 const OPEN_COS = Math.cos((80 * Math.PI) / 180);
 const OPEN_SIN = Math.sin((80 * Math.PI) / 180);
-const BASE = { h: 0.1, out: 0.006 };
+// Trim on the faces of walls that look into a room (m). Wall base: thickness off the wall face and
+// edge radius per kind (heights come from BASES), the integral cove's fillet at the floor, and the
+// floors a tile base is cut from (others get porcelain tile). Corner guards: height, leg and gauge.
+// Crash rails and handrails stop `gap` short of openings and outside corners. Wainscot caps: how far
+// each stands off the wainscot and how tall it is.
+const BASE = { rubber: { out: 0.006, r: 0.0025 }, cove: { out: 0.004, r: 0.002, fillet: 0.02 }, tile: { out: 0.009, r: 0.0015 } };
+const TILE_BASES = ['tile', 'terrazzo'];
+const GUARD = { h: 1.22, leg: 0.0635, t: 0.003 };
+const RAIL = { y0: 0.76, y1: 0.9, out: 0.025, r: 0.008, gap: 0.12 };
+const HANDRAIL = { y: 0.9, size: 0.04, standoff: 0.038, bracket: 1.2, gap: 0.12 };
+const WAINSCOT_CAP = { tile: { out: 0.01, h: 0.02 }, frp: { out: 0.005, h: 0.015 }, panel: { out: 0.01, h: 0.022 }, wood: { out: 0.018, h: 0.045 } };
 const CASING = { out: 0.035, in: 0.015, proud: 0.012 };
 const MAX_ITEM_LIGHTS = 8;
 const UP = [0, 1, 0];
@@ -574,6 +585,13 @@ function createMaterials(kit) {
     cut: kit.material('#454d4f', { roughness: 0.9 }),
     // Rubber cove base in a soft charcoal, so it grounds the walls without drawing a black line.
     base: kit.material('#4b4f4f', { roughness: 0.62 }),
+    // Wall protection: satin stainless corner guards (mostly diffuse, so they read light like the
+    // walls they wrap rather than mirror the floor), a vinyl crash rail in warm grey and an oak
+    // handrail on stainless brackets.
+    guard: kit.material('#cfd1d0', { roughness: 0.3, metalness: 0.35 }),
+    rail: kit.material('#b3ada2', { roughness: 0.4 }),
+    handrail: kit.mat.oak,
+    bracket: kit.mat.steel,
     // Satin painted hollow metal door frames in a warm light grey (dark frames read as outlines),
     // and clear anodized aluminum storefront and window frames.
     frame: kit.material('#a9aaa5', { roughness: 0.42 }),
@@ -586,6 +604,7 @@ function createMaterials(kit) {
     partition: kit.glassMaterial({ tint: PARTITION_TINT }),
     frosted: kit.glassMaterial({ frosted: true }),
     tile: kit.ceilingMaterial('tile'),
+    clean: kit.ceilingMaterial('clean'),
     drywall: kit.ceilingMaterial('drywall'),
     deckSoffit: kit.ceilingMaterial('open'),
     trim: kit.material('#eeede9', { roughness: 0.36 }),
@@ -1530,12 +1549,13 @@ function openingSpans(w, list) {
 
 /**
  * The spaces on each side of a wall along its length (pu along F.n, nu against it; null outdoors), as
- * runs over which the ceilings and decks stay the same. Boundaries are found to about 5 mm.
+ * runs over which the spaces, and so their ceilings, decks and finishes, stay the same. Boundaries
+ * are found to about 5 mm.
  */
 function sideRuns(ctx, { w, L, F, ext }) {
   const off = w.thickness / 2 + 0.25;
   const side = (s, sign) => spaceAt(ctx, { x: F.o.x + F.d.x * s + F.n.x * off * sign, y: F.o.y + F.d.y * s + F.n.y * off * sign });
-  const key = (sp) => (sp ? `${sp.ceiling === 'open' ? 'open' : sp.ceilY.toFixed(3)}/${sp.deck.toFixed(3)}` : 'out');
+  const key = (sp) => (sp ? `${sp.index}` : 'out');
   const probe = (s) => {
     const pu = side(s, 1), nu = side(s, -1);
     return { s, pu, nu, key: `${key(pu)}|${key(nu)}` };
@@ -1582,14 +1602,30 @@ function runTop(w, { pu, nu }) {
 /**
  * Material bands up a wall face that looks into `space` (null outdoors): `base` up to the wall top
  * (or a flat ceiling above it), then the dark plenum or open structure up to the space's deck, then
- * facade above a lower roof. Each band is [top, material].
+ * facade above a lower roof. Each band is [top, material]. A painted face (base M.paint) takes the
+ * space's own wall finish, over its wainscot if it has one.
  */
 function faceBands(ctx, space, base, H) {
   const M = ctx.mats;
   if (!space) return [[H, base], [Infinity, M.facade]];
   // Paint runs 5 cm past a flat ceiling into the plenum, so no dark sliver shows along the ceiling edge.
   const paintTop = Math.min(space.deck, Math.max(H, space.ceiling === 'open' ? 0 : space.height + 0.05));
-  return [[paintTop, base], [space.deck, M.deck], [Infinity, M.facade]];
+  const bands = [[paintTop, base], [space.deck, M.deck], [Infinity, M.facade]];
+  if (base !== M.paint) return bands;
+  const fin = spaceFinish(ctx, space);
+  bands[0][1] = fin.wall;
+  return fin.wainscot ? [[Math.min(fin.wainscot.height, paintTop), fin.wainscot.mat], ...bands] : bands;
+}
+
+/** One face of a box from y0 to y1, in the materials of `bands` (see faceBands). */
+function bandedFace(F, get, face, bands, s0, s1, u0, u1, y0, y1) {
+  let lo = y0;
+  for (const [top, mat] of bands) {
+    const hi = Math.min(top, y1);
+    if (hi - lo > 1e-4) box(F, { [face]: get(mat) }, s0, s1, u0, u1, lo, hi);
+    lo = Math.max(lo, hi);
+    if (lo >= y1) break;
+  }
 }
 
 const bandAt = (bands, y) => bands.find(([top]) => y < top)[1];
@@ -1649,13 +1685,7 @@ function endCap(ctx, info, get, end, s, u, y0, y1) {
   const at = (sign) => spaceAt(ctx, { x: F.o.x + F.d.x * along + F.n.x * off * sign, y: F.o.y + F.d.y * along + F.n.y * off * sign });
   const space = at(1) || at(-1);
   const bands = faceBands(ctx, space, space ? ctx.mats.paint : ctx.mats.facade, w.height);
-  let lo = y0;
-  for (const [top, mat] of bands) {
-    const hi = Math.min(top, y1);
-    if (hi - lo > 1e-4) box(F, { [end === 'a' ? 's0' : 's1']: get(mat) }, end === 'a' ? s : s - 1e-3, end === 'a' ? s + 1e-3 : s, -u, u, lo, hi);
-    lo = Math.max(lo, hi);
-    if (lo >= y1) break;
-  }
+  bandedFace(F, get, end === 'a' ? 's0' : 's1', bands, end === 'a' ? s : s - 1e-3, end === 'a' ? s + 1e-3 : s, -u, u, y0, y1);
 }
 
 /** +1 or -1 when only that side of the wall is inside the building, 0 when both or neither are. */
@@ -1686,6 +1716,7 @@ function paintedWall(ctx, info) {
   });
   wallBox(ctx, info, get, f, cursor, L + ext.b, ht, 0, H, { a: spans.length ? null : cover(ctx, info, 'a'), b: cover(ctx, info, 'b') });
   floorTrim(ctx, info, floorRuns(info, true));
+  wallTrim(ctx, info);
   ceilingShade(ctx, info);
 }
 
@@ -1713,27 +1744,206 @@ function floorRuns({ L, ext, spans }, keepWindows) {
   return runs.filter((r) => r.s1 - r.s0 > 1e-3);
 }
 
-/** Rubber base and soft contact shading on the floor along the interior faces of a wall. */
+/**
+ * Wall base and soft contact shading on the floor along the interior faces of a wall, each stretch
+ * in the base of the room it looks into (base: false for shading only).
+ */
 function floorTrim(ctx, info, runs, { base = true, width = 0.3 } = {}) {
   const { w, F, inner, ext, ends, L } = info;
-  const b = ctx.main.get(ctx.mats.base, false);
   const ht = w.thickness / 2;
-  // Wrap the base around convex corners only; on the concave side, or at a tee, it would poke through the neighbor.
-  const wrap = (end, side) => (ends[end].corner && ends[end].side !== side ? BASE.out : 0);
   for (const side of [1, -1]) {
     if (inner !== 0 && side !== inner) continue;
+    // Wrap the base around convex corners only; on the concave side, or at a tee, it would poke through the neighbor.
+    const wrap = (end, out) => (ends[end].corner && ends[end].side !== side ? out : 0);
     for (const r of runs) {
-      const s0 = r.s0 - (r.s0 <= -ext.a + 1e-6 ? wrap('a', side) : 0);
-      const s1 = r.s1 + (r.s1 >= L + ext.b - 1e-6 ? wrap('b', side) : 0);
-      if (base) {
-        // Rubber cove base with an eased top edge; the face against the wall and the floor are hidden.
-        const faces = ['top', 's0', 's1', side > 0 ? 'pu' : 'nu'];
-        if (side > 0) rbox(ctx, F, b, s0, s1, ht, ht + BASE.out, 0, BASE.h, 0.0025, { faces });
-        else rbox(ctx, F, b, s0, s1, -ht - BASE.out, -ht, 0, BASE.h, 0.0025, { faces });
-      }
-      floorShade(ctx, F, side, ht + (base ? BASE.out : 0), s0, s1, r.fade0, r.fade1, width);
+      const pieces = sidePieces(ctx, info, r.s0, r.s1, side, (fin) => (base && fin.base ? fin.base.key : ''));
+      pieces.forEach((p, k) => {
+        const b = base ? p.fin.base : null, out = b ? b.out : 0;
+        const s0 = p.s0 - (p.s0 <= -ext.a + 1e-6 ? wrap('a', out) : 0);
+        const s1 = p.s1 + (p.s1 >= L + ext.b - 1e-6 ? wrap('b', out) : 0);
+        if (b) baseStrip(ctx, F, side, ht, b, s0, s1);
+        floorShade(ctx, F, side, ht + out + (b?.fillet ?? 0), s0, s1, k === 0 && r.fade0, k === pieces.length - 1 && r.fade1, width);
+      });
     }
   }
+}
+
+/**
+ * Wall base on one face from s0 to s1: rubber with an eased top edge, the floor itself run up the
+ * wall as an integral cove (with its curve into the floor as a facet), or tile. The face against
+ * the wall and the floor are hidden.
+ */
+function baseStrip(ctx, F, side, ht, b, s0, s1) {
+  const B = ctx.main.get(b.mat, false);
+  const faces = ['top', 's0', 's1', side > 0 ? 'pu' : 'nu'];
+  if (side > 0) rbox(ctx, F, B, s0, s1, ht, ht + b.out, 0, b.h, b.r, { faces });
+  else rbox(ctx, F, B, s0, s1, -ht - b.out, -ht, 0, b.h, b.r, { faces });
+  if (!b.fillet) return;
+  const c = b.fillet, face = side * (ht + b.out), foot = side * (ht + b.out + c);
+  const P = (s, u, y) => [F.o.x + F.d.x * s + F.n.x * u, y, F.o.y + F.d.y * s + F.n.y * u];
+  const n = [F.n.x * side * Math.SQRT1_2, Math.SQRT1_2, F.n.y * side * Math.SQRT1_2];
+  quad(B, P(s0, foot, 0.001), P(s1, foot, 0.001), P(s1, face, c), P(s0, face, c), n, s0, 0, s1, c * Math.SQRT2);
+}
+
+/**
+ * Pieces of [s0, s1] along one side of a wall, each with the finish of the space it looks into
+ * (spaceFinish); neighbors whose finishes give the same key(fin) are joined.
+ */
+function sidePieces(ctx, info, s0, s1, side, key) {
+  const out = [];
+  for (const run of info.sides) {
+    const a = Math.max(s0, run.s0), b = Math.min(s1, run.s1);
+    if (b - a < 1e-6) continue;
+    const fin = spaceFinish(ctx, side > 0 ? run.pu : run.nu), k = key(fin);
+    const prev = out[out.length - 1];
+    if (prev && prev.key === k && Math.abs(prev.s1 - a) < 1e-6) prev.s1 = b;
+    else out.push({ s0: a, s1: b, fin, key: k });
+  }
+  return out;
+}
+
+/** The space side `side` of a wall (+1 along F.n) looks into at s. */
+function spaceOnSide(info, s, side) {
+  const run = info.sides.find((r) => s <= r.s1) ?? info.sides[info.sides.length - 1];
+  return side > 0 ? run.pu : run.nu;
+}
+
+/**
+ * A space's wall finishes as builder materials, made once per build: its wall finish, the wainscot
+ * ({ height, mat, cap }), the base ({ h, out, r, fillet, mat, key }) and its wall protection. The
+ * untraced building area and the outdoors (null) take painted walls and a rubber base.
+ */
+function spaceFinish(ctx, space) {
+  if (!space) return (ctx.plainFinish ??= makeFinish(ctx, {}));
+  return (space.finish ??= makeFinish(ctx, space.room || {}));
+}
+
+function makeFinish(ctx, r) {
+  const { kit, mats: M } = ctx;
+  const ws = WAINSCOTS[r.wainscot];
+  const wainscot = ws && ws.height > 0
+    ? { height: ws.height, mat: kit.wallMaterial(r.wainscot, r.wainscotColor), cap: WAINSCOT_CAP[r.wainscot] }
+    : null;
+  const kind = Object.hasOwn(BASES, r.base) ? r.base : 'rubber';
+  let base = null;
+  if (kind !== 'none') {
+    // An integral cove is the floor run up the wall; a tile base is cut from a tile floor, else porcelain.
+    const tileFloor = TILE_BASES.includes(r.floor);
+    const mat = kind === 'cove' ? kit.floorMaterial(r.floor, r.floorColor, { perMeter: true })
+      : kind === 'tile' ? kit.floorMaterial(tileFloor ? r.floor : 'tile', tileFloor ? r.floorColor : null, { perMeter: true })
+        : r.baseColor ? kit.material(r.baseColor, { roughness: 0.62 }) : M.base;
+    base = { ...BASE[kind], h: BASES[kind].height, mat };
+    base.key = `${mat.uuid}|${base.h}|${base.out}`;
+  }
+  return { wall: kit.wallMaterial(r.wall || 'paint', r.wallColor), wainscot, base, guard: r.guard || 'none' };
+}
+
+/**
+ * Wall protection and wainscot caps on the faces of a wall that look into a room, in what each
+ * room calls for: corner guards at outside corners and around free wall ends, a crash rail or a
+ * handrail on brackets along the wall (short of openings and outside corners, where a handrail
+ * returns to the wall), and a cap along the top of a wainscot.
+ */
+function wallTrim(ctx, info) {
+  const { w, F, inner, ext, ends, L, index } = info;
+  const H = w.height, ht = w.thickness / 2;
+  const first = -ext.a, last = L + ext.b;
+  // A free end stands in the open: it joins no wall and ends in none (a tee need not split the wall it meets).
+  const free = {};
+  for (const end of ['a', 'b']) {
+    const e = ends[end], p = pointOnWall(w, end === 'a' ? -0.02 : L + 0.02);
+    free[end] = !e.corner && !e.tee && e.ext === 0 && ctx.wallTop(p, (n) => (n === index ? 0 : 1)) === 0;
+  }
+  const convex = (end, side) => free[end] || (ends[end].corner && ends[end].side !== side);
+  const sides = [1, -1].filter((side) => inner === 0 || side === inner);
+  const P = (side, u) => (side > 0 ? [ht + u[0], ht + u[1]] : [-ht - u[1], -ht - u[0]]);
+  const outer = (side) => (side > 0 ? 'pu' : 'nu');
+
+  // Corner guards: an angle on each face at an outside corner, over the base up to GUARD.h; around a
+  // free end, both faces and the end. Each leg runs past the corner by its gauge so the legs meet.
+  const gh = Math.min(GUARD.h, H - 0.05);
+  for (const end of ['a', 'b']) {
+    const at = end === 'a' ? first : last, inward = end === 'a' ? 1 : -1;
+    const legs = sides.filter((side) => convex(end, side)).map((side) => ({ side, fin: spaceFinish(ctx, spaceOnSide(info, at + inward * 0.01, side)) }));
+    if (!legs.some(({ fin }) => fin.guard !== 'none')) continue;
+    const B = ctx.main.get(ctx.mats.guard);
+    const s0 = Math.min(at - inward * GUARD.t, at + inward * GUARD.leg), s1 = Math.max(at - inward * GUARD.t, at + inward * GUARD.leg);
+    const inside = end === 'a' ? 's1' : 's0';
+    // Around a free end the guard wraps both faces, whichever room asks for it.
+    const y0 = free[end] ? Math.max(...legs.map(({ fin }) => fin.base?.h ?? 0)) : 0;
+    for (const { side, fin } of legs) {
+      const bottom = free[end] ? y0 : fin.base?.h ?? 0;
+      if ((free[end] || fin.guard !== 'none') && gh - bottom > 0.3) {
+        rbox(ctx, F, B, s0, s1, ...P(side, [0, GUARD.t]), bottom, gh, 0.0012, { faces: [outer(side), inside, 'top'] });
+      }
+    }
+    if (free[end] && gh - y0 > 0.3) {
+      const c0 = end === 'a' ? at - GUARD.t : at, c1 = end === 'a' ? at : at + GUARD.t;
+      box(F, { [end === 'a' ? 's0' : 's1']: B, top: B }, c0, c1, -ht - GUARD.t, ht + GUARD.t, y0, gh);
+    }
+  }
+
+  for (const side of sides) {
+    // Stretches where the wall is solid over a band of height, split by the room each looks into.
+    // Ends at an opening, an outside corner or a free end stop in the open; the others run into a neighbor.
+    const along = (y0, y1, key, draw) => {
+      if (y1 > H - 0.05) return;
+      for (const [a, b] of solidRuns(info, y0, y1)) {
+        const pieces = sidePieces(ctx, info, a, b, side, key).filter((p) => p.key);
+        for (const p of pieces) {
+          const open0 = p.s0 > first + 1e-6 ? p.s0 === a : convex('a', side);
+          const open1 = p.s1 < last - 1e-6 ? p.s1 === b : convex('b', side);
+          draw(p, open0, open1);
+        }
+      }
+    };
+    along(RAIL.y0, RAIL.y1, (fin) => (fin.guard === 'rail' ? 'rail' : ''), (p, open0, open1) => {
+      const s0 = p.s0 + (open0 ? RAIL.gap : 0), s1 = p.s1 - (open1 ? RAIL.gap : 0);
+      if (s1 - s0 < 0.2) return;
+      rbox(ctx, F, ctx.main.get(ctx.mats.rail), s0, s1, ...P(side, [0, RAIL.out]), RAIL.y0, RAIL.y1, RAIL.r, { faces: [outer(side), 's0', 's1', 'top', 'bottom'] });
+    });
+    const hr = HANDRAIL, hy0 = hr.y - hr.size / 2, hy1 = hr.y + hr.size / 2;
+    along(hy0, hy1, (fin) => (fin.guard === 'handrail' ? 'handrail' : ''), (p, open0, open1) => {
+      const s0 = p.s0 + (open0 ? hr.gap : 0), s1 = p.s1 - (open1 ? hr.gap : 0);
+      if (s1 - s0 < 0.3) return;
+      const wood = ctx.main.get(ctx.mats.handrail), steel = ctx.main.get(ctx.mats.bracket);
+      const off = [hr.standoff, hr.standoff + hr.size];
+      rbox(ctx, F, wood, s0, s1, ...P(side, off), hy0, hy1, hr.size * 0.4, { faces: ['pu', 'nu', 's0', 's1', 'top', 'bottom'] });
+      // Returns to the wall where the rail stops in the open, brackets about every HANDRAIL.bracket m between.
+      if (open0) rbox(ctx, F, wood, s0, s0 + hr.size, ...P(side, [0, hr.standoff]), hy0, hy1, hr.size * 0.4, { faces: ['s0', 's1', 'top', 'bottom'] });
+      if (open1) rbox(ctx, F, wood, s1 - hr.size, s1, ...P(side, [0, hr.standoff]), hy0, hy1, hr.size * 0.4, { faces: ['s0', 's1', 'top', 'bottom'] });
+      const n = Math.max(2, Math.ceil((s1 - s0 - 0.3) / hr.bracket) + 1);
+      for (let k = 0; k < n; k++) {
+        const s = s0 + 0.15 + ((s1 - s0 - 0.3) * k) / (n - 1);
+        box(F, all(steel), s - 0.006, s + 0.006, ...P(side, [0, hr.standoff + hr.size / 2]), hy0 - 0.035, hy0 + 0.004);
+      }
+    });
+    // A cap along the top of a wainscot, wrapping outside corners like the base.
+    const capKey = (fin) => (fin.wainscot?.cap ? `${fin.wainscot.mat.uuid}|${fin.wainscot.height}` : '');
+    for (const height of new Set(sidePieces(ctx, info, first, last, side, capKey).filter((p) => p.key).map((p) => p.fin.wainscot.height))) {
+      along(height - 0.03, height + 0.03, (fin) => (fin.wainscot?.height === height ? capKey(fin) : ''), (p) => {
+        const { cap, mat } = p.fin.wainscot;
+        const s0 = p.s0 - (p.s0 <= first + 1e-6 && convex('a', side) ? cap.out : 0);
+        const s1 = p.s1 + (p.s1 >= last - 1e-6 && convex('b', side) ? cap.out : 0);
+        rbox(ctx, F, ctx.main.get(mat), s0, s1, ...P(side, [0, cap.out]), height - cap.h / 2, height + cap.h / 2, Math.min(0.004, cap.out / 2), { faces: [outer(side), 's0', 's1', 'top', 'bottom'] });
+      });
+    }
+  }
+}
+
+/** Stretches [s0, s1] of a wall where it is solid from y0 to y1: clear of every opening and its casing. */
+function solidRuns({ w, L, ext, spans }, y0, y1) {
+  const runs = [];
+  let start = -ext.a;
+  for (const sp of spans) {
+    const [lo, hi] = openRange(sp.o, w.height);
+    if (hi <= y0 || lo >= y1) continue;
+    const pad = sp.o.type === 'window' || w.kind === 'partial' ? 0 : CASING.out;
+    runs.push([start, sp.start - pad]);
+    start = sp.end + pad;
+  }
+  runs.push([start, L + ext.b]);
+  return runs.filter(([a, b]) => b - a > 0.05);
 }
 
 function floorShade(ctx, F, side, face, s0, s1, fade0, fade1, width) {
@@ -1938,12 +2148,13 @@ function windowOpening(ctx, info, sp, f, get) {
   const [j0, j1] = joins(sp);
   if (sill > 0.002) wallBox(ctx, info, get, { ...f, top: M.paint }, start - j0, end + j1, ht, 0, sill);
   wallBox(ctx, info, get, { ...f, bottom: M.paint }, start - j0, end + j1, ht, top, H);
-  // Reveals where the wall beside the window is solid; beside another opening only where that one is not open.
-  const paint = B.get(M.paint);
+  // Reveals where the wall beside the window is solid; beside another opening only where that one is
+  // not open. They take the finish of the room the window looks into (between rooms, the one on pu).
+  const reveal = faceBands(ctx, spaceOnSide(info, (start + end) / 2, inner || 1), M.paint, H);
   for (const [nb, s, face] of [[sp.before, start, 's1'], [sp.after, end, 's0']]) {
     const [n0, n1] = nb ? openRange(nb.o, H) : [0, 0];
     for (const [ya, yb] of [[sill, Math.min(top, n0)], [Math.max(sill, n1), top]]) {
-      if (yb - ya > 1e-3) box(F, { [face]: paint }, face === 's1' ? s - JOIN : s, face === 's1' ? s : s + JOIN, -ht, ht, ya, yb);
+      if (yb - ya > 1e-3) bandedFace(F, get, face, reveal, face === 's1' ? s - JOIN : s, face === 's1' ? s : s + JOIN, -ht, ht, ya, yb);
     }
   }
 
@@ -2036,11 +2247,12 @@ function partialWall(ctx, info) {
   const { w, L, F, ext, spans } = info;
   const { main: B, mats: M } = ctx;
   const ht = w.thickness / 2, H = w.height;
-  const paint = B.get(M.paint);
+  const get = (m) => B.get(m);
   const cap = B.get(M.cap);
   const piece = (s0, s1, first, last) => {
     if (s1 - s0 < 1e-3) return;
-    box(F, endFaces(ctx, info, { pu: paint, nu: paint, s0: paint, s1: paint }, first, last, H), s0, s1, -ht, ht, 0, H);
+    // Each face in the finish of the room it looks into; end faces where no neighbor hides them.
+    wallBox(ctx, info, get, { pu: M.paint, nu: M.paint }, s0, s1, ht, 0, H, { a: first ? cover(ctx, info, 'a') : 0, b: last ? cover(ctx, info, 'b') : 0 });
     // Wood cap with rounded edges; ends buried in a neighbor stay square.
     const ends = endFaces(ctx, info, all(cap), first, last, H + 0.03);
     const faces = Object.keys(ends).filter((k) => ends[k]);
@@ -2053,6 +2265,7 @@ function partialWall(ctx, info) {
   });
   piece(cursor, L + ext.b, spans.length === 0, true);
   floorTrim(ctx, info, floorRuns(info, false));
+  wallTrim(ctx, info);
 }
 
 /**
@@ -2126,7 +2339,7 @@ function horizontalPolygon(b, contour, faces, y, up, uvMeters) {
 
 function buildFloors(ctx) {
   ctx.rooms.forEach((rm, i) => {
-    const mat = ctx.kit.floorMaterial(rm.floor);
+    const mat = ctx.kit.floorMaterial(rm.floor, rm.room.floorColor);
     ctx.floors.at(rm.centroid.x, rm.centroid.y);
     horizontalPolygon(ctx.floors.get(mat, false, true), rm.contour, rm.faces, (i % 4) * 0.0005, true, ctx.kit.floorMeters(rm.floor));
   });
@@ -2218,9 +2431,10 @@ function buildCeilings(ctx) {
       openCeiling(ctx, { ...region, height: rm.height });
       return;
     }
-    const tile = rm.ceiling === 'tile';
+    // Acoustic and washable tile share the 24 in grid and its troffers; drywall takes downlights.
+    const tile = rm.ceiling === 'tile' || rm.ceiling === 'clean';
     // Grown slightly so neighbors overlap without cracks; ceilY staggers them so the overlap never z-fights.
-    horizontalPolygon(B.get(tile ? ctx.mats.tile : ctx.mats.drywall, false, false), rm.grown.contour, rm.grown.faces, rm.ceilY, false, 1);
+    horizontalPolygon(B.get(ctx.mats[tile ? rm.ceiling : 'drywall'], false, false), rm.grown.contour, rm.grown.faces, rm.ceilY, false, 1);
     if (tile) tileFixtures(ctx, region, fixtureGrid(ctx, region, TROFFER_STEP, TILE / 2 + 0.1, true));
     else drywallFixtures(ctx, region, fixtureGrid(ctx, region, DOWNLIGHT_STEP, 0.35, false));
   });
@@ -2239,8 +2453,8 @@ function bulkheads(ctx) {
   const B = ctx.ceil;
   // Vertical faces take shadows, so the sun never reaches them through the roof.
   const band = all(B.get(ctx.mats.drywall, false, true)), dark = all(B.get(ctx.mats.deck, false, true));
-  // Above a wall the band carries the wall on up, in its paint.
-  const onWall = all(B.get(ctx.mats.paint, false, true));
+  // Above a wall the band carries the wall on up, in the finish of the higher space it faces.
+  const onWall = (space) => all(B.get(spaceFinish(ctx, space).wall, false, true));
   const topOf = (space) => (space.ceiling === 'open' ? space.deck : space.ceilY);
   // Walls count with the part that rises above them (upperWall).
   const reach = (n, p) => {
@@ -2256,7 +2470,7 @@ function bulkheads(ctx) {
       let run = null;
       const flushRun = () => {
         if (!run) return;
-        const { s0, s1, lo, hi, from, exposed, closes } = run;
+        const { s0, s1, lo, hi, from, exposed, closes, upper } = run;
         const fascia = exposed ? Math.min(hi, from + 0.1) : hi;
         if (from === lo) {
           box(F, band, s0, s1, -0.01, 0.01, lo, fascia);
@@ -2264,7 +2478,7 @@ function bulkheads(ctx) {
           const r = run.lowerOut ? -sign : sign;
           box(F, band, s0, s1, Math.min(0, r * 0.14), Math.max(0, r * 0.14), lo - 0.004, lo + 0.002);
         } else if (!exposed) {
-          box(F, onWall, s0, s1, -0.01, 0.01, from, hi);
+          box(F, onWall(upper), s0, s1, -0.01, 0.01, from, hi);
         }
         if (closes) box(F, dark, s0, s1, -0.01, 0.01, from === lo ? fascia : from, hi);
         run = null;
@@ -2280,10 +2494,10 @@ function bulkheads(ctx) {
         // The dark part closes the room's own envelope outdoors, but between spaces only a modest step.
         const closes = exposed && (!other || hi - lo <= DARK_STEP_MAX);
         const emit = hi - lo > 0.01 && (other?.points ? own < top : true) && wallTop < hi - 0.05 && (from === lo || !exposed || closes);
-        const key = emit ? `${lo.toFixed(3)}|${hi.toFixed(3)}|${from.toFixed(3)}` : null;
+        const key = emit ? `${lo.toFixed(3)}|${hi.toFixed(3)}|${from.toFixed(3)}|${upper?.index}` : null;
         if (!emit || run?.key !== key) flushRun();
         if (!emit) continue;
-        if (!run) run = { key, s0, s1, lo, hi, from, exposed, closes, lowerOut: own > top };
+        if (!run) run = { key, s0, s1, lo, hi, from, exposed, closes, upper, lowerOut: own > top };
         run.s1 = s1;
       }
       flushRun();
@@ -2325,8 +2539,8 @@ function generalCeiling(ctx) {
     const ri = mask.room[k];
     return ri < 0 || (rooms[ri].ceiling !== 'open' && Math.abs(rooms[ri].height - H) < 0.01);
   });
-  const tile = settings.ceiling === 'tile';
-  const b = ctx.ceil.get(tile ? ctx.mats.tile : ctx.mats.drywall, false, false);
+  const tile = settings.ceiling === 'tile' || settings.ceiling === 'clean';
+  const b = ctx.ceil.get(ctx.mats[tile ? settings.ceiling : 'drywall'], false, false);
   for (const r of maskRects(mask, plane)) rectQuad(b, r, H, DOWN);
   if (tile) tileFixtures(ctx, region, fixtureGrid(ctx, region, TROFFER_STEP, TILE / 2 + 0.1, true));
   else drywallFixtures(ctx, region, fixtureGrid(ctx, region, DOWNLIGHT_STEP, 0.35, false));
@@ -3574,7 +3788,7 @@ function planMaterial(kit, m) {
 // ---- Items ---------------------------------------------------------------------
 
 /**
- * Items are built once per distinct (type, size, color) as a template of mesh parts, then stamped
+ * Items are built once per distinct (type, size, color, top) as a template of mesh parts, then stamped
  * into the buckets with each instance's placement. Templates with lights, lines or skinned meshes
  * are rebuilt per instance so those objects stay unique.
  */
@@ -3585,7 +3799,7 @@ function buildItems(ctx) {
   for (const item of ctx.plan.items) {
     const def = getItem(item.type);
     const dims = itemSize(item);
-    const key = `${item.type}|${dims.w}|${dims.d}|${dims.h}|${item.color ?? ''}`;
+    const key = `${item.type}|${dims.w}|${dims.d}|${dims.h}|${item.color ?? ''}|${item.top ?? ''}`;
     let parts = templates.get(key);
     if (parts === undefined) templates.set(key, (parts = itemTemplate(ctx, buildItem(ctx, def, dims, item))));
     const rotation = (-normDeg(item.rotation || 0) * Math.PI) / 180;
@@ -3805,7 +4019,7 @@ function boxBlur(src, nx, nz, h) {
 
 function buildItem(ctx, def, dims, item) {
   try {
-    const obj = def.build(ctx.kit, { ...dims, color: item.color });
+    const obj = def.build(ctx.kit, { ...dims, color: item.color, top: item.top });
     if (obj?.isObject3D) return obj;
     throw new Error('build() did not return an Object3D');
   } catch (err) {

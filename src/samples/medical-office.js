@@ -60,23 +60,23 @@ export function buildMedicalOffice() {
   const south = L.wall([24, 37], [72, 37]);
   for (const x of [35, 46]) L.wall([x, 37], [x, 50]);
 
-  // Rooms
-  L.room('Business office', [0, 0, 24, 19], 'carpet');
-  L.room('Waiting', [0, 19, 24, 50], 'vinyl', { ceiling: 'drywall' });
-  ['Exam 1', 'Exam 2', 'Exam 3', 'Exam 4'].forEach((name, i) => L.room(name, [24 + 11 * i, 0, 35 + 11 * i, 13], 'rubber'));
-  L.room('Physician office', [68, 0, 80, 13], 'carpet');
-  L.room('Physician office', [80, 0, 92, 13], 'carpet');
-  L.polygonRoom('Corridor', [[24, 13], [92, 13], [92, 31], [86, 31], [86, 19], [24, 19]], 'vinyl');
-  L.polygonRoom('Corridor', [[24, 19], [30, 19], [30, 31], [72, 31], [72, 37], [24, 37]], 'vinyl');
-  L.room('Nurse station', [30, 19, 42, 31], 'vinyl');
-  L.room('Staff break', [42, 19, 58, 31], 'vinyl');
-  L.room('Restroom', [58, 19, 65, 31], 'tile', { ceiling: 'drywall' });
-  L.room('Restroom', [65, 19, 72, 31], 'tile', { ceiling: 'drywall' });
-  L.room('CT control', [72, 19, 86, 31], 'vinyl');
-  L.room('Exam 5', [24, 37, 35, 50], 'rubber');
-  L.room('Exam 6', [35, 37, 46, 50], 'rubber');
-  L.room('Treatment', [46, 37, 72, 50], 'rubber');
-  L.room('Imaging', [72, 31, 92, 50], 'rubber');
+  // Rooms, each in the finish package for its use
+  L.room('Business office', [0, 0, 24, 19], null, { finish: 'office' });
+  L.room('Waiting', [0, 19, 24, 50], null, { finish: 'waiting' });
+  ['Exam 1', 'Exam 2', 'Exam 3', 'Exam 4'].forEach((name, i) => L.room(name, [24 + 11 * i, 0, 35 + 11 * i, 13], null, { finish: 'exam' }));
+  L.room('Physician office', [68, 0, 80, 13], null, { finish: 'office' });
+  L.room('Physician office', [80, 0, 92, 13], null, { finish: 'office' });
+  L.polygonRoom('Corridor', [[24, 13], [92, 13], [92, 31], [86, 31], [86, 19], [24, 19]], null, { finish: 'corridor' });
+  L.polygonRoom('Corridor', [[24, 19], [30, 19], [30, 31], [72, 31], [72, 37], [24, 37]], null, { finish: 'corridor' });
+  L.room('Nurse station', [30, 19, 42, 31], null, { finish: 'nurse' });
+  L.room('Staff break', [42, 19, 58, 31], null, { finish: 'breakroom' });
+  L.room('Restroom', [58, 19, 65, 31], null, { finish: 'restroom' });
+  L.room('Restroom', [65, 19, 72, 31], null, { finish: 'restroom' });
+  L.room('CT control', [72, 19, 86, 31], null, { finish: 'imaging' });
+  L.room('Exam 5', [24, 37, 35, 50], null, { finish: 'exam' });
+  L.room('Exam 6', [35, 37, 46, 50], null, { finish: 'exam' });
+  L.room('Treatment', [46, 37, 72, 50], null, { finish: 'procedure' });
+  L.room('Imaging', [72, 31, 92, 50], null, { finish: 'imaging' });
 
   // Waiting
   L.item('reception-desk', 12, 23.7, 0, { w: 12 });

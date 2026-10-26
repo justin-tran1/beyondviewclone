@@ -436,6 +436,12 @@ body[data-mode='walk'] .panel { display: none; }
 .swatch-default::after { content: ''; position: absolute; left: 50%; top: 3px; bottom: 3px; width: 1.5px; background: var(--cement); transform: translateX(-50%) rotate(45deg); }
 .swatch[aria-checked='true'] { box-shadow: 0 0 0 2px var(--white), 0 0 0 4px var(--cbre-green); }
 .swatch:hover:not([aria-checked='true']) { box-shadow: inset 0 0 0 1px rgba(1, 42, 45, 0.16), 0 0 0 3px var(--hover); }
+.prop-swatches { grid-column: 2; padding: 8px 0 2px 2px; }
+/* Other color: a color wheel, with the color chosen in its middle when no swatch has it. */
+.swatch-custom { background: conic-gradient(#e0605a, #e3c35a, #74c27a, #5ab3d6, #8a7ad6, #d66fb5, #e0605a); cursor: pointer; }
+.swatch-custom.is-custom { background: radial-gradient(circle, var(--swatch) 0 45%, transparent 47%), conic-gradient(#e0605a, #e3c35a, #74c27a, #5ab3d6, #8a7ad6, #d66fb5, #e0605a); box-shadow: 0 0 0 2px var(--white), 0 0 0 4px var(--cbre-green); }
+.swatch-input { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.swatch-custom:focus-within { outline: 2px solid var(--cbre-green); outline-offset: 2px; }
 
 .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .stat { display: flex; flex-direction: column; gap: 1px; padding: 8px 10px; border-radius: var(--radius); background: var(--tint); min-width: 0; }

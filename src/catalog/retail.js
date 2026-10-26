@@ -364,7 +364,7 @@ function fixed(def) {
   return {
     ...def,
     build(kit, o = {}) {
-      const g = build(kit, { w: def.w, d: def.d, h: def.h, color: o.color });
+      const g = build(kit, { w: def.w, d: def.d, h: def.h, color: o.color, top: o.top });
       const s = [(o.w || def.w) / def.w, (o.h || def.h) / def.h, (o.d || def.d) / def.d];
       if (s.some((v) => Math.abs(v - 1) > 1e-6)) g.scale.set(...s);
       return g;

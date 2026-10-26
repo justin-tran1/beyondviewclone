@@ -20,7 +20,8 @@
 // row (or column) it crosses as the same short dark section, so the detector looks for sections
 // of one width that repeat at the same place over many rows: text, furniture, dimension lines,
 // door swings and hatching do not. Doors are gaps between wall ends with a quarter circle drawn
-// from one jamb; their widths, taken as 3'-0" doors, give the drawing's scale.
+// from one jamb; their widths, taken as 3'-0" doors, give the drawing's scale. Windows are gaps
+// with lines across, or stretches of an outside wall drawn as its faces and glass lines.
 
 const DOOR_WIDTH = 0.9144; // m: the 3'-0" door most commercial plans use, for the scale
 const PARTITION = 0.125; // m: a stud partition with board both sides, the scale without doors
@@ -77,6 +78,7 @@ export function traceFloorPlan(image, { onProgress = null, debug = false } = {})
   segs = dropShort(segs, gaps, T);
   snap('short');
   segs = dropStrays(segs, T, gaps);
+  segs = dropOutliers(segs, T);
   const openings = placeOpenings(gaps, segs, T);
 
   const scale = drawingScale(openings, segs, T, W, H);
@@ -96,6 +98,15 @@ export function traceFloorPlan(image, { onProgress = null, debug = false } = {})
     index[i] = walls.length;
     const [a, b] = segEnds(s);
     walls.push({ a, b, thickness: s.t, exterior: exterior[i] });
+  });
+  // Windows the wall tracks ran on through, drawn as lines along the wall (see findWindows).
+  segs.forEach((s, i) => {
+    if (!keep[i] || !exterior[i]) return;
+    for (const g of findWindows(s, ink, W, H, T, mpp)) {
+      const mid = (g.g0 + g.g1) / 2, width = g.g1 - g.g0;
+      if (openings.some((o) => o.wall === i && Math.abs(o.mid - mid) < (o.width + width) / 2)) continue;
+      openings.push({ wall: i, type: 'window', offset: mid - s.s0, width, hinge: 'start', side: 1, mid });
+    }
   });
   // Lines across a gap in an interior wall are the wall carrying on past something drawn against
   // it (casework, a column); only outside walls get windows.
@@ -563,6 +574,10 @@ function resolveGaps(segs, ink, faint, W, H, T, log = null) {
   // A stub frames a door only standing off a wall, and only across a door's width.
   const anchored = (s) => !s.stub || s.join0 || s.join1;
   const doorMin = 2.5 * T, doorMax = 9 * T;
+  // An opening found already from another track along the same wall (a column or a dimension
+  // drawn against its face) is not a second one.
+  const taken = (A, t, a0, a1) => found.some((f) => f.axis === A.axis && Math.abs(f.c - A.c) <= 0.75 * (f.t + t)
+    && Math.min(f.g1, a1) - Math.max(f.g0, a0) > 0.5 * Math.min(f.g1 - f.g0, a1 - a0));
   for (const A of segs) {
     if (A.dead || !anchored(A)) continue;
     for (const end of [0, 1]) {
@@ -609,7 +624,8 @@ function resolveGaps(segs, ink, faint, W, H, T, log = null) {
         const t = best.B.axis === A.axis ? Math.max(A.t, best.B.t) : A.t;
         // The opening itself starts where the wall's band empties: a stub too short to track (the
         // return at a corner, a jamb) still stands between the wall it ends at and the door.
-        const [o0, o1] = openingSpan(ink, W, H, A.axis, A.c, t, g0, g1, end === 1);
+        const [o0, o1] = openingSpan(ink, W, H, A.axis, A.c, t, g0, g1, end === 1, T);
+        if (taken(A, t, o0, o1)) continue;
         const door = o1 - o0 >= doorMin ? doorAt(faint, W, H, A.axis, A.c, o0, o1, t) : null;
         const window = door ? null : windowAt(ink, W, H, A.axis, A.c, g0, g1, t, T);
         log?.push({ axis: A.axis, c: A.c, g0, g1, t, to: best.B.axis === A.axis ? 'collinear' : 'across', door: door?.type || null, window: !!window, B: [best.B.axis, best.B.c, best.B.s0, best.B.s1, best.B.t, !!best.B.stub], A: [A.s0, A.s1, !!A.stub] });
@@ -663,7 +679,7 @@ function joinGap(A, end, { B, at }) {
  * which is the far jamb. Measuring to that line rather than to the wall found across keeps the
  * opening right however that wall's lines were paired (two walls built back to back, say).
  */
-function openingSpan(ink, W, H, axis, c, t, g0, g1, fromStart) {
+function openingSpan(ink, W, H, axis, c, t, g0, g1, fromStart, T) {
   const v0 = Math.round(c - t / 2), v1 = Math.round(c + t / 2) - 1;
   const at = (u, v) => {
     const x = axis === 'v' ? v : u, y = axis === 'v' ? u : v;
@@ -677,21 +693,31 @@ function openingSpan(ink, W, H, axis, c, t, g0, g1, fromStart) {
       n++;
       if (at(u, v)) hit++;
     }
-    const face = (v) => at(u, v - 1) || at(u, v) || at(u, v + 1);
-    return hit >= 0.6 * n && face(v0) && face(v1);
+    return hit >= 0.6 * n && face(u, v0) && face(u, v1);
   };
+  const face = (u, v) => at(u, v - 1) || at(u, v) || at(u, v + 1);
+  // Open band: neither face drawn and nothing across, as in the opening itself.
+  const open = (u) => !face(u, v0) && !face(u, v1) && !full(u);
   const most = 0.35 * (g1 - g0);
   let a = Math.ceil(g0), b = Math.floor(g1) - 1;
+  // The first line across from u on in direction dir. A mark no wider than a wall with open band
+  // past it (a tag's letter set on the wall's line) lies inside the opening and is passed over.
+  const jamb = (u, dir) => {
+    for (;;) {
+      while (u >= a && u <= b && !full(u)) u += dir;
+      let w = u;
+      while (w >= a && w <= b && full(w)) w += dir;
+      const past = [w, w + dir, w + 2 * dir];
+      if (Math.abs(w - u) > T || !past.every((x) => x >= a && x <= b && open(x))) return u;
+      u = w;
+    }
+  };
   if (fromStart) {
     while (a - g0 < most && full(a)) a++;
-    let u = a;
-    while (u <= b && !full(u)) u++;
-    b = u - 1;
+    b = jamb(a, 1) - 1;
   } else {
     while (g1 - b < most && full(b)) b--;
-    let u = b;
-    while (u >= a && !full(u)) u--;
-    a = u + 1;
+    a = jamb(b, -1) + 1;
   }
   return [a, b + 1];
 }
@@ -823,6 +849,74 @@ function windowAt(ink, W, H, axis, c, g0, g1, t, T) {
 }
 
 /**
+ * Windows along an outside wall that its track ran on through: stretches at least 0.45 m long
+ * where the wall is drawn as three or more thin lines along it (its faces and the glass between)
+ * rather than as its band or pair of lines, or, in a solid wall, as two. The glass lines keep
+ * their place across the band all along a window, which hatching drawn in a wall does not, and a
+ * window ends at jambs, lines or solid wall across the band; the edge of a cabinet or shelf set
+ * against the wall makes a line along it too, but its ends only touch the inside face.
+ */
+function findWindows(s, ink, W, H, T, mpp) {
+  const v0 = Math.round(s.c - s.t / 2) - 1, v1 = Math.round(s.c + s.t / 2);
+  const n = v1 - v0 + 1;
+  const thin = Math.max(3, Math.round(0.3 * s.t));
+  const at = (u, v) => {
+    const x = s.axis === 'v' ? v : u, y = s.axis === 'v' ? u : v;
+    return x >= 0 && y >= 0 && x < W && y < H && ink[y * W + x];
+  };
+  const u0 = Math.ceil(s.s0), u1 = Math.floor(s.s1);
+  const face = (u, v) => at(u, v - 1) || at(u, v) || at(u, v + 1);
+  const across = (u) => {
+    let hit = 0;
+    for (let v = v0 + 1; v < v1; v++) if (at(u, v)) hit++;
+    return hit >= 0.6 * (n - 2) && face(u, v0 + 1) && face(u, v1 - 1);
+  };
+  const jamb = (u, dir) => across(u) || across(u + dir) || across(u + 2 * dir) || across(u + 3 * dir);
+  const lines = [], inner = [];
+  let solid = 0;
+  for (let u = u0; u < u1; u++) {
+    let hit = 0, start = -1, wide = false;
+    const centers = [];
+    for (let v = v0; v <= v1 + 1; v++) {
+      const on = v <= v1 && at(u, v);
+      if (on) hit++;
+      if (on && start < 0) start = v;
+      if (!on && start >= 0) {
+        if (v - start > thin) wide = true;
+        centers.push((start + v - 1) / 2);
+        start = -1;
+      }
+    }
+    if (hit >= 0.75 * n) solid++;
+    lines.push(!wide && hit <= 0.6 * n ? centers.length : 0);
+    inner.push(centers.length >= 3 ? centers[1] : centers.length === 2 ? centers[0] : NaN);
+  }
+  const need = solid >= 0.5 * lines.length ? 2 : 3;
+  const minLen = mpp ? 0.45 / mpp : 4 * T;
+  const out = [];
+  for (let i = 0; i < lines.length;) {
+    if (lines[i] < need) {
+      i++;
+      continue;
+    }
+    // A stretch of glass, over gaps of a pixel or two (a blurred or broken line).
+    let last = i, miss = 0;
+    for (let j = i + 1; j < lines.length && miss < 3; j++) {
+      if (lines[j] >= need) {
+        last = j;
+        miss = 0;
+      } else miss++;
+    }
+    const glass = [];
+    for (let k = i; k <= last; k++) if (lines[k] >= need && Number.isFinite(inner[k])) glass.push(inner[k]);
+    const g0 = u0 + i, g1 = u0 + last + 1;
+    if (g1 - g0 >= minLen && Math.max(...glass) - Math.min(...glass) <= 2 && jamb(g0 - 1, -1) && jamb(g1, 1)) out.push({ g0, g1 });
+    i = last + 1;
+  }
+  return out;
+}
+
+/**
  * Keep the walls that form the building: groups of walls joined end to wall that hold a door or
  * window and are worth a room, larger groups without one, and long walls on their own. Furniture,
  * casework and symbols drawn with double lines (chairs, sofas, tables, counters) make groups of
@@ -840,6 +934,46 @@ function dropStrays(segs, T, gaps) {
     const g = group[i];
     const enough = opened.has(g) ? 25 * T : Math.max(25 * T, 0.1 * largest);
     return total.get(g) >= enough || len(s) >= 30 * T;
+  });
+}
+
+/**
+ * Drop lines drawn around the plan rather than in it that pass for walls: a scale bar, a title's
+ * rule. They are groups of parallel walls apart from the building (the group with the most wall)
+ * and wholly outside its extent. A group with walls both ways may enclose space of its own, as a
+ * detached building does, and stays.
+ */
+function dropOutliers(segs, T) {
+  const group = groups(segs, T);
+  const total = new Map();
+  segs.forEach((s, i) => total.set(group[i], (total.get(group[i]) || 0) + len(s)));
+  let main = null;
+  for (const [g, L] of total) if (main === null || L > total.get(main)) main = g;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  segs.forEach((s, i) => {
+    if (group[i] !== main) return;
+    for (const p of segEnds(s)) {
+      x0 = Math.min(x0, p.x - s.t);
+      y0 = Math.min(y0, p.y - s.t);
+      x1 = Math.max(x1, p.x + s.t);
+      y1 = Math.max(y1, p.y + s.t);
+    }
+  });
+  const apart = (s) => {
+    const [a, b] = segEnds(s);
+    return Math.max(a.x, b.x) < x0 || Math.min(a.x, b.x) > x1 || Math.max(a.y, b.y) < y0 || Math.min(a.y, b.y) > y1;
+  };
+  const others = new Map();
+  segs.forEach((s, i) => {
+    if (group[i] === main) return;
+    const o = others.get(group[i]) || { apart: true, axes: new Set() };
+    o.apart &&= apart(s);
+    o.axes.add(s.axis);
+    others.set(group[i], o);
+  });
+  return segs.filter((s, i) => {
+    const o = others.get(group[i]);
+    return !o || !o.apart || o.axes.size > 1;
   });
 }
 
@@ -985,20 +1119,22 @@ function findRooms(segs, ink, W, H, T, mpp) {
   const outside = dilate(reach, nx, ny, r);
   for (let k = 0; k < N; k++) if (wall[k]) outside[k] = 0;
 
-  // Rooms: connected free cells inside.
+  // Rooms: connected free cells inside. A partition that stops just short of the wall it meets
+  // (a gap of up to about two wall thicknesses) does not join two rooms: they are told apart with
+  // the walls thickened by two cells, then each grows back over the free cells along its walls.
+  const free = (j) => !wall[j] && !outside[j];
+  const sealed = dilate(wall, nx, ny, 2);
   const label = new Int32Array(N).fill(-1);
-  const minCells = mpp ? MIN_ROOM / (mpp * mpp) / (cs * cs) : (6 * T * 6 * T) / (cs * cs);
-  const rooms = [];
   let id = 0;
   for (let k0 = 0; k0 < N; k0++) {
-    if (wall[k0] || outside[k0] || label[k0] >= 0) continue;
+    if (sealed[k0] || !free(k0) || label[k0] >= 0) continue;
     qh = qt = 0;
     label[k0] = id;
     queue[qt++] = k0;
     while (qh < qt) {
       const k = queue[qh++], x = k % nx;
       const visit = (j) => {
-        if (!wall[j] && !outside[j] && label[j] < 0) {
+        if (!sealed[j] && free(j) && label[j] < 0) {
           label[j] = id;
           queue[qt++] = j;
         }
@@ -1008,8 +1144,29 @@ function findRooms(segs, ink, W, H, T, mpp) {
       if (k >= nx) visit(k - nx);
       if (k < N - nx) visit(k + nx);
     }
-    const cells = queue.slice(0, qt);
     id++;
+  }
+  qh = qt = 0;
+  for (let k = 0; k < N; k++) if (label[k] >= 0) queue[qt++] = k;
+  while (qh < qt) {
+    const k = queue[qh++], x = k % nx;
+    const grow = (j) => {
+      if (free(j) && label[j] < 0) {
+        label[j] = label[k];
+        queue[qt++] = j;
+      }
+    };
+    if (x > 0) grow(k - 1);
+    if (x < nx - 1) grow(k + 1);
+    if (k >= nx) grow(k - nx);
+    if (k < N - nx) grow(k + nx);
+  }
+  const members = Array.from({ length: id }, () => []);
+  for (let k = 0; k < N; k++) if (label[k] >= 0) members[label[k]].push(k);
+
+  const minCells = mpp ? MIN_ROOM / (mpp * mpp) / (cs * cs) : (6 * T * 6 * T) / (cs * cs);
+  const rooms = [];
+  for (const cells of members) {
     if (cells.length < minCells || hatched(cells, ink, W, H, cs, nx, P)) {
       // Too small for a room, or hatched: poché, a shaft, a neighbor's space. It is not floor.
       if (cells.length >= minCells) for (const k of cells) outside[k] = 1;

@@ -61,6 +61,7 @@ const actions = {
   importImage: () => importImage(),
   replaceImage: () => importImage(null, { replace: true }),
   calibrate: startCalibration,
+  detectWalls: () => traceImage(),
   walkToCamera,
   removeImage,
 };
@@ -480,7 +481,10 @@ function chooseImageTarget() {
   });
 }
 
-/** The image as the plan's underlay. A replaced image keeps its place and spans the same width. */
+/**
+ * The image as the plan's underlay. A replaced image keeps its place and spans the same width, so
+ * it keeps any calibration and the plan traced from the old one.
+ */
 function underlayIn(plan, image) {
   const next = underlayFor(image);
   const old = plan.underlay;
@@ -488,6 +492,8 @@ function underlayIn(plan, image) {
   return {
     ...next, x: old.x, y: old.y, rotation: old.rotation, opacity: old.opacity, locked: old.locked,
     scale: old.width > 0 ? old.scale * (old.width / next.width) : next.scale,
+    ...(old.calibrated ? { calibrated: true } : {}),
+    ...(old.traced ? { traced: true } : {}),
   };
 }
 
@@ -529,6 +535,16 @@ async function importImage(file, { replace = false } = {}) {
   store.select(null);
   if (mode === 'walk') await setMode('plan', { focus: false });
   dismissImportHint?.();
+  dismissImportHint = null;
+  if (image.resized) toast(`The image was reduced to ${image.width} x ${image.height} px to keep the plan fast.`, { type: 'info' });
+  // A plan with no walls yet is made from the image: its walls, doors and rooms are found for it.
+  if (!store.plan.walls.length && !store.plan.rooms.length) {
+    editor.zoomToFit();
+    editor.setTool('select');
+    canvas.focus({ preventScroll: true });
+    traceImage({ auto: true });
+    return;
+  }
   const same = old && old.width === image.width && old.height === image.height && store.plan.underlay !== old;
   if (same && !undo.action) {
     dismissImportHint = toast('Image replaced. Its scale and position are unchanged.', { action: { label: 'Undo', onClick: () => store.undo() } });
@@ -541,7 +557,109 @@ async function importImage(file, { replace = false } = {}) {
     dismissImportHint = toast(text, { ...undo, type: 'info', duration: 9000 });
   }
   canvas.focus({ preventScroll: true });
-  if (image.resized) toast(`The image was reduced to ${image.width} x ${image.height} px to keep the plan fast.`, { type: 'info' });
+}
+
+let tracing = null; // { src, run }: the image being traced; a later run supersedes it
+let traceRuns = 0;
+let traceModule = null;
+
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** "12 walls, 5 doors and 4 rooms" (the kinds found, in that order). */
+function foundText(c) {
+  const parts = [plural(c.walls, 'wall')];
+  if (c.doors) parts.push(plural(c.doors, 'door'));
+  if (c.windows) parts.push(plural(c.windows, 'window'));
+  if (c.rooms) parts.push(plural(c.rooms, 'room'));
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0];
+}
+
+/** Ask before detected walls replace the ones in the plan. Resolves true to go on. */
+function confirmRetrace() {
+  return new Promise((resolve) => {
+    let go = false;
+    const replace = h('button', { type: 'button', class: 'btn btn-primary', text: 'Replace walls and rooms', on: { click: () => { go = true; dlg.close('replace'); } } });
+    const n = store.plan.walls.length;
+    const dlg = openDialog({
+      title: 'Detect the walls again?',
+      subtitle: `This plan's ${plural(n, 'wall')} and its doors, windows and rooms are replaced with the ones found in the image. Furniture and saved views stay.`,
+      cls: 'dialog-narrow',
+      actions: [
+        h('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', on: { click: () => dlg.close('cancel') } }),
+        replace,
+      ],
+      initialFocus: replace,
+      onClose: () => resolve(go),
+    });
+  });
+}
+
+/**
+ * Find the walls, doors, windows and rooms in the floor plan image and add them to the plan, so it
+ * can be walked through straight away. The image takes the scale its doors give, unless it was
+ * calibrated. auto: right after an import into a plan with no walls; nothing is asked, and when
+ * the image has no walls to find, the user is shown how to trace it by hand.
+ */
+async function traceImage({ auto = false } = {}) {
+  const u = store.plan.underlay;
+  if (!u) {
+    toast('Import a floor plan image first, then detect its walls.', { type: 'info' });
+    return;
+  }
+  if (tracing?.src === u.src) return;
+  const hadWalls = store.plan.walls.length > 0 || store.plan.rooms.length > 0;
+  if (hadWalls && !auto && !(await confirmRetrace())) return;
+  const planId = store.plan.id;
+  const run = ++traceRuns;
+  tracing = { src: u.src, run };
+  dismissImportHint?.();
+  const working = toast('Finding the walls, doors and rooms in the image...', { type: 'info', duration: 600000 });
+  let result = null;
+  try {
+    traceModule ||= await import('./ui/trace.js');
+    result = await traceModule.traceUnderlay(u);
+  } catch (err) {
+    console.error(err);
+  } finally {
+    if (tracing?.run === run) tracing = null;
+    working();
+  }
+  // The plan or its image changed while the tracer worked: its result no longer applies.
+  const now = store.plan.underlay;
+  if (run !== traceRuns || store.plan.id !== planId || now?.src !== u.src) return;
+  if (auto && (store.plan.walls.length || store.plan.rooms.length)) return;
+  if (!result || result.trace.walls.length < 3) {
+    if (mode === 'walk') await setMode('plan', { focus: false });
+    editor.zoomToFit();
+    editor.setTool('calibrate');
+    canvas.focus({ preventScroll: true });
+    const why = result ? 'No walls were found in this image.' : 'The walls in this image could not be detected.';
+    dismissImportHint = toast(`${why} Click two points of a known distance to set its scale, then trace the walls with the Wall tool (W).`, { type: 'info', duration: 12000 });
+    return;
+  }
+  const adopt = !now.calibrated && result.metersPerPixel > 0;
+  let count = null;
+  store.update((d) => {
+    if (hadWalls) {
+      d.walls = [];
+      d.openings = [];
+      d.rooms = [];
+    }
+    if (adopt) d.underlay.scale = result.metersPerPixel;
+    d.underlay.traced = true;
+    count = traceModule.addTrace(d, result);
+  }, { label: 'Detect walls' });
+  store.select(null);
+  editor.setTool('select');
+  editor.zoomToFit();
+  const source = result.trace.scale.source;
+  const scale = now.calibrated ? ''
+    : adopt && source === 'doors' ? ' The scale is set from the door widths. Use Calibrate scale if it is off.'
+      : ' Use Calibrate scale to set its true size.';
+  toast(`Found ${foundText(count)}.${scale}`, { duration: 12000, action: { label: 'Undo', onClick: () => store.undo() } });
+  // Show the building in 3D beside the plan it came from, from above to take it all in.
+  if (mode === 'plan') await setMode('split', { focus: false });
+  if (mode === 'split') ensureWalk().then((w) => w.setMode('overview'), () => {});
 }
 
 function startCalibration() {

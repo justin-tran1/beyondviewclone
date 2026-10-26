@@ -537,6 +537,8 @@ export class Walkthrough extends EventTarget {
     this._key = '';
     this._stale = false;
     this._resetPose = true;
+    this._builtEmpty = false;
+    this._overviewFitted = false;
     this._rebuildTimer = 0;
     this._ceilingsShown = true;
     this._ceilTop = DEFAULTS.wallHeight + 1.2;
@@ -645,6 +647,7 @@ export class Walkthrough extends EventTarget {
     this._orphans = null;
     this._buildTextures = textures;
     this._key = sceneKey(plan);
+    this._builtEmpty = !plan.walls.length && !plan.rooms.length;
     this._stale = false;
     this._showFailure(null);
     this._scene.add(built.root);
@@ -798,6 +801,7 @@ export class Walkthrough extends EventTarget {
     const before = this._size;
     if (!this._applySize()) return;
     if (this._size !== before) {
+      if (this._mode === 'overview' && this._overviewFitted) this._frameOverview();
       this._layoutMinimap();
       if (this._canRender() && !this._raf) this._render();
       // New buffers, and perhaps a frame drawn here: not the cost of moving.
@@ -928,7 +932,10 @@ export class Walkthrough extends EventTarget {
       minDistance: 2, maxDistance: 400, maxPolarAngle: deg2rad(86), rotateSpeed: 0.8,
     });
     controls.addEventListener('change', () => this._invalidate());
-    controls.addEventListener('start', () => { this._canvas.style.cursor = 'grabbing'; });
+    controls.addEventListener('start', () => {
+      this._canvas.style.cursor = 'grabbing';
+      this._overviewFitted = false;
+    });
     controls.addEventListener('end', () => { this._canvas.style.cursor = 'grab'; });
     this._controls = controls;
   }
@@ -995,7 +1002,10 @@ export class Walkthrough extends EventTarget {
   // ---- Rebuilds ----------------------------------------------------------------------------
 
   _onStoreChange(e) {
-    if (e.detail?.replaced) this._resetPose = true;
+    // A new plan, or the first walls or rooms of one that had none (a traced image), starts the
+    // walk afresh.
+    const plan = this.store.plan;
+    if (e.detail?.replaced || (this._builtEmpty && (plan.walls.length || plan.rooms.length))) this._resetPose = true;
     this._stale = true;
     clearTimeout(this._rebuildTimer);
     this._rebuildTimer = setTimeout(() => {
@@ -1127,10 +1137,11 @@ export class Walkthrough extends EventTarget {
     const region = room?.points || null;
     const p = findFree(this._world, seed, { region, clearance: 0.4 }) || findFree(this._world, seed, { region })
       || findFree(this._world, seed) || seed;
+    // Face the longest clear view, along the plan's long axis unless another is much longer.
     const wide = b.maxX - b.minX >= b.maxY - b.minY;
-    const options = wide ? [[90, 1, 0], [270, -1, 0]] : [[180, 0, 1], [0, 0, -1]];
+    const options = [[90, 1, 0, wide], [270, -1, 0, wide], [180, 0, 1, !wide], [0, 0, -1, !wide]];
     const [yaw] = options
-      .map(([deg, dx, dy]) => [deg, clearDistance(this._world, p, dx, dy)])
+      .map(([deg, dx, dy, along]) => [deg, clearDistance(this._world, p, dx, dy) * (along ? 1.5 : 1)])
       .sort((m, n) => n[1] - m[1])[0];
     return { x: p.x, y: p.y, yaw, pitch: 0 };
   }
@@ -1572,6 +1583,8 @@ export class Walkthrough extends EventTarget {
     controls.update();
     controls.enableDamping = true;
     this._orbitCam.updateMatrixWorld();
+    // Until the user moves it, the view is fitted again when its size changes.
+    this._overviewFitted = true;
   }
 
   _cancelMotion() {

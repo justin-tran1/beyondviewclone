@@ -229,6 +229,8 @@ export function normalizePlan(input) {
       opacity: clamp(num(u.opacity, 0.5), 0, 1),
       visible: u.visible !== false,
       locked: u.locked !== false,
+      ...(u.calibrated === true ? { calibrated: true } : {}),
+      ...(u.traced === true ? { traced: true } : {}),
     };
   }
 
@@ -524,6 +526,26 @@ export function followRooms(draft, beforeWalls) {
       return add(L.p, scale(L.d, dot(sub(p, L.p), L.d)));
     });
   }
+}
+
+/**
+ * Scale the plan by k about point p: wall ends, opening offsets and widths, room outlines, and the
+ * positions of items and viewpoints (items keep their sizes, walls their thickness). Used when the
+ * image a plan was traced from is calibrated.
+ */
+export function scalePlan(draft, p, k) {
+  const at = (q) => ({ x: p.x + k * (q.x - p.x), y: p.y + k * (q.y - p.y) });
+  for (const w of draft.walls) {
+    w.a = at(w.a);
+    w.b = at(w.b);
+  }
+  for (const o of draft.openings) {
+    o.offset *= k;
+    o.width = clamp(o.width * k, 0.2, 20);
+  }
+  for (const r of draft.rooms) r.points = r.points.map(at);
+  for (const e of [...draft.items, ...draft.cameras]) Object.assign(e, at(e));
+  clampOpenings(draft);
 }
 
 /** Keep every opening inside its wall after geometry changes. */

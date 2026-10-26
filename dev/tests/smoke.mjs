@@ -1,9 +1,11 @@
 // End-to-end smoke test: opens each sample through the welcome dialog and captures Plan, Split and
-// Walk. Usage: node dev/tests/smoke.mjs <baseUrl> <outDir> [sampleId ...]
+// Walk, then does the same for a floor plan image imported and traced into a new plan ('import').
+// Usage: node dev/tests/smoke.mjs <baseUrl> <outDir> [sampleId | import ...]
 // Software rendering takes seconds to a minute per Realistic frame, so each 3D capture waits for the
 // walkthrough to stop drawing and for the GPU to finish, not for a fixed time. Exits 1 on any error.
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const [base = 'http://localhost:8080/', out = 'smoke-out', ...only] = process.argv.slice(2);
 mkdirSync(out, { recursive: true });
@@ -11,7 +13,11 @@ mkdirSync(out, { recursive: true });
 const DRAW_TIMEOUT = 300000;
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const errors = [];
-const samples = only.length ? only : ['lab-suite', 'medical-office', 'office-floor', 'retail-warehouse', 'trace-demo'];
+const samples = only.length ? only : ['lab-suite', 'medical-office', 'office-floor', 'retail-warehouse', 'trace-demo', 'import'];
+// The trace demo's drawing (24 px per foot) and what tracing it finds: 15 walls, 8 doors, 12 windows
+// and 8 rooms. The test allows for a few misses.
+const DRAWING = fileURLToPath(new URL('../../assets/samples/trace-demo.svg', import.meta.url));
+const TRACED = { walls: 12, doors: 6, windows: 10, rooms: 6, scale: 0.3048 / 24 };
 
 /**
  * Wait until the walkthrough has nothing left to draw (no frame pending or running and nothing
@@ -42,13 +48,35 @@ async function settle(page, frame0) {
   }, frame0);
 }
 
+/** Import the trace demo's drawing from the empty plan, and check what tracing it found. */
+async function importDrawing(page) {
+  await page.waitForSelector('dialog[open]');
+  await page.keyboard.press('Escape');
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('#empty-import')]);
+  await chooser.setFiles(DRAWING);
+  await page.waitForFunction(() => window.cbre.store.plan.underlay?.traced, null, { timeout: 60000 });
+  const found = await page.evaluate(() => {
+    const p = window.cbre.store.plan;
+    const windows = p.openings.filter((o) => o.type === 'window').length;
+    return { walls: p.walls.length, doors: p.openings.length - windows, windows, rooms: p.rooms.length, scale: p.underlay.scale };
+  });
+  for (const key of ['walls', 'doors', 'windows', 'rooms']) {
+    if (found[key] < TRACED[key]) errors.push(`import: traced ${found[key]} ${key}, expected at least ${TRACED[key]}`);
+  }
+  if (Math.abs(found.scale / TRACED.scale - 1) > 0.03) errors.push(`import: traced scale ${found.scale} m/px, expected ${TRACED.scale}`);
+}
+
 async function capture(page, id) {
   await page.addInitScript(() => localStorage.clear());
   await page.goto(base, { waitUntil: 'load' });
-  const { SAMPLES } = await page.evaluate(async () => ({ SAMPLES: (await import(new URL('src/samples/index.js', document.baseURI).href)).SAMPLES.map((s) => ({ id: s.id, name: s.name })) }));
-  const name = SAMPLES.find((s) => s.id === id).name;
-  await page.getByRole('button', { name: new RegExp(`^${name}(?! image)`) }).first().click();
-  await page.waitForFunction((n) => window.cbre.store.plan.walls.length > 0 && !document.querySelector('dialog[open]'), name, { timeout: 15000 });
+  if (id === 'import') {
+    await importDrawing(page);
+  } else {
+    const { SAMPLES } = await page.evaluate(async () => ({ SAMPLES: (await import(new URL('src/samples/index.js', document.baseURI).href)).SAMPLES.map((s) => ({ id: s.id, name: s.name })) }));
+    const name = SAMPLES.find((s) => s.id === id).name;
+    await page.getByRole('button', { name: new RegExp(`^${name}(?! image)`) }).first().click();
+    await page.waitForFunction((n) => window.cbre.store.plan.walls.length > 0 && !document.querySelector('dialog[open]'), name, { timeout: 15000 });
+  }
   await page.waitForTimeout(800);
   const stats = await page.evaluate(() => { const p = window.cbre.store.plan; return { name: p.name, walls: p.walls.length, openings: p.openings.length, rooms: p.rooms.length, items: p.items.length, cameras: p.cameras.length }; });
   console.log(id, JSON.stringify(stats));

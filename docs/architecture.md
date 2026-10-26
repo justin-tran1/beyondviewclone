@@ -1,6 +1,7 @@
 # Architecture
 
-CBRE Virtual Walkthrough is a static, build-free web app: trace a floor plan image, furnish it,
+CBRE Virtual Walkthrough is a static, build-free web app: turn a floor plan image into walls, doors,
+windows and rooms (found in the image automatically, then corrected or drawn by hand), furnish it,
 and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries below vendored in
 `assets/vendor/`, no framework, no bundler. Serve the repo root over HTTP (`npm start`).
 
@@ -16,6 +17,8 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
 | `src/catalog/{lab,medical,office,retail}.js` | Item definitions for each space type (`general` items live in `office.js`) |
 | `src/plan-render.js` | Draws a plan onto a 2D canvas (editor and minimap share it) |
 | `src/editor2d.js` | `PlanEditor`: interactive 2D tracing and layout editor |
+| `src/autotrace.js` | `traceFloorPlan()`: the walls, doors, windows, rooms and scale in a floor plan image's pixels (no DOM) |
+| `src/autotrace-worker.js`, `src/ui/trace.js` | Run the tracer on the underlay in a worker and add what it finds to the plan |
 | `src/builder3d.js` | Plan to Three.js scene: walls with openings, floors, ceilings, items, exterior; lighting and the plan light map |
 | `src/postfx.js` | Post-processing for the walkthrough: AO, bloom, color grade, AgX, SMAA, quality levels (`createPostFX()`) |
 | `src/walkthrough.js` | `Walkthrough`: renderer, first-person and overview cameras, collisions, minimap, quality |
@@ -51,6 +54,8 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
     scale,            // meters per image pixel
     rotation,         // degrees clockwise around the top-left corner
     opacity, visible, locked,
+    calibrated?,      // true once its scale was set from a known length
+    traced?,          // true when the plan's walls were detected in it: calibrating resizes the plan too
   },
   walls:    [{ id, a: {x, y}, b: {x, y}, kind: 'exterior' | 'interior' | 'glass' | 'partial', thickness, height }],
   openings: [{ id, wallId, type: 'door' | 'double-door' | 'sliding-door' | 'opening' | 'window',
@@ -79,7 +84,7 @@ pitch to ±70°, caps each collection at 20,000 entries, and keeps an underlay o
 - `createPlan(overrides)`, `normalizePlan(json)`, `serializePlan(plan)`, `clonePlan(plan)`, `uid(prefix)`
 - Tables: `DEFAULTS`, `WALL_KINDS`, `OPENING_TYPES`, `FLOORS`, `CEILINGS`
 - Draft helpers (call inside `store.update`): `addWall`, `addOpening`, `addRoom`, `addItem`, `addCamera`,
-  `removeEntity`, `moveWallEndpoint`, `moveWall`, `clampOpenings`, `findEntity`
+  `removeEntity`, `moveWallEndpoint`, `moveWall`, `clampOpenings`, `scalePlan`, `findEntity`
 - `PlanStore` (`EventTarget`)
   - `plan` (read-only snapshot; never mutate), `selection` (`{kind, id}` or `null`), `selected`
   - `update(draft => {...}, { label, coalesce })` — `coalesce` merges a drag into one undo step; call `endCoalesce()` on pointer up
@@ -118,7 +123,8 @@ export class PlanEditor extends EventTarget {
   get tool()
   setWallKind(kind)                   // kind used by the wall tool
   setPendingItem(type)                // used by the 'item' tool; also switches to it
-  applyCalibration(a, b, meters)      // rescale the underlay so |ab| equals meters; a stays fixed
+  applyCalibration(a, b, meters)      // rescale the underlay so |ab| equals meters; a stays fixed.
+                                      // Marks it calibrated; a plan traced from it is scaled about a too
   setWalker(pose | null)              // show the walkthrough position on the plan
   setOptions({ showGrid, showUnderlay, showDimensions, showLabels })
   zoomToFit(), zoomBy(factor), resize(), render(), destroy()
@@ -136,6 +142,45 @@ Keyboard (when the canvas has focus): `V` select, `H` pan, `W` wall, `R` room, `
 `C` camera, `Delete`/`Backspace` delete, `Esc` cancel or finish, `Enter` finish, `Ctrl/Cmd+Z` undo,
 `Ctrl/Cmd+Shift+Z` or `Ctrl+Y` redo, `Ctrl/Cmd+D` duplicate item, arrows nudge, `Q`/`E` rotate the
 selected or pending item by 15° (`Shift` for 90°), `F` flip door swing, `0` zoom to fit.
+
+### `autotrace.js`, `autotrace-worker.js` and `ui/trace.js`
+
+```js
+export function traceFloorPlan({ width, height, data /* RGBA */ }, { onProgress, debug }) -> {
+  width, height, thickness,                                // px; thickness: typical wall, 0 if none
+  walls: [{ a, b, thickness, exterior }],                  // centerlines in image px
+  openings: [{ wall, type, offset, width, hinge, side }],  // side +1: toward +x (vertical walls) or +y
+  rooms: [{ points, area }],
+  scale: { metersPerPixel, source: 'doors' | 'walls' | null, doors },
+}
+export function toPlanGeometry(trace, { metersPerPixel, origin }) // walls, openings, rooms in plan meters
+```
+
+The tracer reads architectural drawings of straight walls at right angles, drawn as solid strokes,
+filled bands or pairs of thin lines. A wall shows up in every row (or column) it crosses as the same
+short dark section, so it looks for sections of one width that repeat in place over many rows (text,
+furniture, dimensions, door swings and hatching do not), joins them at corners and tees, and drops
+groups of lines that are furniture or casework (no doors, too little wall) and lines around the plan
+such as a scale bar. Gaps between wall ends are doors when a quarter circle (or a partly open swing)
+runs from one jamb with a leaf, and windows when lines run across them; along outside walls, stretches
+drawn as the faces plus glass lines, between jambs, are windows too. Rooms are the areas the walls
+enclose with their doors shut, found on a grid of half-wall cells: the outside is what the image border
+reaches once gaps of up to about 7 feet are sealed, and hatched areas are not floor. Walls with the
+outside along one face are exterior. The scale assumes the single doors are 3'-0" wide (their swing
+radius), else 5" partitions, and is rejected when the drawing would span less than 4 m or more than
+500 m. A 1,500 px plan takes under a second.
+
+`ui/trace.js` (loaded on first use) draws the underlay on white (SVGs at 2,400 px on the long side,
+rasters up to 3,200 px), traces it in `autotrace-worker.js`, a module worker (on the page if no worker
+starts), and `addTrace(draft, result)` adds the walls, openings and rooms where the underlay lies.
+`app.js` traces every image imported into a plan with no walls or rooms: the image takes the scale
+its doors give unless it was calibrated, the plan gets the walls, doors, windows and rooms in one undo
+step (`Detect walls`) with `underlay.traced` set, and the app shows the plan in Split beside the 3D
+overview. An image with nothing to trace goes to the Calibrate tool as before. The image section's
+**Detect walls** button traces it again on demand, replacing the walls, openings and rooms (furniture
+and saved views stay) after asking. Calibrating a traced image scales the plan with it (`scalePlan`).
+The detector's accuracy is measured with synthetic drawings of the samples in five CAD styles (not
+in the repo); on those it finds about 93% of the wall length, 83% of the doors and 93% of the windows.
 
 ### `kit3d.js`
 
@@ -321,6 +366,11 @@ export class Walkthrough extends EventTarget {
   //                                            (lowered it, or raised it back toward the chosen level)
 }
 ```
+
+A new plan, or the first walls added to one that had none (a traced image), puts the walker at the
+start: the first saved view, else a free spot in the middle of the largest room facing its longest
+clear view (along the plan's long axis unless another is half again as long). The overview frames
+the plan, and frames it again when the view is resized until it is orbited, panned or zoomed.
 
 Rendering: AgX tone mapping at exposure 1.8 (`EXPOSURE`; keep `PHOTO_EXPOSURE` equal) in the overview.
 In Walk the exposure is metered per view from the light map (`planLight.meter`, daylight counted

@@ -1,11 +1,13 @@
 // End-to-end smoke test: opens each sample through the welcome dialog and captures Plan, Split and
-// Walk, then does the same for a floor plan image imported and traced into a new plan ('import').
-// Usage: node dev/tests/smoke.mjs <baseUrl> <outDir> [sampleId | import ...]
+// Walk, then does the same for a floor plan image imported and traced into a new plan ('import'),
+// and for the floor plan sheet of a PDF drawing set ('pdf', see pdf-sheets.mjs).
+// Usage: node dev/tests/smoke.mjs <baseUrl> <outDir> [sampleId | import | pdf ...]
 // Software rendering takes seconds to a minute per Realistic frame, so each 3D capture waits for the
 // walkthrough to stop drawing and for the GPU to finish, not for a fixed time. Exits 1 on any error.
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { makeTestPdfs } from './pdf-sheets.mjs';
 
 const [base = 'http://localhost:8080/', out = 'smoke-out', ...only] = process.argv.slice(2);
 mkdirSync(out, { recursive: true });
@@ -13,7 +15,7 @@ mkdirSync(out, { recursive: true });
 const DRAW_TIMEOUT = 300000;
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const errors = [];
-const samples = only.length ? only : ['lab-suite', 'medical-office', 'office-floor', 'retail-warehouse', 'trace-demo', 'import'];
+const samples = only.length ? only : ['lab-suite', 'medical-office', 'office-floor', 'retail-warehouse', 'trace-demo', 'import', 'pdf'];
 // The trace demo's drawing (24 px per foot) and what tracing it finds: 15 walls, 8 doors, 12 windows,
 // 8 rooms and 28 pieces of furniture, among them these. The test allows for a few misses.
 const DRAWING = fileURLToPath(new URL('../../assets/samples/trace-demo.svg', import.meta.url));
@@ -22,6 +24,10 @@ const FURNISHED = ['desk', 'table', 'round-table', 'task-chair', 'side-chair', '
 // Finish packages the traced rooms take from their furniture, and ones the samples' rooms are in.
 const MATCHED = ['office', 'restroom'];
 const SAMPLE_FINISHES = { 'medical-office': ['exam', 'corridor', 'restroom', 'procedure', 'imaging'], 'lab-suite': ['wet-lab', 'tissue-culture', 'lab-support', 'lobby'] };
+// The PDF set's floor plan sheet is the trace demo at 1/4" = 1'-0": its building is 60 by 40 ft on
+// wall centerlines, which the scale note gives exactly and the doors to a few percent.
+const PDF_SPAN = [60 * 0.3048, 40 * 0.3048];
+let pdfs = null;
 const packages = (page) => page.evaluate(async () => {
   const { packageOf } = await import(new URL('src/finishes.js', document.baseURI).href);
   return window.cbre.store.plan.rooms.map((r) => packageOf(r)).filter(Boolean);
@@ -83,11 +89,58 @@ async function importDrawing(page) {
   console.log(`import finishes: ${matched.join(', ')}`);
 }
 
+/**
+ * Import one of the test PDFs from the empty plan through the PDF dialog, once its pages are all
+ * scanned. Returns the page the dialog chose, the traced plan's counts and span (m) and the toasts.
+ */
+async function importPdfFile(page, file) {
+  await page.waitForSelector('dialog[open]');
+  await page.keyboard.press('Escape');
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('#empty-import')]);
+  await chooser.setFiles(file);
+  await page.waitForSelector('.dialog-pdf[data-scanned]', { timeout: 120000 });
+  await page.waitForFunction(() => !document.querySelector('.dialog-pdf .dialog-actions .btn-primary').disabled, null, { timeout: 60000 });
+  const chosen = await page.evaluate(() => [...document.querySelectorAll('.pdf-page')].findIndex((b) => b.getAttribute('aria-pressed') === 'true') + 1);
+  await page.click('.dialog-pdf .dialog-actions .btn-primary');
+  await page.waitForFunction(() => window.cbre.store.plan.underlay?.traced, null, { timeout: 120000 });
+  const found = await page.evaluate(() => {
+    const p = window.cbre.store.plan;
+    const xs = p.walls.flatMap((w) => [w.a.x, w.b.x]), ys = p.walls.flatMap((w) => [w.a.y, w.b.y]);
+    const windows = p.openings.filter((o) => o.type === 'window').length;
+    return {
+      walls: p.walls.length, doors: p.openings.length - windows, windows, rooms: p.rooms.length, items: p.items.length,
+      span: xs.length ? [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)] : [0, 0],
+      toasts: [...document.querySelectorAll('.toast-text')].map((t) => t.textContent),
+    };
+  });
+  return { chosen, ...found };
+}
+
+/** The PDF drawing set, after checking that a sheet printed to fit gets its scale from its doors. */
+async function importPdf(page) {
+  pdfs ||= await makeTestPdfs(browser, base, `${out}/pdf`);
+  const spanOff = (span) => Math.max(...span.map((v, i) => Math.abs(v / PDF_SPAN[i] - 1)));
+  const fit = await importPdfFile(page, pdfs.tabloid);
+  if (!fit.toasts.some((t) => /does not match its doors/.test(t))) errors.push(`pdf: the sheet printed to fit did not fall back to its doors (${fit.toasts.join(' | ')})`);
+  if (spanOff(fit.span) > 0.05) errors.push(`pdf: the sheet printed to fit traced ${fit.span.map((v) => v.toFixed(2)).join(' x ')} m, expected ${PDF_SPAN.map((v) => v.toFixed(2)).join(' x ')}`);
+  await page.goto(base, { waitUntil: 'load' });
+  const set = await importPdfFile(page, pdfs.set);
+  if (set.chosen !== 2) errors.push(`pdf: the dialog chose page ${set.chosen}, not the floor plan on page 2`);
+  if (!set.toasts.some((t) => /scale note, 1\/4" = 1'-0"/.test(t))) errors.push(`pdf: the scale was not set from the sheet's scale note (${set.toasts.join(' | ')})`);
+  if (spanOff(set.span) > 0.02) errors.push(`pdf: traced ${set.span.map((v) => v.toFixed(2)).join(' x ')} m, expected ${PDF_SPAN.map((v) => v.toFixed(2)).join(' x ')}`);
+  for (const key of ['walls', 'doors', 'windows', 'rooms', 'items']) {
+    if (set[key] < TRACED[key]) errors.push(`pdf: traced ${set[key]} ${key}, expected at least ${TRACED[key]}`);
+  }
+  console.log(`pdf: page ${set.chosen}, ${set.walls} walls, ${set.doors} doors, ${set.windows} windows, ${set.rooms} rooms, ${set.items} items, ${set.span.map((v) => v.toFixed(2)).join(' x ')} m; printed to fit ${fit.span.map((v) => v.toFixed(2)).join(' x ')} m`);
+}
+
 async function capture(page, id) {
   await page.addInitScript(() => localStorage.clear());
   await page.goto(base, { waitUntil: 'load' });
   if (id === 'import') {
     await importDrawing(page);
+  } else if (id === 'pdf') {
+    await importPdf(page);
   } else {
     const { SAMPLES } = await page.evaluate(async () => ({ SAMPLES: (await import(new URL('src/samples/index.js', document.baseURI).href)).SAMPLES.map((s) => ({ id: s.id, name: s.name })) }));
     const name = SAMPLES.find((s) => s.id === id).name;

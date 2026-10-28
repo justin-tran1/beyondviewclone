@@ -124,6 +124,20 @@ function base64Utf8(text) {
 
 const canvasBlob = (canvas, type, quality) => new Promise((resolve) => canvas.toBlob(resolve, type, quality));
 
+/**
+ * A canvas (drawn on white) as an image data URL: PNG, which keeps line drawings crisp, or JPEG
+ * when the PNG is larger than `budget` bytes, at a lower quality while that is still too large.
+ */
+export async function canvasDataURL(canvas, budget = MAX_PNG_BYTES) {
+  let blob = await canvasBlob(canvas, 'image/png');
+  for (const q of [0.9, 0.8, 0.7]) {
+    if (blob && blob.size <= budget) break;
+    blob = await canvasBlob(canvas, 'image/jpeg', q);
+  }
+  if (!blob) throw new FileError('This page is too large to import. Choose a smaller area of it.');
+  return readAsDataURL(blob);
+}
+
 /** Some drag and drop sources report no type, which yields data:application/octet-stream; plans keep only image data URLs. */
 function withImageType(src, name) {
   if (src.startsWith('data:image/')) return src;
@@ -133,12 +147,11 @@ function withImageType(src, name) {
 
 /**
  * Read an image file for use as an underlay. Raster images larger than 4096 px on their long
- * side are downscaled. Returns { src, width, height, resized }.
+ * side are downscaled. Returns { src, width, height, resized }. PDFs import through ui/pdf.js.
  */
 export async function readImageFile(file) {
   const kind = fileKind(file);
-  if (kind === 'pdf') throw new FileError('PDFs cannot be traced directly. Export the page to PNG first, then import the PNG.');
-  if (kind !== 'image') throw new FileError(`"${file.name}" is not a supported image. Use PNG, JPG, WebP or SVG.`);
+  if (kind !== 'image') throw new FileError(`"${file.name}" is not a supported image. Use PNG, JPG, WebP, SVG or PDF.`);
   const isSvg = file.type === 'image/svg+xml' || /\.svg$/i.test(file.name);
   if (isSvg) {
     const text = await file.text();
@@ -178,19 +191,24 @@ export async function readImageFile(file) {
   return { src: await readAsDataURL(blob), width: canvas.width, height: canvas.height, resized: true };
 }
 
-/** A new underlay at the origin, guessing that the image spans about 30 m until it is calibrated. */
+/**
+ * A new underlay at the origin, at the scale its scale note gives (a PDF page's), else guessing that
+ * the image spans about 30 m until it is calibrated.
+ */
 export function underlayFor(image) {
+  const note = image.scaleNote;
   return {
     src: image.src,
     width: image.width,
     height: image.height,
     x: 0,
     y: 0,
-    scale: ASSUMED_SPAN / Math.max(image.width, image.height),
+    scale: note ? note.metersPerPixel : ASSUMED_SPAN / Math.max(image.width, image.height),
     rotation: 0,
     opacity: 0.6,
     visible: true,
     locked: true,
+    ...(note ? { scaleNote: { text: note.text, metersPerPixel: note.metersPerPixel } } : {}),
   };
 }
 

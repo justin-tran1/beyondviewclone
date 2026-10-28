@@ -653,7 +653,7 @@ export function createProperties(root, { store, editor, actions }) {
     const u = plan.underlay;
     if (!u) {
       return section('Floor plan image',
-        h('p', { class: 'prop-note', text: 'Import a floor plan drawing to find its walls, doors, rooms and furniture. PNG, JPG, WebP and SVG work. Export PDFs to PNG first.' }),
+        h('p', { class: 'prop-note', text: 'Import a floor plan drawing to find its walls, doors, rooms and furniture. PDF, PNG, JPG, WebP and SVG work.' }),
         actionsRow(h('button', { type: 'button', class: 'btn btn-primary btn-sm', on: { click: actions.importImage } }, iconEl('upload'), h('span', { class: 'btn-label', text: 'Import floor plan image' }))));
     }
     const setU = (label, fn, opts) => store.update((d) => { if (d.underlay) fn(d.underlay); }, { label, ...opts });
@@ -675,6 +675,10 @@ export function createProperties(root, { store, editor, actions }) {
         set: (v) => setU('Rotate image', (x) => { x.rotation = v; }),
       }).row(),
       b.readout({ label: 'Image spans', get: span }),
+      u.scaleNote ? b.readout({
+        label: 'Scale note',
+        get: () => { const x = store.plan.underlay; return x?.scaleNote ? `${x.scaleNote.text}${x.calibrated ? ', overridden by calibration' : ''}` : ''; },
+      }) : null,
       actionsRow(
         h('button', { type: 'button', class: 'btn btn-primary btn-sm', dataset: { tip: 'Click both ends of a known length on the image' }, on: { click: actions.calibrate } }, iconEl('calibrate'), h('span', { class: 'btn-label', text: 'Calibrate scale' })),
         h('button', { type: 'button', class: 'btn btn-secondary btn-sm', dataset: { tip: 'Find the walls, doors, rooms and furniture in the image' }, on: { click: actions.detectWalls } }, iconEl('wand'), h('span', { class: 'btn-label', text: 'Detect walls' })),
@@ -719,7 +723,7 @@ export function createProperties(root, { store, editor, actions }) {
     const plan = store.plan;
     if (!sel || !ent) {
       const u = plan.underlay;
-      return ['plan', !!u, plan.rooms.length > 0, plan.cameras.map((c) => `${c.id}:${c.name}`).join(',')].join('|');
+      return ['plan', !!u, !!u?.scaleNote, plan.rooms.length > 0, plan.cameras.map((c) => `${c.id}:${c.name}`).join(',')].join('|');
     }
     if (sel.kind === 'opening') return `${ent.type}`;
     if (sel.kind === 'item') return `${ent.type}`;

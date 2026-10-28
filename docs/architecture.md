@@ -21,6 +21,8 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
 | `src/autotrace.js` | `traceFloorPlan()`: the walls, doors, windows, rooms and scale in a floor plan image's pixels (no DOM) |
 | `src/autotrace-items.js` | `findItems()`: the furniture and fixtures drawn in the rooms, for the tracer |
 | `src/autotrace-worker.js`, `src/ui/trace.js` | Run the tracer on the underlay in a worker and add what it finds to the plan |
+| `src/pdf-scan.js` | The floor plan on a rendered drawing sheet, how much a page looks like one, and the scale notes in its text (no DOM) |
+| `src/ui/pdf.js` | PDF import: the page and area dialog, and the chosen area rendered (or its picture's own pixels) as the plan's image |
 | `src/builder3d.js` | Plan to Three.js scene: walls with openings, floors, ceilings, items, exterior; lighting and the plan light map |
 | `src/postfx.js` | Post-processing for the walkthrough: AO, bloom, color grade, AgX, SMAA, quality levels (`createPostFX()`) |
 | `src/walkthrough.js` | `Walkthrough`: renderer, first-person and overview cameras, collisions, minimap, quality |
@@ -58,6 +60,7 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
     opacity, visible, locked,
     calibrated?,      // true once its scale was set from a known length
     traced?,          // true when the plan's walls were detected in it: calibrating resizes the plan too
+    scaleNote?,       // { text, metersPerPixel }: the drawing scale written on the PDF page it came from
   },
   walls:    [{ id, a: {x, y}, b: {x, y}, kind: 'exterior' | 'interior' | 'glass' | 'partial', thickness, height }],
   openings: [{ id, wallId, type: 'door' | 'double-door' | 'sliding-door' | 'opening' | 'window',
@@ -178,12 +181,12 @@ selected or pending item by 15° (`Shift` for 90°), `F` flip door swing, `0` zo
 ### `autotrace.js`, `autotrace-worker.js` and `ui/trace.js`
 
 ```js
-export function traceFloorPlan({ width, height, data /* RGBA */ }, { onProgress, debug }) -> {
+export function traceFloorPlan({ width, height, data /* RGBA */ }, { onProgress, debug, metersPerPixel }) -> {
   width, height, thickness,                                // px; thickness: typical wall, 0 if none
   walls: [{ a, b, thickness, exterior }],                  // centerlines in image px
   openings: [{ wall, type, offset, width, hinge, side }],  // side +1: toward +x (vertical walls) or +y
   rooms: [{ points, area }],
-  scale: { metersPerPixel, source: 'doors' | 'walls' | null, doors },
+  scale: { metersPerPixel, source: 'note' | 'doors' | 'walls' | null, doors, noteMismatch? },
   items: [{ kind, x, y, w, d, rotation, sink, round, backed, at }],   // furniture, in image px
 }
 export function toPlanGeometry(trace, { metersPerPixel, origin }) // walls, openings, rooms, items in plan meters
@@ -201,7 +204,10 @@ enclose with their doors shut, found on a grid of half-wall cells: the outside i
 reaches once gaps of up to about 7 feet are sealed, and hatched areas are not floor. Walls with the
 outside along one face are exterior. The scale assumes the single doors are 3'-0" wide (their swing
 radius), else 5" partitions, and is rejected when the drawing would span less than 4 m or more than
-500 m. A 1,500 px plan takes about a second and a half with its furniture.
+500 m. A known scale (`metersPerPixel`, from a PDF page's scale note) is the drawing's own and is
+used as given (source `'note'`) unless the doors make it more than 1.45 times larger or smaller: then
+the page was most likely printed to fit, and the doors give the scale (`noteMismatch: true`). A
+1,500 px plan takes about a second and a half with its furniture.
 
 The furniture (`autotrace-items.js`) is what the lines inside the rooms close off once the walls
 and door swings are taken out: each patch of floor an outline closes off, other than the room's own
@@ -228,8 +234,9 @@ storage (`filing-cabinet`, `bookshelf`, side by side for a long run) and applian
 (`lab-refrigerator`). Resizable items take the drawn size; models made at one size stretch to it only
 so far, keeping the edge against the wall (a toilet keeps its bowl's front, since its tank is not
 drawn as part of it).
+`ui/trace.js` passes the underlay's `scaleNote` to the tracer unless the underlay was calibrated.
 `app.js` traces every image imported into a plan with no walls or rooms: the image takes the scale
-its doors give unless it was calibrated, the plan gets the walls, doors, windows and rooms in one undo
+its scale note or doors give unless it was calibrated, the plan gets the walls, doors, windows and rooms in one undo
 step (`Detect walls`) with `underlay.traced` set, and the app shows the plan in Split beside the 3D
 overview. An image with nothing to trace goes to the Calibrate tool as before. The image section's
 **Detect walls** button traces it again on demand, replacing the walls, openings, rooms and the
@@ -240,6 +247,47 @@ in the repo); on those it finds about 93% of the wall length, 83% of the doors a
 With each sample's furniture drawn in with the catalog's own plan symbols, it finds 81% of the items
 and names 60% of them right (or as a close kind: a desk for a counter, a chair for a lounge chair),
 with 2% of what it reports matching nothing drawn.
+
+### `pdf-scan.js` and `ui/pdf.js`
+
+```js
+// pdf-scan.js: plain functions on a rendered page (RGBA, px, y down) and its text
+export function findPlanArea({ width, height, data }) -> { box: { x0, y0, x1, y1 }, score, share } | null
+export function textLines(items /* [{ str, x, y, w, h }] */) -> [{ text, x0, x1, y, h }]
+export function scaleNotes(lines) -> [{ text, ratio, x, y }]     // ratio: real length per paper length; 0: not to scale
+export function chooseScaleNote(notes, box, long) -> { text, ratio } | null
+export function planWords(text) -> 1.6 | 1 | 0.6                 // a page's titles: floor plan, silent, another sheet
+// ui/pdf.js: pdf.js on the page
+export async function importPdf(file, { onOpen, onChosen }) -> { src, width, height, resized, scaleNote? } | null
+export async function openPdf(file), scanPage(page), renderArea(page, area, note)
+```
+
+`findPlanArea` reads a drawing from its straight lines: unbroken horizontal and vertical runs of ink
+at least 1.2% of the page's long side and thin across (filled areas such as photos and logos are
+not lines). The sheet's borders part the page: lines along its edges, its frame (the outermost long
+lines when they close a rectangle) and lines whose two ends meet a border or the page's edge (a
+title block's or notes column's edge). A plan's own long lines stop short of the frame, so they
+stay part of the plan. On a grid of 1/320 of the long side, lines within 0.8% of each other join
+into one drawing, never across a border; the drawing with the most linework is the plan, with
+drawings near it (2.5%) that hold at least 3% of its linework (its dimensions, a separate wing) and
+a 1.2% margin, kept inside the borders around it. `score` is its linework in lengths of the page's
+long side. Scale notes are architectural (`1/4" = 1'-0"`), engineering (`1" = 20'-0"`) or metric
+ratios on a line that says scale (`SCALE 1:100`); the plan's note is the page's only scale, else the
+nearest within a quarter of the page, and a "not to scale" note beside the plan means none.
+
+`ui/pdf.js` loads pdf.js on first use and opens the file (`isEvalSupported: false`). The dialog lists
+the pages with thumbnails and scans them in turn at 1,600 px on the long side (keeping the full
+render of the last four), ranking each by `score × planWords(text)`. Until the user picks a page or
+moves the outline, it shows the best page so far. The area is an outline in fractions of the page
+that can be dragged, resized by its handles, redrawn by dragging on the page, or nudged with the
+arrow keys (with Shift to resize). Import stays enabled while another page loads, and waits for it.
+`onOpen` is called once the dialog shows, and `onChosen` once it closes with an area, while
+`renderArea` makes the plan's image. When an upright picture on an unrotated page covers 85% of the
+area (a scan, a plan placed as an image), it takes that picture's own pixels (up to 4,096 px), as
+rendering would resample and blur them. Otherwise it renders the area at 3,200 px on its long side
+(at most 8 px per point). A scan's paper is made white. The image is a PNG, or a JPEG when the PNG
+passes 2.5 MB, so the browser can keep the plan. With a scale note, `scaleNote.metersPerPixel` is
+`ratio × 0.0254 / 72 / (px per point)`, and the underlay starts at that scale.
 
 ### `kit3d.js`
 
@@ -522,6 +570,7 @@ pages carry the same map):
 | `three/addons/`, `three/examples/jsm/` | `three/addons/` | r160: OrbitControls, RoomEnvironment, RoundedBoxGeometry, RectAreaLightUniformsLib, SimplexNoise, BufferGeometryUtils, the postprocessing passes and their shaders |
 | `three-gpu-pathtracer` | `three-gpu-pathtracer/index.module.js` | 0.0.23 (MIT) |
 | `three-mesh-bvh` | `three-mesh-bvh/index.module.js` | 0.8.3 (MIT), used by the path tracer |
+| `pdfjs-dist` | `pdfjs/pdf.min.mjs`, with `pdfjs/pdf.worker.min.mjs` | 4.10.38 (Apache-2.0), PDF import; `ui/pdf.js` points pdf.js at the worker by URL |
 
 three-gpu-pathtracer 0.0.23 expects r162 or later and reads `Scene.backgroundRotation` and
 `Scene.environmentRotation`, which r160 lacks; `photo.js` adds both to `THREE.Scene.prototype` as

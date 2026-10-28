@@ -22,8 +22,8 @@ without a code change, run the workflow from the Actions tab.
 
 ## Workflow
 
-1. **Start**: open a sample from the welcome screen, start a blank plan, or import a floor plan image
-   (PNG, JPG, WebP or SVG; export PDFs to PNG first).
+1. **Start**: open a sample from the welcome screen, start a blank plan, or import a floor plan PDF
+   or image (PDF, PNG, JPG, WebP or SVG).
 2. **Detect**: an imported image is traced straight away. Its walls, doors, windows and rooms are
    found in the drawing, its scale is taken from the door widths (3'-0" doors), and the plan opens
    in Split beside the 3D view. Furniture and fixtures drawn in the rooms (desks, counters with
@@ -32,6 +32,14 @@ without a code change, run the workflow from the Actions tab.
    furniture shows their use (an exam room's casework, a restroom's toilet, a lab's benches) get
    the finishes for it. **Detect walls** in the image panel traces it again; Undo removes what was
    found.
+   - **PDFs** open in a dialog that shows every page, picks the one most like a floor plan, and
+     outlines the plan on it. The sheet's frame, title block, notes and schedules are left out.
+     Drag the outline or its corners to change what is imported, or choose another page.
+   - A drawing in vector form is imported sharp. A scanned page, or a plan placed on the page as a
+     picture, keeps its own pixels.
+   - When the drawing has a scale note (`1/4" = 1'-0"`, `1" = 20'-0"`, `1:100`), it sets the scale.
+     The door widths check it. A sheet printed to fit a smaller page, whose note no longer holds,
+     takes its scale from the doors instead.
 3. **Check the scale**: use **Calibrate scale** to click two points of a known distance and type the
    real length, for example `24' 6"` or `7.5m`; a traced plan is resized with its image.
 4. **Trace**: fix or add anything the detection missed. Draw walls (exterior, interior, glass
@@ -92,10 +100,11 @@ src/model.js, src/geometry.js    Plan data model, undo/redo, geometry and units
 src/editor2d.js, plan-render.js  2D tracing and layout editor
 src/autotrace.js, src/ui/trace.js  Finding walls, doors, windows and rooms in a plan image
 src/autotrace-items.js           Finding the furniture and fixtures drawn in it
+src/pdf-scan.js, src/ui/pdf.js   PDF import: the plan on a drawing sheet, its scale note, the dialog
 src/builder3d.js, kit3d.js       Plan to 3D scene and lighting, shared materials and primitives
 src/walkthrough.js, postfx.js    First-person and overview viewer, post-processing and quality
 src/photo.js, src/ui/photo.js    Ray-traced Render photo
-assets/vendor/                   Three.js r160, three-gpu-pathtracer and three-mesh-bvh
+assets/vendor/                   Three.js r160, three-gpu-pathtracer, three-mesh-bvh and pdf.js
 src/catalog/                     Furniture and equipment library
 src/samples/                     Sample plans
 dev/                             Developer test pages and the smoke test
@@ -108,12 +117,14 @@ Module contracts and coordinate conventions are in [docs/architecture.md](docs/a
 ```bash
 npm install                      # Playwright, for tests only
 npm start                        # in one terminal
-npm run smoke                    # opens every sample, and an imported drawing it traces, in Plan, Split and Walk; screenshots to smoke-out/, fails on any error
+npm run smoke                    # opens every sample, an imported drawing and a PDF drawing set it traces, in Plan, Split and Walk; screenshots to smoke-out/, fails on any error
+node dev/tests/pdf-sheets.mjs http://localhost:8080/ pdf-out   # the smoke test's PDFs: a drawing set, a sheet printed to fit, a scan
 node scripts/shot.mjs <url> <out.png> [--wait=expr]   # screenshot any page and report console errors
 ```
 
 Test pages: `dev/catalog.html?category=lab` (every item in 3D and plan form; add `&view=room` for
 the walkthrough's lighting and post-processing), `dev/editor-test.html`, `dev/builder-test.html?view=overview`
 (`&checks=1` runs the builder checks), `dev/walkthrough-test.html`, `dev/materials-test.html` (every
-finish side by side), `dev/photo-test.html?realtime=1` (a photo beside the live view) and
+finish side by side), `dev/photo-test.html?realtime=1` (a photo beside the live view),
+`dev/pdf-test.html` (choose a PDF to see the plan area, rank and scale note found on each page) and
 `dev/samples-test.html?sample=lab-suite`.

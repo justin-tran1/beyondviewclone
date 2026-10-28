@@ -1,0 +1,549 @@
+// Importing a floor plan from a PDF: a dialog shows the document's pages, suggests the one most like
+// a floor plan and outlines the plan found on it (src/pdf-scan.js), which can be moved or resized.
+// The chosen area becomes the plan's image, with the drawing scale its scale note gives: a drawing
+// in vector form is rendered as large as the tracer reads, and one that is a picture on the page
+// (a scan, a plan exported as an image) keeps that picture's own pixels, as re-rendering would
+// only blur them. pdf.js (assets/vendor/pdfjs, the "pdfjs-dist" import) loads with the first PDF.
+import { h, iconEl } from './dom.js';
+import { openDialog } from './widgets.js';
+import { FileError, canvasDataURL } from './files.js';
+import { findPlanArea, textLines, scaleNotes, chooseScaleNote, planWords } from '../pdf-scan.js';
+
+const SCAN_SIDE = 1600; // px: pages are scanned and previewed this large on their long side
+const OUT_SIDE = 3200; // px: the imported area on its long side, as large as the tracer reads
+const RASTER_SIDE = 4096; // px: a picture's own pixels, at most this many on the long side
+const RASTER_COVER = 0.85; // a picture holds the drawing when it covers this much of the area
+const MAX_PX_PER_PT = 8; // a small area renders at most this sharp (576 dpi)
+const THUMB_W = 136; // px
+const KEEP = 4; // scanned pages whose full render is kept for the preview
+const MIN_SIZE = 0.04; // the smallest area, of the page's width or height
+const PICTURE_WAIT = 20000; // ms to wait for pdf.js to decode a picture
+const METERS_PER_PT = 0.0254 / 72;
+// The imported image stays small enough for the browser to keep the plan with it (see storage.js).
+const OUT_BYTES = 2.5 * 1024 * 1024;
+const WHOLE = { x0: 0, y0: 0, x1: 1, y1: 1 };
+
+let lib = null;
+
+async function pdfjs() {
+  if (!lib) {
+    const mod = await import('pdfjs-dist');
+    mod.GlobalWorkerOptions.workerSrc = new URL('../../assets/vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
+    lib = mod;
+  }
+  return lib;
+}
+
+/** A PDF file as a pdf.js document. Throws a FileError that says why it cannot be read. */
+export async function openPdf(file) {
+  let pdf;
+  try {
+    pdf = await pdfjs();
+  } catch (err) {
+    console.error(err);
+    throw new FileError('PDF import could not start in this browser. Export the page to PNG, then import the PNG.');
+  }
+  const data = new Uint8Array(await file.arrayBuffer());
+  try {
+    return await pdf.getDocument({ data, verbosity: pdf.VerbosityLevel.ERRORS, isEvalSupported: false }).promise;
+  } catch (err) {
+    if (err?.name === 'PasswordException') throw new FileError(`"${file.name}" is protected with a password. Save a copy without it, then import that.`);
+    throw new FileError(`"${file.name}" could not be read as a PDF. It may be damaged; try exporting it again.`);
+  }
+}
+
+/** Render `area` (fractions of the page) of a page at `scale` px per point onto white. */
+async function renderPage(page, scale, area = WHOLE) {
+  const full = page.getViewport({ scale });
+  const x0 = Math.floor(area.x0 * full.width), y0 = Math.floor(area.y0 * full.height);
+  const width = Math.max(1, Math.ceil(area.x1 * full.width) - x0), height = Math.max(1, Math.ceil(area.y1 * full.height) - y0);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  await page.render({ canvasContext: ctx, viewport: page.getViewport({ scale, offsetX: -x0, offsetY: -y0 }) }).promise;
+  return canvas;
+}
+
+/**
+ * Scan a page: its render at SCAN_SIDE, the plan found on it (area, fractions of the page, and
+ * found: whether a drawing was), a rank for how much it looks like a floor plan, and the scale
+ * note that holds for the plan ({ text, ratio } or null).
+ */
+export async function scanPage(page) {
+  const unit = page.getViewport({ scale: 1 });
+  const scale = SCAN_SIDE / Math.max(unit.width, unit.height);
+  const canvas = await renderPage(page, scale);
+  const { width: W, height: H } = canvas;
+  const plan = findPlanArea({ width: W, height: H, data: canvas.getContext('2d').getImageData(0, 0, W, H).data });
+  const box = plan?.box ?? { x0: 0, y0: 0, x1: W, y1: H };
+  const viewport = page.getViewport({ scale });
+  const content = await page.getTextContent().catch(() => ({ items: [] }));
+  const items = [], turned = [];
+  let words = '';
+  for (const t of content.items) {
+    if (!t.str) continue;
+    words += ` ${t.str}`;
+    const m = lib.Util.transform(viewport.transform, t.transform);
+    const h = Math.hypot(m[2], m[3]);
+    // Text across the page joins into lines; text turned on it (a rotated sheet's) stands alone.
+    if (Math.abs(m[1]) > 0.2 * Math.abs(m[0]) || Math.abs(m[2]) > 0.2 * Math.abs(m[3])) turned.push({ text: t.str, x0: m[4], x1: m[4], y: m[5], h });
+    else items.push({ str: t.str, x: m[4], y: m[5], w: (t.width || 0) * scale, h });
+  }
+  const note = chooseScaleNote(scaleNotes([...textLines(items), ...turned]), box, Math.max(W, H));
+  return {
+    canvas,
+    area: { x0: box.x0 / W, y0: box.y0 / H, x1: box.x1 / W, y1: box.y1 / H },
+    found: !!plan,
+    rank: (plan?.score ?? 0) * planWords(words),
+    note,
+  };
+}
+
+/**
+ * A scanned page's paper made white: its grain and speckles go, so the image is smaller and reads
+ * like a drawing. A page drawn on white is left as it is.
+ */
+function whitenPaper(canvas) {
+  const ctx = canvas.getContext('2d');
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data, n = d.length / 4;
+  const hist = new Uint32Array(256);
+  for (let p = 0; p < d.length; p += 4) hist[(d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8]++;
+  let paper = 255;
+  for (let v = 0, c = 0; v < 256; v++) {
+    c += hist[v];
+    if (c >= 0.7 * n) {
+      paper = v;
+      break;
+    }
+  }
+  if (paper >= 252) return;
+  const t = paper - 22;
+  for (let p = 0; p < d.length; p += 4) {
+    if ((d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8 >= t) d[p] = d[p + 1] = d[p + 2] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/** The pictures a page draws and where: [{ id | data, width, height, ctm }], ctm mapping their unit square to the page. */
+async function pageImages(page) {
+  const { OPS, Util } = lib;
+  const ops = await page.getOperatorList();
+  const out = [];
+  const stack = [];
+  let ctm = [1, 0, 0, 1, 0, 0];
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i], args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm);
+    else if (fn === OPS.restore) ctm = stack.pop() ?? ctm;
+    else if (fn === OPS.transform) ctm = Util.transform(ctm, args);
+    else if (fn === OPS.paintFormXObjectBegin) {
+      stack.push(ctm);
+      if (args[0]) ctm = Util.transform(ctm, args[0]);
+    } else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() ?? ctm;
+    else if (fn === OPS.paintImageXObject) out.push({ id: args[0], width: args[1], height: args[2], ctm });
+    else if (fn === OPS.paintInlineImageXObject) out.push({ data: args[0], width: args[0].width, height: args[0].height, ctm });
+  }
+  return out;
+}
+
+/** A picture's pixels on a white canvas, or null when pdf.js does not hand them over. */
+async function imageCanvas(page, im) {
+  let img = im.data;
+  if (!img) {
+    const store = String(im.id).startsWith('g_') ? page.commonObjs : page.objs;
+    img = await new Promise((resolve) => {
+      // A picture that never arrives is rendered with the page instead.
+      setTimeout(() => resolve(null), PICTURE_WAIT);
+      try {
+        store.get(im.id, resolve);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+  if (!img || !(img.width > 0 && img.height > 0)) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, img.width, img.height);
+  if (img.bitmap) {
+    ctx.drawImage(img.bitmap, 0, 0);
+    return canvas;
+  }
+  // Decoded pixels: 1 bit gray (set bits white), 8 bit RGB or RGBA (pdf.js's ImageKind 1, 2, 3).
+  if (!img.data) return null;
+  const out = ctx.createImageData(img.width, img.height);
+  const d = out.data, src = img.data, n = img.width * img.height;
+  if (img.kind === 3) d.set(src.subarray(0, n * 4));
+  else if (img.kind === 2) for (let i = 0; i < n; i++) { d[i * 4] = src[i * 3]; d[i * 4 + 1] = src[i * 3 + 1]; d[i * 4 + 2] = src[i * 3 + 2]; d[i * 4 + 3] = 255; }
+  else if (img.kind === 1) {
+    const row = (img.width + 7) >> 3;
+    for (let y = 0; y < img.height; y++) {
+      for (let x = 0; x < img.width; x++) {
+        const v = (src[y * row + (x >> 3)] >> (7 - (x & 7))) & 1 ? 255 : 0;
+        const k = (y * img.width + x) * 4;
+        d[k] = d[k + 1] = d[k + 2] = v;
+        d[k + 3] = 255;
+      }
+    }
+  } else return null;
+  ctx.putImageData(out, 0, 0);
+  return canvas;
+}
+
+/**
+ * The area as the picture that holds it, when one does (a scan, a plan exported as an image): its
+ * own pixels and their size in px per point. Only upright pictures on unrotated pages; null else.
+ */
+async function pictureArea(page, area) {
+  if (page.rotate % 360 !== 0) return null;
+  const vp = page.getViewport({ scale: 1 });
+  const [ax0, ay0] = vp.convertToPdfPoint(area.x0 * vp.width, area.y1 * vp.height);
+  const [ax1, ay1] = vp.convertToPdfPoint(area.x1 * vp.width, area.y0 * vp.height);
+  const A = { x0: Math.min(ax0, ax1), x1: Math.max(ax0, ax1), y0: Math.min(ay0, ay1), y1: Math.max(ay0, ay1) };
+  const size = (A.x1 - A.x0) * (A.y1 - A.y0);
+  let best = null;
+  for (const im of await pageImages(page)) {
+    const [a, b, c, d, e, f] = im.ctm;
+    if (!(a > 0 && d > 0) || Math.abs(b) > 1e-6 * a || Math.abs(c) > 1e-6 * d) continue;
+    const cover = Math.max(0, Math.min(e + a, A.x1) - Math.max(e, A.x0)) * Math.max(0, Math.min(f + d, A.y1) - Math.max(f, A.y0));
+    if (cover >= RASTER_COVER * size && (!best || a * d > best.a * best.d)) best = { im, a, d, e, f };
+  }
+  if (!best) return null;
+  const pic = await imageCanvas(page, best.im);
+  if (!pic) return null;
+  // The area in the picture's pixels: its first row is at the top of its unit square.
+  const { a, d, e, f } = best, iw = pic.width, ih = pic.height;
+  const i0 = Math.max(0, Math.floor(((A.x0 - e) / a) * iw)), i1 = Math.min(iw, Math.ceil(((A.x1 - e) / a) * iw));
+  const j0 = Math.max(0, Math.floor((1 - (A.y1 - f) / d) * ih)), j1 = Math.min(ih, Math.ceil((1 - (A.y0 - f) / d) * ih));
+  if (i1 - i0 < 16 || j1 - j0 < 16) return null;
+  const k = Math.min(1, RASTER_SIDE / Math.max(i1 - i0, j1 - j0));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round((i1 - i0) * k);
+  canvas.height = Math.round((j1 - j0) * k);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(pic, i0, j0, i1 - i0, j1 - j0, 0, 0, canvas.width, canvas.height);
+  return { canvas, pxPerPt: (iw / a) * k };
+}
+
+/** The image of `area` of a page for the plan's underlay, with the meters per pixel its scale note gives. */
+export async function renderArea(page, area, note) {
+  let picture = null;
+  try {
+    picture = await pictureArea(page, area);
+  } catch (err) {
+    console.warn('The picture on this page could not be read, so the page is rendered instead.', err);
+  }
+  let canvas, pxPerPt;
+  if (picture) {
+    ({ canvas, pxPerPt } = picture);
+  } else {
+    const unit = page.getViewport({ scale: 1 });
+    const long = Math.max((area.x1 - area.x0) * unit.width, (area.y1 - area.y0) * unit.height);
+    pxPerPt = Math.min(MAX_PX_PER_PT, OUT_SIDE / long);
+    canvas = await renderPage(page, pxPerPt, area);
+  }
+  whitenPaper(canvas);
+  const src = await canvasDataURL(canvas, OUT_BYTES);
+  const image = { src, width: canvas.width, height: canvas.height, resized: false };
+  if (note?.ratio > 0) image.scaleNote = { text: note.text, metersPerPixel: (note.ratio * METERS_PER_PT) / pxPerPt };
+  return image;
+}
+
+/**
+ * Import a floor plan from a PDF: the dialog to choose the page and the area of it, then the image
+ * of that area ({ src, width, height, resized, scaleNote? }), or null when cancelled. onOpen is
+ * called once the dialog shows, and onChosen once it closes with an area, as it is rendered.
+ */
+export async function importPdf(file, { onOpen, onChosen } = {}) {
+  const doc = await openPdf(file);
+  try {
+    const choice = await chooseArea(doc, onOpen);
+    if (!choice) return null;
+    onChosen?.();
+    return await renderArea(await doc.getPage(choice.page), choice.area, choice.note);
+  } finally {
+    doc.destroy();
+  }
+}
+
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+
+/** The dialog: resolves with { page, area, note } or null. */
+function chooseArea(doc, onOpen) {
+  const pages = doc.numPages;
+  const scans = new Map(); // page number -> Promise of scanPage()
+  const kept = []; // page numbers whose renders are kept, oldest first
+  let current = 0;
+  let area = WHOLE;
+  let touched = false; // the user chose a page or changed the area: no more suggestions
+  let best = { page: 1, rank: -1 };
+  let closed = false;
+  let dlg = null;
+
+  // Keep a page's render, and let go of the oldest kept beyond KEEP but the page shown.
+  const keep = (n) => {
+    if (!kept.includes(n)) kept.push(n);
+    while (kept.length > KEEP) {
+      const i = kept.findIndex((k) => k !== current);
+      if (i < 0) break;
+      const [old] = kept.splice(i, 1);
+      scans.get(old).then((o) => { o.canvas = null; });
+    }
+  };
+  const scan = (n) => {
+    if (!scans.has(n)) {
+      scans.set(n, doc.getPage(n).then(async (page) => {
+        const s = await scanPage(page);
+        // Let pdf.js free what it decoded for the page; it decodes it again when needed.
+        page.cleanup();
+        return s;
+      }).then((s) => {
+        thumb(n, s);
+        keep(n);
+        return s;
+      }));
+    }
+    return scans.get(n);
+  };
+  // A page's render, made again when it was let go.
+  const pageCanvas = async (n) => {
+    const s = await scan(n);
+    if (!s.canvas) {
+      const page = await doc.getPage(n);
+      const unit = page.getViewport({ scale: 1 });
+      s.canvas = await renderPage(page, SCAN_SIDE / Math.max(unit.width, unit.height));
+      keep(n);
+    }
+    return s.canvas;
+  };
+
+  // ---- Page list ----
+  const buttons = [];
+  const list = pages > 1 ? h('div', { class: 'pdf-pages', attrs: { role: 'group', 'aria-label': 'Pages' } }) : null;
+  for (let n = 1; n <= pages; n++) {
+    const c = h('canvas', { class: 'pdf-thumb', width: THUMB_W, height: Math.round(THUMB_W * 0.66), attrs: { 'aria-hidden': 'true' } });
+    const badge = h('span', { class: 'pdf-badge', text: 'Floor plan', hidden: true });
+    const b = h('button', {
+      type: 'button', class: 'pdf-page', attrs: { 'aria-pressed': 'false' },
+      on: { click: () => { touched = true; show(n); } },
+    }, c, h('span', { class: 'pdf-page-label' }, h('span', { text: `Page ${n}` }), badge));
+    b.canvas = c;
+    b.badge = badge;
+    buttons.push(b);
+    list?.append(b);
+  }
+  function thumb(n, s) {
+    const b = buttons[n - 1];
+    if (!b || !s.canvas) return;
+    const c = b.canvas;
+    c.height = Math.round((THUMB_W * s.canvas.height) / s.canvas.width);
+    const ctx = c.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(s.canvas, 0, 0, c.width, c.height);
+    if (s.found) {
+      const a = s.area;
+      ctx.strokeStyle = '#17a673';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(a.x0 * c.width, a.y0 * c.height, (a.x1 - a.x0) * c.width, (a.y1 - a.y0) * c.height);
+    }
+    if (s.rank > best.rank) {
+      best = { page: n, rank: s.rank };
+      for (const [k, o] of buttons.entries()) o.badge.hidden = k !== n - 1 || s.rank <= 0;
+      if (!touched && n !== current) show(n);
+    }
+  }
+
+  // ---- Preview with the area ----
+  const canvasSlot = h('div', { class: 'pdf-canvas' });
+  const handles = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((edge) => h('span', { class: 'pdf-handle', dataset: { edge } }));
+  const box = h('div', {
+    class: 'pdf-area', tabIndex: 0,
+    attrs: { role: 'group', 'aria-label': 'Area to import. Drag it, or its corners and edges. Arrow keys move it; with Shift they resize it.' },
+  }, handles);
+  const preview = h('div', { class: 'pdf-preview', hidden: true }, canvasSlot, box);
+  const busy = h('div', { class: 'pdf-busy' }, h('span', { class: 'pdf-spinner', attrs: { 'aria-hidden': 'true' } }), h('span', { text: 'Finding the floor plan...' }));
+  const status = h('p', { class: 'pdf-status', attrs: { role: 'status', 'aria-live': 'polite' } });
+  const scaleText = h('p', { class: 'pdf-status' });
+  const tool = (text, icon, fn) => h('button', { type: 'button', class: 'btn btn-secondary btn-sm', on: { click: fn } }, iconEl(icon), h('span', { class: 'btn-label', text }));
+  const tools = h('div', { class: 'pdf-tools' },
+    tool('Find the plan', 'wand', async () => {
+      const s = await scan(current).catch(() => null);
+      if (!s) return;
+      touched = true;
+      setArea(s.area);
+    }),
+    tool('Whole page', 'fit', () => { touched = true; setArea(WHOLE); }));
+  const main = h('div', { class: 'pdf-main' }, preview, busy, status, scaleText, tools);
+  const body = h('div', { class: `pdf-import${list ? '' : ' pdf-single'}` }, list, main);
+
+  const draw = () => {
+    Object.assign(box.style, {
+      left: `${area.x0 * 100}%`, top: `${area.y0 * 100}%`, width: `${(area.x1 - area.x0) * 100}%`, height: `${(area.y1 - area.y0) * 100}%`,
+    });
+  };
+  const setArea = (a) => {
+    area = { x0: clamp01(a.x0), y0: clamp01(a.y0), x1: clamp01(a.x1), y1: clamp01(a.y1) };
+    draw();
+  };
+
+  let showing = 0;
+  let ready = false; // a page has shown, ready to import
+  let pending = Promise.resolve(false); // the page showing: true once it shows, false if it cannot
+  // Import stays enabled while another page loads, so it keeps focus: a click waits for the page.
+  const show = (n) => (pending = showPage(n));
+  // Whether the page last chosen showed, once it and any chosen while it loaded are done.
+  const settled = async () => {
+    for (;;) {
+      const p = pending, ok = await p;
+      if (p === pending) return ok;
+    }
+  };
+  async function showPage(n) {
+    const token = ++showing;
+    current = n;
+    for (const [k, b] of buttons.entries()) b.setAttribute('aria-pressed', String(k === n - 1));
+    buttons[n - 1]?.scrollIntoView({ block: 'nearest' });
+    preview.hidden = true;
+    busy.hidden = false;
+    status.textContent = '';
+    scaleText.textContent = '';
+    let s, canvas;
+    try {
+      s = await scan(n);
+      canvas = await pageCanvas(n);
+    } catch (err) {
+      console.error(err);
+      if (token !== showing || closed) return false;
+      busy.hidden = true;
+      importBtn.disabled = true;
+      status.textContent = `Page ${n} could not be read.`;
+      return false;
+    }
+    if (token !== showing || closed) return false;
+    canvasSlot.replaceChildren(canvas);
+    // Fit the page in about 60% of the window's height.
+    preview.style.width = `min(100%, ${((60 * canvas.width) / canvas.height).toFixed(2)}vh)`;
+    preview.hidden = false;
+    busy.hidden = true;
+    importBtn.disabled = false;
+    // The first page to show takes focus to Import, unless the pages or the area have it.
+    if (!ready && !body.contains(document.activeElement)) importBtn.focus({ preventScroll: true });
+    ready = true;
+    setArea(s.found ? s.area : WHOLE);
+    // Beside the page most like a floor plan, a page with far less drawing on it is likely another sheet.
+    const other = pages > 1 && best.rank > 0 && s.rank < 0.3 * best.rank;
+    status.textContent = !s.found
+      ? 'No drawing was found on this page, so all of it is selected. Drag the outline to choose an area.'
+      : other
+        ? `This page does not look like a floor plan; page ${best.page} does. Its largest drawing is outlined, and you can drag the outline to choose an area.`
+        : 'The floor plan found on this page is outlined. Drag the outline, or its corners and edges, to change what is imported.';
+    scaleText.textContent = s.note
+      ? `Scale: ${s.note.text}, from the drawing's scale note. The door widths check it.`
+      : 'No scale note was found for this drawing, so its scale is taken from the door widths.';
+    return true;
+  }
+
+  // ---- Dragging the area ----
+  let drag = null;
+  preview.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const r = preview.getBoundingClientRect();
+    const p = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+    const edge = e.target.dataset?.edge || (box.contains(e.target) ? 'move' : 'new');
+    drag = { edge, p, start: { ...area }, prev: { ...area }, r };
+    if (edge === 'new') drag.start = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+    preview.setPointerCapture(e.pointerId);
+    touched = true;
+    e.preventDefault();
+  });
+  preview.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const { r, start, p, edge } = drag;
+    const q = { x: clamp01((e.clientX - r.left) / r.width), y: clamp01((e.clientY - r.top) / r.height) };
+    const dx = q.x - p.x, dy = q.y - p.y;
+    const a = { ...start };
+    if (edge === 'move') {
+      const w = start.x1 - start.x0, hgt = start.y1 - start.y0;
+      a.x0 = Math.min(Math.max(0, start.x0 + dx), 1 - w);
+      a.y0 = Math.min(Math.max(0, start.y0 + dy), 1 - hgt);
+      a.x1 = a.x0 + w;
+      a.y1 = a.y0 + hgt;
+    } else if (edge === 'new') {
+      Object.assign(a, { x0: Math.min(p.x, q.x), x1: Math.max(p.x, q.x), y0: Math.min(p.y, q.y), y1: Math.max(p.y, q.y) });
+    } else {
+      if (edge.includes('w')) a.x0 = Math.min(start.x0 + dx, start.x1 - MIN_SIZE);
+      if (edge.includes('e')) a.x1 = Math.max(start.x1 + dx, start.x0 + MIN_SIZE);
+      if (edge.includes('n')) a.y0 = Math.min(start.y0 + dy, start.y1 - MIN_SIZE);
+      if (edge.includes('s')) a.y1 = Math.max(start.y1 + dy, start.y0 + MIN_SIZE);
+    }
+    setArea(a);
+  });
+  const end = () => {
+    if (!drag) return;
+    // A click without a drag outside the outline leaves the area as it was.
+    if (drag.edge === 'new' && (area.x1 - area.x0 < MIN_SIZE || area.y1 - area.y0 < MIN_SIZE)) setArea(drag.prev);
+    drag = null;
+  };
+  preview.addEventListener('pointerup', end);
+  preview.addEventListener('pointercancel', end);
+  box.addEventListener('keydown', (e) => {
+    const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    touched = true;
+    const [dx, dy] = step.map((v) => v * 0.01);
+    if (e.shiftKey) {
+      setArea({ ...area, x1: Math.max(area.x0 + MIN_SIZE, area.x1 + dx), y1: Math.max(area.y0 + MIN_SIZE, area.y1 + dy) });
+    } else {
+      const w = area.x1 - area.x0, hgt = area.y1 - area.y0;
+      const x0 = Math.min(Math.max(0, area.x0 + dx), 1 - w), y0 = Math.min(Math.max(0, area.y0 + dy), 1 - hgt);
+      setArea({ x0, y0, x1: x0 + w, y1: y0 + hgt });
+    }
+  });
+
+  // ---- The dialog ----
+  let result = null;
+  const importBtn = h('button', {
+    type: 'button', class: 'btn btn-primary', text: 'Import floor plan', disabled: true,
+    on: {
+      click: async () => {
+        if (!(await settled()) || closed) return;
+        const s = await scan(current);
+        result = { page: current, area: { ...area }, note: s.note };
+        dlg.close('import');
+      },
+    },
+  });
+  const cancel = h('button', { type: 'button', class: 'btn btn-secondary', text: 'Cancel', on: { click: () => dlg.close('cancel') } });
+  return new Promise((resolve) => {
+    dlg = openDialog({
+      title: 'Import a floor plan from a PDF',
+      subtitle: pages > 1
+        ? `This PDF has ${pages} pages. Choose the one with the floor plan; the page most like one is chosen for you.`
+        : 'The floor plan on the page is outlined, ready to import.',
+      cls: 'dialog-wide dialog-pdf',
+      body,
+      actions: [cancel, importBtn],
+      initialFocus: importBtn,
+      onClose: () => {
+        closed = true;
+        resolve(result);
+      },
+    });
+    onOpen?.();
+    show(1);
+    // Scan every page in turn, so the thumbnails fill in and the best one is suggested.
+    (async () => {
+      for (let n = 1; n <= pages && !closed; n++) await scan(n).catch(() => {});
+      if (!closed) dlg.el.dataset.scanned = 'true';
+    })();
+  });
+}

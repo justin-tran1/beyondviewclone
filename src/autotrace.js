@@ -10,12 +10,16 @@
 //                                      // offset: px from wall.a to the center; side: +1 swings
 //                                      // toward +x (vertical walls) or +y (horizontal walls)
 //   rooms: [{ points: [{x, y}], area }],                       // outlines in px, area in px²
-//   scale: { metersPerPixel, source: 'doors' | 'walls' | null, doors },
+//   scale: { metersPerPixel, source: 'note' | 'doors' | 'walls' | null, doors, noteMismatch? },
 //   items: [{ kind, x, y, w, d, rotation, ... }],              // furniture and fixtures, in px:
 //                                      // see src/autotrace-items.js
 // }
 // toPlanGeometry(trace, { metersPerPixel, origin }) converts the result to plan meters in the
 // shape the model's addWall, addOpening and addRoom take.
+//
+// A known scale (opts.metersPerPixel, from the drawing's scale note) is the drawing's own: its
+// doors only check it. Where they make it more than NOTE_RATIO larger or smaller, the page was
+// most likely printed to fit, and the doors give the scale instead (noteMismatch).
 //
 // What it reads: architectural drawings of straight walls at right angles, drawn either as solid
 // strokes or as pairs of thin parallel lines (the usual CAD export). A wall shows up in every
@@ -33,12 +37,13 @@ const PARTITION = 0.125; // m: a stud partition with board both sides, the scale
 const MAX_SPAN = 500; // m: a drawing scaled to more than this is taken as a misread
 const MIN_SPAN = 4;
 const MIN_ROOM = 0.9; // m²: smaller enclosed areas are wall cavities or symbols, not rooms
+const NOTE_RATIO = 1.45; // a scale note holds while the doors make it no more than this far off
 
 /**
  * Trace walls, doors, windows, rooms and furniture in a floor plan image. See the top of this file.
  * onProgress(fraction, phase) is called between the steps.
  */
-export function traceFloorPlan(image, { onProgress = null, debug = false } = {}) {
+export function traceFloorPlan(image, { onProgress = null, debug = false, metersPerPixel: known = null } = {}) {
   const { width: W, height: H } = image;
   const empty = { width: W, height: H, thickness: 0, walls: [], openings: [], rooms: [], scale: { metersPerPixel: null, source: null, doors: 0 } };
   if (!(W > 8 && H > 8) || !image.data || image.data.length < W * H * 4) return empty;
@@ -87,11 +92,11 @@ export function traceFloorPlan(image, { onProgress = null, debug = false } = {})
   step(0.7, 'rooms');
   // Rooms and furniture; the outline of a cabinet or appliance can pass for short walls, which go
   // once the furniture shows them to be its edges, and the rooms are found again without them.
-  let laid = arrange(segs, gaps, ink, faint, W, H, T);
+  let laid = arrange(segs, gaps, ink, faint, W, H, T, known);
   const edges = furnitureWalls(segs, laid, T, wallInk, W, H);
   if (edges.size) {
     segs = segs.filter((s, i) => !edges.has(i));
-    laid = arrange(segs, gaps, ink, faint, W, H, T);
+    laid = arrange(segs, gaps, ink, faint, W, H, T, known);
   }
   const { openings, scale, mpp, rooms, exterior, beyond, keep, furnished } = laid;
   const index = [];
@@ -128,9 +133,9 @@ export function traceFloorPlan(image, { onProgress = null, debug = false } = {})
  * The openings on the final walls, the scale, the rooms and outside, and the furniture: what the
  * tracer works out once it has its walls.
  */
-function arrange(segs, gaps, ink, faint, W, H, T) {
+function arrange(segs, gaps, ink, faint, W, H, T, known) {
   const openings = placeOpenings(gaps, segs, T);
-  const scale = drawingScale(openings, segs, T, W, H);
+  const scale = drawingScale(openings, segs, T, W, H, known);
   const mpp = scale.metersPerPixel;
   const { rooms, exterior, beyond, roomAt } = findRooms(segs, ink, W, H, T, mpp);
   // Walls wholly outside the building (a neighbor's, the site's) are context, not the space, when
@@ -1128,18 +1133,21 @@ function placeOpenings(gaps, segs, T) {
 // ---- Scale ---------------------------------------------------------------------------------------
 
 /**
- * Meters per pixel from the single doors, else from the partitions' thickness. A door's swing
- * radius is its leaf, which is 3'-0" far more often than not; the gap around it varies with how
- * the frame is drawn.
+ * Meters per pixel: a known scale the doors do not contradict (see the top of this file), else from
+ * the single doors, else from the partitions' thickness. A door's swing radius is its leaf, which
+ * is 3'-0" far more often than not; the gap around it varies with how the frame is drawn.
  */
-function drawingScale(openings, segs, T, W, H) {
+function drawingScale(openings, segs, T, W, H, known = null) {
   const doors = openings.filter((o) => o.type === 'door').map((o) => o.leaf).sort((a, b) => a - b);
   const span = Math.max(W, H);
   const ok = (mpp) => mpp > 0 && span * mpp >= MIN_SPAN && span * mpp <= MAX_SPAN;
-  if (doors.length >= 2) {
-    const mpp = DOOR_WIDTH / doors[doors.length >> 1];
-    if (ok(mpp)) return { metersPerPixel: mpp, source: 'doors', doors: doors.length };
+  const byDoors = doors.length >= 2 ? DOOR_WIDTH / doors[doors.length >> 1] : null;
+  if (ok(known)) {
+    const off = ok(byDoors) ? Math.max(byDoors / known, known / byDoors) : 1;
+    if (off <= NOTE_RATIO) return { metersPerPixel: known, source: 'note', doors: doors.length };
+    return { metersPerPixel: byDoors, source: 'doors', doors: doors.length, noteMismatch: true };
   }
+  if (ok(byDoors)) return { metersPerPixel: byDoors, source: 'doors', doors: doors.length };
   const mpp = PARTITION / T;
   if (segs.length >= 4 && ok(mpp)) return { metersPerPixel: mpp, source: 'walls', doors: doors.length };
   return { metersPerPixel: null, source: null, doors: doors.length };

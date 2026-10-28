@@ -292,7 +292,7 @@ attachMenu($('#open-menu'), () => {
   }));
   return [
     { label: 'Open plan file', icon: 'folder', hint: `${MOD}+O`, onSelect: () => openPlanFile() },
-    { label: 'Import floor plan image', icon: 'image', description: 'PNG, JPG, WebP or SVG', onSelect: () => importImage() },
+    { label: 'Import floor plan image', icon: 'image', description: 'PNG, JPG, WebP, SVG or PDF', onSelect: () => importImage() },
     { label: 'Open a sample', icon: 'grid', onSelect: openSamples },
     'separator',
     { label: 'New blank plan', icon: 'file-new', onSelect: newPlan },
@@ -497,9 +497,26 @@ function underlayIn(plan, image) {
   };
 }
 
+let pdfModule = null;
+
+/** A PDF's floor plan as an image: the page and area chosen in the PDF dialog (see ui/pdf.js), or null. */
+async function readPdf(file) {
+  let working = toast('Reading the PDF...', { type: 'info', duration: 120000 });
+  try {
+    pdfModule ||= await import('./ui/pdf.js');
+    return await pdfModule.importPdf(file, {
+      onOpen: () => working(),
+      onChosen: () => { working = toast('Preparing the floor plan...', { type: 'info', duration: 120000 }); },
+    });
+  } finally {
+    working();
+  }
+}
+
 /**
- * Import a floor plan image. With `replace`, swap the image of the current plan and keep everything
- * else. Otherwise a plan that already has content asks whether to add it there or start a new plan.
+ * Import a floor plan image, or the floor plan on a page of a PDF. With `replace`, swap the image of
+ * the current plan and keep everything else. Otherwise a plan that already has content asks whether
+ * to add it there or start a new plan.
  */
 async function importImage(file, { replace = false } = {}) {
   if (!file) {
@@ -508,8 +525,10 @@ async function importImage(file, { replace = false } = {}) {
   }
   let image;
   try {
-    image = await readImageFile(file);
+    image = fileKind(file) === 'pdf' ? await readPdf(file) : await readImageFile(file);
+    if (!image) return;
   } catch (err) {
+    if (!(err instanceof FileError)) console.error(err);
     toast(err instanceof FileError ? err.message : 'This image could not be imported.', { type: 'error' });
     return;
   }
@@ -638,7 +657,12 @@ async function traceImage({ auto = false } = {}) {
     editor.setTool('calibrate');
     canvas.focus({ preventScroll: true });
     const why = result ? 'No walls were found in this image.' : 'The walls in this image could not be detected.';
-    dismissImportHint = toast(`${why} Click two points of a known distance to set its scale, then trace the walls with the Wall tool (W).`, { type: 'info', duration: 12000 });
+    // A PDF page's scale note already gave the image its scale.
+    const next = now.scaleNote && !now.calibrated
+      ? `Its scale is set from its scale note, ${now.scaleNote.text}: trace the walls with the Wall tool (W).`
+      : 'Click two points of a known distance to set its scale, then trace the walls with the Wall tool (W).';
+    if (now.scaleNote && !now.calibrated) editor.setTool('wall');
+    dismissImportHint = toast(`${why} ${next}`, { type: 'info', duration: 12000 });
     return;
   }
   const adopt = !now.calibrated && result.metersPerPixel > 0;
@@ -657,10 +681,13 @@ async function traceImage({ auto = false } = {}) {
   store.select(null);
   editor.setTool('select');
   editor.zoomToFit();
-  const source = result.trace.scale.source;
+  const { source, noteMismatch } = result.trace.scale;
+  const note = now.scaleNote?.text;
   const scale = now.calibrated ? ''
-    : adopt && source === 'doors' ? ' The scale is set from the door widths. Use Calibrate scale if it is off.'
-      : ' Use Calibrate scale to set its true size.';
+    : adopt && source === 'note' ? ` The scale is set from the drawing's scale note, ${note}.`
+      : adopt && source === 'doors' && noteMismatch ? ` The drawing's scale note (${note}) does not match its doors, so the page was likely printed to fit: the scale is set from the door widths. Use Calibrate scale if it is off.`
+        : adopt && source === 'doors' ? ' The scale is set from the door widths. Use Calibrate scale if it is off.'
+          : ' Use Calibrate scale to set its true size.';
   const finished = count.finished ? ` Finishes are set for ${plural(count.finished, 'room')} from the furniture in them.` : '';
   toast(`Found ${foundText(count)}.${finished}${scale}`, { duration: 12000, action: { label: 'Undo', onClick: () => store.undo() } });
   // Show the building in 3D beside the plan it came from, from above to take it all in.

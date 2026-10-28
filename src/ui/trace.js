@@ -30,16 +30,16 @@ async function underlayPixels(u) {
 }
 
 /** Trace pixels on the page, after a moment for it to show that it is working. */
-const traceHere = (pixels, onProgress) => new Promise((resolve) => setTimeout(resolve, 60))
-  .then(() => traceFloorPlan(pixels, { onProgress }));
+const traceHere = (pixels, onProgress, metersPerPixel) => new Promise((resolve) => setTimeout(resolve, 60))
+  .then(() => traceFloorPlan(pixels, { onProgress, metersPerPixel }));
 
-/** Trace pixels in a worker, or on the page if no worker starts. */
-function runTrace(pixels, onProgress) {
+/** Trace pixels in a worker, or on the page if no worker starts; metersPerPixel: a known scale or null. */
+function runTrace(pixels, onProgress, metersPerPixel) {
   let worker;
   try {
     worker = new Worker(new URL('../autotrace-worker.js', import.meta.url), { type: 'module' });
   } catch {
-    return traceHere(pixels, onProgress);
+    return traceHere(pixels, onProgress, metersPerPixel);
   }
   return new Promise((resolve, reject) => {
     let heard = false;
@@ -58,21 +58,23 @@ function runTrace(pixels, onProgress) {
       e.preventDefault();
       worker.terminate();
       if (heard) reject(new Error(e.message || 'The tracer stopped.'));
-      else traceHere(pixels, onProgress).then(resolve, reject);
+      else traceHere(pixels, onProgress, metersPerPixel).then(resolve, reject);
     };
     // Copied, not transferred, so the page still has the pixels if the worker cannot start.
-    worker.postMessage({ width: pixels.width, height: pixels.height, data: pixels.data });
+    worker.postMessage({ width: pixels.width, height: pixels.height, data: pixels.data, metersPerPixel });
   });
 }
 
 /**
  * Trace the walls, doors, windows and rooms in a floor plan image (a plan underlay). Resolves with
  * { trace, factor, metersPerPixel }: factor is traced pixels per image pixel, and metersPerPixel
- * the scale the drawing gives its image pixels, from its doors or walls (null when it gives none).
+ * the scale the drawing gives its image pixels, from its scale note (underlay.scaleNote, unless it
+ * was calibrated), doors or walls (null when it gives none).
  */
 export async function traceUnderlay(underlay, { onProgress } = {}) {
   const pixels = await underlayPixels(underlay);
-  const trace = await runTrace(pixels, onProgress);
+  const note = !underlay.calibrated && underlay.scaleNote?.metersPerPixel > 0 ? underlay.scaleNote.metersPerPixel / pixels.factor : null;
+  const trace = await runTrace(pixels, onProgress, note);
   const mpp = trace.scale.metersPerPixel;
   return { trace, factor: pixels.factor, metersPerPixel: mpp ? mpp * pixels.factor : null };
 }

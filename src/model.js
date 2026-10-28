@@ -220,6 +220,7 @@ export function normalizePlan(input) {
       locked: u.locked !== false,
       ...(u.calibrated === true ? { calibrated: true } : {}),
       ...(u.traced === true ? { traced: true } : {}),
+      ...scaleNoteOf(u.scaleNote),
     };
   }
 
@@ -289,6 +290,13 @@ export function addRoom(draft, points, props = {}) {
   if (props.height > 0) room.height = props.height;
   draft.rooms.push(room);
   return room;
+}
+
+/** The scale note an underlay keeps ({ text, metersPerPixel } from a PDF page), if it is valid. */
+function scaleNoteOf(n) {
+  const mpp = Number(n?.metersPerPixel);
+  if (typeof n?.text !== 'string' || !n.text || n.text.length > 40 || !(mpp > 0 && mpp < 1e3)) return {};
+  return { scaleNote: { text: n.text, metersPerPixel: mpp } };
 }
 
 /**

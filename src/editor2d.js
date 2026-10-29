@@ -2210,7 +2210,7 @@ export class PlanEditor extends EventTarget {
     if (sel.kind === 'item') {
       this.store.update((d) => {
         const props = { rotation: src.rotation };
-        for (const k of ['w', 'd', 'h', 'color', 'top', 'variant', 'label']) if (src[k] !== undefined) props[k] = src[k];
+        for (const k of ['w', 'd', 'h', 'color', 'top', 'label']) if (src[k] !== undefined) props[k] = src[k];
         const it = addItem(d, src.type, src.x + 0.3, src.y + 0.3, props);
         if (src.elevation !== undefined) it.elevation = src.elevation;
         id = it.id;

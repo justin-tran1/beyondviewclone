@@ -494,7 +494,6 @@ export function createProperties(root, { store, editor, actions }) {
     } else {
       main.push(b.readout({ label: 'Size', get: get((e) => { const s = itemDims(e); return `${fmt(s.w)} × ${fmt(s.d)} × ${fmt(s.h)}`; }) }));
     }
-    if (def.variants?.length > 1) main.push(variantField(b, id, def));
     const out = [section(null, ...main), sizeSection];
     if (isFabric(def)) out.push(section('Finish', swatches(b, id)));
     if (def.colorable === 'casework' || def.worksurface) out.push(section('Finish', ...caseworkFields(b, id, def)));
@@ -503,16 +502,6 @@ export function createProperties(root, { store, editor, actions }) {
       deleteBtn('item')));
     if (!hasItem(it.type)) out.unshift(h('p', { class: 'prop-note', text: `This item type ("${it.type}") is not in the library, so it shows as a placeholder.` }));
     return out;
-  }
-
-  /** Which look (ItemDef.variants) an item shows: one by name, or Auto for the one its id picks. */
-  function variantField(b, id, def) {
-    const label = def.variantLabel || 'Look';
-    return b.select({
-      label, name: 'variant', options: [['', 'Auto'], ...def.variants.map((name, i) => [String(i), name])],
-      get: () => { const v = findEntity(store.plan, 'item', id)?.variant; return v === undefined ? '' : String(v); },
-      set: (v) => edit('item', id, `Change ${label.toLowerCase()}`, (e) => { if (v === '') delete e.variant; else e.variant = Number(v); }),
-    });
   }
 
   /** Casework color (CASEWORK_COLORS, or as made) and the counter or bench top. */
@@ -580,7 +569,7 @@ export function createProperties(root, { store, editor, actions }) {
     let newId = null;
     store.update((d) => {
       const props = { rotation: src.rotation };
-      for (const k of ['w', 'd', 'h', 'color', 'top', 'variant', 'label']) if (src[k] !== undefined) props[k] = src[k];
+      for (const k of ['w', 'd', 'h', 'color', 'top', 'label']) if (src[k] !== undefined) props[k] = src[k];
       const copy = addItem(d, src.type, src.x + 0.3, src.y + 0.3, props);
       if (src.elevation !== undefined) copy.elevation = src.elevation;
       newId = copy.id;

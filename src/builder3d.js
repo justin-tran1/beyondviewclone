@@ -133,8 +133,7 @@ const CAPTURE_DIM = 0.4;
 // Cube face size for the base and captured environments; both match so shaders are shared.
 const ENV_SIZE = 128;
 const PROBE_HEIGHT = 1.5;
-// Wall paint as made (finishes.js WALL_COLORS), for faces no room's finish covers and opening heads.
-const PAINT = '#d4ccc3';
+const PAINT = '#efece6';
 const WINDOW_TINT = '#dfe9e6';
 const PARTITION_TINT = '#edf1ef';
 
@@ -585,23 +584,22 @@ function createMaterials(kit) {
     facade: sharedMaterial(kit, 'facade', () => outdoor(kit.paintMaterial('#cbc7be', { roughness: 0.8 }).clone())),
     cut: kit.material('#454d4f', { roughness: 0.9 }),
     // Rubber cove base in a soft charcoal, so it grounds the walls without drawing a black line.
-    base: kit.material('#463d36', { roughness: 0.62 }),
+    base: kit.material('#4b4f4f', { roughness: 0.62 }),
     // Wall protection: satin stainless corner guards (mostly diffuse, so they read light like the
-    // walls they wrap rather than mirror the floor), a vinyl crash rail in warm grey and a walnut
+    // walls they wrap rather than mirror the floor), a vinyl crash rail in warm grey and an oak
     // handrail on stainless brackets.
     guard: kit.material('#cfd1d0', { roughness: 0.3, metalness: 0.35 }),
     rail: kit.material('#b3ada2', { roughness: 0.4 }),
-    handrail: kit.mat.walnut,
+    handrail: kit.mat.oak,
     bracket: kit.mat.steel,
-    // Satin painted hollow metal door frames in a dark bronze, framing walnut veneer leaves as
-    // the base frames the floor, and interior glazing in the same bronze; storefront and window
-    // frames in the exterior walls are clear anodized aluminum.
-    frame: kit.material('#453b34', { roughness: 0.42 }),
+    // Satin painted hollow metal door frames in a warm light grey (dark frames read as outlines),
+    // and clear anodized aluminum storefront and window frames.
+    frame: kit.material('#a9aaa5', { roughness: 0.42 }),
     alu: kit.material('#b9bdbf', { roughness: 0.34, metalness: 0.65 }),
-    leaf: kit.mat.walnut,
+    leaf: kit.mat.oak,
     handle: kit.mat.steel,
     sill: kit.mat.quartz,
-    cap: kit.mat.walnut,
+    cap: kit.mat.oak,
     glass: kit.glassMaterial({ tint: WINDOW_TINT }),
     partition: kit.glassMaterial({ tint: PARTITION_TINT }),
     frosted: kit.glassMaterial({ frosted: true }),
@@ -2073,15 +2071,15 @@ function lever(ctx, LF, s, y, face) {
 }
 
 function glassLeaf(ctx, LF, width, y0, y1, stiles) {
-  const rail = ctx.main.get(stiles ? ctx.mats.alu : ctx.mats.frame, !ctx.low);
+  const alu = ctx.main.get(ctx.mats.alu, !ctx.low);
   const st = stiles ? 0.07 : 0, bottom = stiles ? 0.18 : 0.09, face = stiles ? 0.02 : 0.006;
   // Storefront leaves are exterior glazing; frameless interior leaves match the partitions.
   box(LF, faces2(ctx.main.get(stiles ? ctx.mats.glass : ctx.mats.partition, false)), st, width - st, -0.006, 0.006, y0 + bottom, y1 - 0.06);
-  rbox(ctx, LF, rail, 0, width, -0.02, 0.02, y0, y0 + bottom, 0.003);
-  rbox(ctx, LF, rail, 0, width, -0.02, 0.02, y1 - 0.06, y1, 0.003);
+  rbox(ctx, LF, alu, 0, width, -0.02, 0.02, y0, y0 + bottom, 0.003);
+  rbox(ctx, LF, alu, 0, width, -0.02, 0.02, y1 - 0.06, y1, 0.003);
   if (stiles) {
-    rbox(ctx, LF, rail, 0, st, -0.02, 0.02, y0 + bottom, y1 - 0.06, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
-    rbox(ctx, LF, rail, width - st, width, -0.02, 0.02, y0 + bottom, y1 - 0.06, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
+    rbox(ctx, LF, alu, 0, st, -0.02, 0.02, y0 + bottom, y1 - 0.06, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
+    rbox(ctx, LF, alu, width - st, width, -0.02, 0.02, y0 + bottom, y1 - 0.06, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
   }
   pullBar(ctx, LF, width - (stiles ? 0.035 : 0.09), face, Math.min(1.45, y1 - 0.2));
 }
@@ -2105,12 +2103,10 @@ function pullBar(ctx, LF, s, face, yTop, signs = [1, -1]) {
 function slidingPanels(ctx, info, sp, s0, s1, top) {
   const { F, w } = info;
   const { o } = sp;
-  const outside = w.kind === 'exterior';
-  const frame = outside ? ctx.mats.alu : ctx.mats.frame;
-  const track = ctx.main.get(frame, !ctx.low);
+  const alu = ctx.main.get(ctx.mats.alu, !ctx.low);
   const trackTop = top, trackBottom = top - 0.05;
-  rbox(ctx, F, track, s0, s1, -0.05, 0.05, trackBottom, trackTop, 0.004);
-  box(F, noBottom(track), s0, s1, -0.05, 0.05, 0, 0.008);
+  rbox(ctx, F, alu, s0, s1, -0.05, 0.05, trackBottom, trackTop, 0.004);
+  box(F, noBottom(alu), s0, s1, -0.05, 0.05, 0, 0.008);
   const clear = s1 - s0;
   const pw = clear / 2 + 0.03;
   // Open to 2 cm short of the fixed panel, so both leading stiles show.
@@ -2122,24 +2118,24 @@ function slidingPanels(ctx, info, sp, s0, s1, top) {
   const r = 0.04;
   const glass = fixedAtStart ? [sp.start, s1 - slide - r] : [s0 + slide + r, sp.end];
   if (glass[1] > glass[0]) ctx.colliders.push({ a: pointOnWall(w, glass[0]), b: pointOnWall(w, glass[1]), r });
-  const pane = outside ? ctx.mats.glass : ctx.mats.partition;
-  glassPanel(ctx, F, fixed[0], fixed[1], -side * 0.022, 0.008, trackBottom, pane, frame);
-  glassPanel(ctx, F, moving[0], moving[1], side * 0.022, 0.008, trackBottom, pane, frame);
+  const pane = w.kind === 'exterior' ? ctx.mats.glass : ctx.mats.partition;
+  glassPanel(ctx, F, fixed[0], fixed[1], -side * 0.022, 0.008, trackBottom, pane);
+  glassPanel(ctx, F, moving[0], moving[1], side * 0.022, 0.008, trackBottom, pane);
   const lead = fixedAtStart ? moving[1] - 0.06 : moving[0] + 0.06;
   const u = side * 0.022;
   const PF = { o: { x: F.o.x + F.n.x * u, y: F.o.y + F.n.y * u }, d: F.d, n: F.n };
   pullBar(ctx, PF, lead, 0.0175, Math.min(1.45, trackBottom - 0.2), [side]);
 }
 
-/** Framed glass panel centered at uc: stiles and rails in `frame`, and a glass light. */
-function glassPanel(ctx, F, s0, s1, uc, y0, y1, glass = ctx.mats.partition, frame = ctx.mats.frame) {
-  const rail = ctx.main.get(frame, !ctx.low);
+/** Framed glass panel centered at uc: stiles, rails and a glass light. */
+function glassPanel(ctx, F, s0, s1, uc, y0, y1, glass = ctx.mats.partition) {
+  const alu = ctx.main.get(ctx.mats.alu, !ctx.low);
   const g = ctx.main.get(glass, false);
   const t = 0.0175, st = 0.045, r = 0.003;
-  rbox(ctx, F, rail, s0, s0 + st, uc - t, uc + t, y0, y1, r);
-  rbox(ctx, F, rail, s1 - st, s1, uc - t, uc + t, y0, y1, r);
-  rbox(ctx, F, rail, s0 + st, s1 - st, uc - t, uc + t, y0, y0 + 0.09, r, { faces: ['pu', 'nu', 'top', 'bottom'] });
-  rbox(ctx, F, rail, s0 + st, s1 - st, uc - t, uc + t, y1 - 0.06, y1, r, { faces: ['pu', 'nu', 'top', 'bottom'] });
+  rbox(ctx, F, alu, s0, s0 + st, uc - t, uc + t, y0, y1, r);
+  rbox(ctx, F, alu, s1 - st, s1, uc - t, uc + t, y0, y1, r);
+  rbox(ctx, F, alu, s0 + st, s1 - st, uc - t, uc + t, y0, y0 + 0.09, r, { faces: ['pu', 'nu', 'top', 'bottom'] });
+  rbox(ctx, F, alu, s0 + st, s1 - st, uc - t, uc + t, y1 - 0.06, y1, r, { faces: ['pu', 'nu', 'top', 'bottom'] });
   box(F, faces2(g), s0 + st, s1 - st, uc - 0.005, uc + 0.005, y0 + 0.09, y1 - 0.06);
 }
 
@@ -2165,9 +2161,8 @@ function windowOpening(ctx, info, sp, f, get) {
   const fd = Math.min(0.1, w.thickness * 0.6), fw = 0.05;
   const uc = inner !== 0 ? -inner * Math.max(0, ht - fd / 2 - 0.03) : 0;
   const u0 = uc - fd / 2, u1 = uc + fd / 2;
-  const fr = B.get(inner !== 0 ? M.alu : M.frame, !ctx.low);
-  // Extruded aluminum frame and mullions with eased edges (bronze between rooms); the glass sits in
-  // the middle of the frame.
+  const fr = B.get(M.alu, !ctx.low);
+  // Extruded aluminum frame and mullions with eased edges; the glass sits in the middle of the frame.
   const r = 0.003;
   rbox(ctx, F, fr, start, start + fw, u0, u1, sill, top, r, { faces: ['s1', 'pu', 'nu'] });
   rbox(ctx, F, fr, end - fw, end, u0, u1, sill, top, r, { faces: ['s0', 'pu', 'nu'] });
@@ -2191,28 +2186,25 @@ function windowOpening(ctx, info, sp, f, get) {
   }
 }
 
-/**
- * Glass partition: head and base in the door frames' dark bronze, mullions about every 1.5 m, a
- * frosted privacy band, glass doors.
- */
+/** Glass partition: aluminum head and base, mullions about every 1.5 m, a frosted privacy band, glass doors. */
 function glassWall(ctx, info) {
   const { w, L, F, ext, spans } = info;
   const { main: B, mats: M } = ctx;
   const ht = w.thickness / 2, H = w.height;
   const head = 0.05, foot = 0.07;
-  const frame = B.get(M.frame);
+  const alu = B.get(M.alu);
   const glass = faces2(B.get(M.partition, false));
   const frost = faces2(B.get(M.frosted, false));
-  box(F, endFaces(ctx, info, { ...noBottom(frame), top: B.get(M.cut) }, true, true, H), -ext.a, L + ext.b, -ht, ht, H - head, H);
+  box(F, endFaces(ctx, info, { ...noBottom(alu), top: B.get(M.cut) }, true, true, H), -ext.a, L + ext.b, -ht, ht, H - head, H);
 
-  const post = (s) => rbox(ctx, F, frame, s - 0.02, s + 0.02, -ht, ht, foot, H - head, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
+  const post = (s) => rbox(ctx, F, alu, s - 0.02, s + 0.02, -ht, ht, foot, H - head, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
   const pane = (s0, s1, y0) => {
     box(F, glass, s0, s1, -0.006, 0.006, y0, H - head);
     if (H - head > 1.25 && y0 < 1.05) box(F, frost, s0, s1, -0.0075, 0.0075, 1.05, 1.2);
   };
   const solid = (s0, s1, v0, v1, postA, postB) => {
     if (s1 - s0 < 1e-3) return;
-    box(F, endFaces(ctx, info, noBottom(frame), postA, postB, foot), s0, s1, -ht, ht, 0, foot);
+    box(F, endFaces(ctx, info, noBottom(alu), postA, postB, foot), s0, s1, -ht, ht, 0, foot);
     pane(s0, s1, foot);
     const bays = clamp(Math.round((v1 - v0) / MULLION_STEP), 1, 2000);
     for (let k = postA ? 0 : 1; k <= (postB ? bays : bays - 1); k++) post(clamp(v0 + ((v1 - v0) * k) / bays, v0 + 0.02, v1 - 0.02));
@@ -2220,22 +2212,22 @@ function glassWall(ctx, info) {
   let cursor = -ext.a, visible = ext.a;
   spans.forEach((sp, i) => {
     solid(cursor, sp.start, visible, sp.start, i === 0, false);
-    glassDoor(ctx, info, sp, frame, pane);
+    glassDoor(ctx, info, sp, alu, pane);
     cursor = visible = sp.end;
   });
   solid(cursor, L + ext.b, visible, L - ext.b, spans.length === 0, true);
   floorTrim(ctx, info, floorRuns(info, false), { base: false, width: 0.18 });
 }
 
-function glassDoor(ctx, info, sp, frame, pane) {
+function glassDoor(ctx, info, sp, alu, pane) {
   const { w, F } = info;
   const { o, start, end } = sp;
   const ht = w.thickness / 2;
   const oh = Math.min(o.height, w.height - 0.12);
   const jamb = 0.045;
-  rbox(ctx, F, frame, start, start + jamb, -ht, ht, 0, oh, 0.003, { faces: ['s0', 's1', 'pu', 'nu', 'top'] });
-  rbox(ctx, F, frame, end - jamb, end, -ht, ht, 0, oh, 0.003, { faces: ['s0', 's1', 'pu', 'nu', 'top'] });
-  rbox(ctx, F, frame, start, end, -ht, ht, oh, oh + 0.05, 0.003);
+  rbox(ctx, F, alu, start, start + jamb, -ht, ht, 0, oh, 0.003, { faces: ['s0', 's1', 'pu', 'nu', 'top'] });
+  rbox(ctx, F, alu, end - jamb, end, -ht, ht, 0, oh, 0.003, { faces: ['s0', 's1', 'pu', 'nu', 'top'] });
+  rbox(ctx, F, alu, start, end, -ht, ht, oh, oh + 0.05, 0.003);
   pane(start + jamb, end - jamb, oh + 0.05);
   const s0 = start + jamb, s1 = end - jamb;
   if (o.type === 'door') {
@@ -2693,31 +2685,16 @@ function largestRect(ok, nx, ny) {
   return best;
 }
 
-const fits = (region, p, half) => fitsRect(region, p, half, half);
-
-/** Whether a rectangle of half sizes hx, hy around p lies in the region. */
-function fitsRect(region, p, hx, hy) {
+function fits(region, p, half) {
   const c = region.contains;
-  return c(p) && c({ x: p.x - hx, y: p.y - hy }) && c({ x: p.x + hx, y: p.y - hy })
-    && c({ x: p.x + hx, y: p.y + hy }) && c({ x: p.x - hx, y: p.y + hy });
+  return c(p) && c({ x: p.x - half, y: p.y - half }) && c({ x: p.x + half, y: p.y - half })
+    && c({ x: p.x + half, y: p.y + half }) && c({ x: p.x - half, y: p.y + half });
 }
 
-/**
- * 2 x 4 LED troffers on the tile grid, along the region's longer side: each covers the tile at a
- * point and its neighbor toward the region's middle, so the layout stays centered. A 2 x 2 where
- * one does not fit. Plus supply diffusers and sprinkler heads between them.
- */
+/** LED troffers on the tile grid, plus supply diffusers and sprinkler heads between them. */
 function tileFixtures(ctx, region, points) {
-  const h = region.height, b = region.bounds;
-  const axis = b.maxX - b.minX >= b.maxY - b.minY ? 'x' : 'y';
-  const mid = axis === 'x' ? (b.minX + b.maxX) / 2 : (b.minY + b.maxY) / 2;
-  const reach = TILE + 0.1, side = TILE / 2 + 0.1;
-  for (const p of points) {
-    const v = axis === 'x' ? p.x : p.y, step = v <= mid ? TILE / 2 : -TILE / 2;
-    const c = axis === 'x' ? { x: p.x + step, y: p.y } : { x: p.x, y: p.y + step };
-    if (fitsRect(region, c, axis === 'x' ? reach : side, axis === 'x' ? side : reach)) troffer(ctx, c, h, axis);
-    else if (fits(region, p, side)) troffer(ctx, p, h);
-  }
+  const h = region.height;
+  for (const p of points) if (fits(region, p, TILE / 2 + 0.1)) troffer(ctx, p, h);
   if (ctx.low) return;
   const half = TROFFER_STEP / 2;
   points.forEach((p, i) => {
@@ -2739,50 +2716,39 @@ function drywallFixtures(ctx, region, points) {
 }
 
 /**
- * Lay-in LED troffer, 2 x 4 (two tiles along `axis`, 'x' or 'y') or else 2 x 2: a slim white frame
- * with eased edges, a short reflector sloping up to a lens recessed about a centimeter into it, and
- * the glowing lens itself. Its light goes into the light map from the middle of each tile it covers,
- * a 2 x 4 giving a 2 x 2's light (a grid of them lights a room as the 2 x 2s did).
+ * 2 x 2 LED troffer: a slim white frame with eased edges, a short reflector sloping up to a lens
+ * recessed about a centimeter into it, and the glowing lens itself.
  */
-function troffer(ctx, p, h, axis = null) {
+function troffer(ctx, p, h) {
   const B = ctx.ceil;
   const hs = TILE / 2 - 0.004, rim = 0.024, depth = 0.014;
-  const hx = axis === 'x' ? TILE - 0.004 : hs, hy = axis === 'y' ? TILE - 0.004 : hs;
   const lens = B.get(ctx.mats.led, false, false);
-  if (axis) {
-    for (const s of [-1, 1]) {
-      const e = axis === 'x' ? { x: p.x + s * TILE / 2, y: p.y } : { x: p.x, y: p.y + s * TILE / 2 };
-      ctx.emitters.push({ ...e, h, power: PLAN_LIGHT.troffer / 2, cone: 1 });
-    }
-  } else {
-    ctx.emitters.push({ x: p.x, y: p.y, h, power: PLAN_LIGHT.troffer, cone: 1 });
-  }
+  ctx.emitters.push({ x: p.x, y: p.y, h, power: PLAN_LIGHT.troffer, cone: 1 });
   if (ctx.low) {
-    box(WORLD, { bottom: lens }, p.x - hx, p.x + hx, p.y - hy, p.y + hy, h - 0.002, h);
+    box(WORLD, { bottom: lens }, p.x - hs, p.x + hs, p.y - hs, p.y + hs, h - 0.002, h);
     return;
   }
   const trim = B.get(ctx.mats.trim, false, true), y0 = h - depth, r = 0.003;
   const long = ['bottom', 'pu', 'nu', 's0', 's1'], short = ['bottom', 'pu', 'nu'];
-  rbox(ctx, WORLD, trim, p.x - hx, p.x + hx, p.y - hy, p.y - hy + rim, y0, h, r, { faces: long });
-  rbox(ctx, WORLD, trim, p.x - hx, p.x + hx, p.y + hy - rim, p.y + hy, y0, h, r, { faces: long });
+  rbox(ctx, WORLD, trim, p.x - hs, p.x + hs, p.y - hs, p.y - hs + rim, y0, h, r, { faces: long });
+  rbox(ctx, WORLD, trim, p.x - hs, p.x + hs, p.y + hs - rim, p.y + hs, y0, h, r, { faces: long });
   const side = { o: { x: 0, y: 0 }, d: { x: 0, y: 1 }, n: { x: -1, y: 0 } };
-  rbox(ctx, side, trim, p.y - hy + rim, p.y + hy - rim, -(p.x - hx + rim), -(p.x - hx), y0, h, r, { faces: short });
-  rbox(ctx, side, trim, p.y - hy + rim, p.y + hy - rim, -(p.x + hx), -(p.x + hx - rim), y0, h, r, { faces: short });
+  rbox(ctx, side, trim, p.y - hs + rim, p.y + hs - rim, -(p.x - hs + rim), -(p.x - hs), y0, h, r, { faces: short });
+  rbox(ctx, side, trim, p.y - hs + rim, p.y + hs - rim, -(p.x + hs), -(p.x + hs - rim), y0, h, r, { faces: short });
   // Reflector bands from the frame's inner edge up to the lens, facing down and in.
-  const ax = hx - rim, ay = hy - rim, lx = ax - 0.012, ly = ay - 0.012, yl = h - 0.004;
-  const rise = yl - y0, run = 0.012, k = Math.hypot(rise, run);
+  const a = hs - rim, l = a - 0.012, yl = h - 0.004;
+  const rise = yl - y0, run = a - l, k = Math.hypot(rise, run);
   const refl = B.get(ctx.mats.reflector, false, false);
   for (const [tx, tz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
     // Corners of the band on the side opposite (tx, tz): outer low edge, then inner high edge.
     const ox = -tx, oz = -tz, px = -oz, pz = ox;
-    const [ao, aa, lo, la] = tx ? [ax, ay, lx, ly] : [ay, ax, ly, lx];
     const at = (d, along, y) => [p.x + ox * d + px * along, y, p.y + oz * d + pz * along];
     const nrm = [tx * rise / k, -run / k, tz * rise / k];
     const V = (c) => [...c, ...nrm, c[0], -c[2]];
-    poly(refl, [V(at(ao, -aa, y0)), V(at(ao, aa, y0)), V(at(lo, la, yl)), V(at(lo, -la, yl))]);
+    poly(refl, [V(at(a, -a, y0)), V(at(a, a, y0)), V(at(l, l, yl)), V(at(l, -l, yl))]);
   }
-  quad(lens, [p.x - lx, yl, p.y - ly], [p.x + lx, yl, p.y - ly], [p.x + lx, yl, p.y + ly], [p.x - lx, yl, p.y + ly], DOWN, 0, 1, 1, 0);
-  ctx.luminaires.push({ x: p.x, y: yl - 0.002, z: p.y, length: 2 * lx, breadth: 2 * ly, dir: { x: 1, y: 0 }, radiance: LED.troffer });
+  quad(lens, [p.x - l, yl, p.y - l], [p.x + l, yl, p.y - l], [p.x + l, yl, p.y + l], [p.x - l, yl, p.y + l], DOWN, 0, 1, 1, 0);
+  ctx.luminaires.push({ x: p.x, y: yl - 0.002, z: p.y, length: 2 * l, breadth: 2 * l, dir: { x: 1, y: 0 }, radiance: LED.troffer });
 }
 
 function diffuser(ctx, p, h) {
@@ -3833,11 +3799,11 @@ function buildItems(ctx) {
   for (const item of ctx.plan.items) {
     const def = getItem(item.type);
     const dims = itemSize(item);
-    const key = `${item.type}|${dims.w}|${dims.d}|${dims.h}|${item.color ?? ''}|${item.top ?? ''}|${itemVariant(def, item) ?? ''}`;
+    const key = `${item.type}|${dims.w}|${dims.d}|${dims.h}|${item.color ?? ''}|${item.top ?? ''}`;
     let parts = templates.get(key);
     if (parts === undefined) templates.set(key, (parts = itemTemplate(ctx, buildItem(ctx, def, dims, item))));
     const rotation = (-normDeg(item.rotation || 0) * Math.PI) / 180;
-    place.compose(_v.set(item.x, itemBase(def, item, dims), item.y), _q.setFromAxisAngle(_y, rotation), _s.set(1, 1, 1));
+    place.compose(_v.set(item.x, item.elevation ?? 0, item.y), _q.setFromAxisAngle(_y, rotation), _s.set(1, 1, 1));
     ctx.items.at(item.x, item.y);
     // What the item shades below it, once per template (see itemCover); rugs and the like shade nothing.
     const blocking = def.blocking !== false;
@@ -3866,28 +3832,11 @@ function buildItems(ctx) {
   }
 }
 
-/** The look a placed item shows when its type comes in several (ItemDef.variants): its own, or one fixed by its id. */
-function itemVariant(def, item) {
-  const n = def.variants?.length ?? 0;
-  if (n < 2) return undefined;
-  if (Number.isInteger(item.variant) && item.variant >= 0 && item.variant < n) return item.variant;
-  const id = String(item.id ?? '');
-  let h = 0x811c9dc5;
-  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 0x01000193);
-  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
-  return ((h ^ (h >>> 13)) >>> 0) % n;
-}
-
-/** Height of an item's base: its elevation, plus the lift that centers a wall-hung one (ItemDef.hang). */
-function itemBase(def, item, dims) {
-  return (item.elevation ?? 0) + (def.hang > 0 ? Math.max(0, def.hang - dims.h / 2) : 0);
-}
-
 /** A plain box over an item's footprint. */
 function itemBlock(ctx, item, dims) {
   const r = (normDeg(item.rotation || 0) * Math.PI) / 180;
   const F = frameOf({ x: item.x, y: item.y }, { x: Math.cos(r), y: Math.sin(r) });
-  const y0 = itemBase(getItem(item.type), item, dims);
+  const y0 = item.elevation ?? 0;
   box(F, noBottom(ctx.items.get(ctx.kit.mat.plastic, false)), -dims.w / 2, dims.w / 2, -dims.d / 2, dims.d / 2, y0, y0 + dims.h);
 }
 
@@ -4070,7 +4019,7 @@ function boxBlur(src, nx, nz, h) {
 
 function buildItem(ctx, def, dims, item) {
   try {
-    const obj = def.build(ctx.kit, { ...dims, color: item.color, top: item.top, variant: itemVariant(def, item) });
+    const obj = def.build(ctx.kit, { ...dims, color: item.color, top: item.top });
     if (obj?.isObject3D) return obj;
     throw new Error('build() did not return an Object3D');
   } catch (err) {

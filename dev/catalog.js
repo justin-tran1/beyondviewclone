@@ -3,8 +3,7 @@
 //   3D, framed to fit and labeled, with plan symbols below in cells sized to each symbol (&px= sets
 //   the plan scale in px per meter, 90 by default).
 //   ?item=fume-hood (add &w=, &d=, &h= in meters to try other sizes, up to 60, &color=%23rrggbb
-//   for a custom finish, &top= for a worksurface, a WORKSURFACES key, and &variant= for one of the
-//   looks of an item that comes in several, such as wall-art): one item from four sides,
+//   for a custom finish and &top= for a worksurface, a WORKSURFACES key): one item from four sides,
 //   its model bounds checked against the footprint, and its plan symbol at three zoom levels.
 //   &view=room (with ?category or ?item): the same items built into a daylit room by builder3d.js
 //   and drawn through the walkthrough's pipeline (captured environment, AO, grade and AgX), as in
@@ -44,9 +43,8 @@ const category = itemType && hasItem(itemType) ? getItem(itemType).category : pa
 const THEME = { line: '#435254', fill: '#ffffff', accent: '#003f2d', muted: '#7f8480', light: '#cad1d3', glass: '#80bbad' };
 const MARK = '#17e88f';  // footprint outlines and front markers
 const GAP = 0.7;         // meters between items in the 3D grid
-// Room views take the walkthrough's exposure (src/walkthrough.js EXPOSURE); the studio keeps its own,
-// with lights at interior levels (scene-linear).
-const EXPOSURE = room ? 0.66 : 1.8;
+// The walkthrough's exposure, and studio lights at interior levels (scene-linear).
+const EXPOSURE = 1.8;
 const STUDIO = { key: 3.2, fill: 1.9, env: 0.75, floor: '#cfd1cc' };
 // Floor finish of the preview room per category.
 const ROOM_FLOOR = { lab: 'epoxy', medical: 'vinyl', office: 'carpet', retail: 'polished-concrete', general: 'wood' };
@@ -493,7 +491,7 @@ async function renderRoomItem(def, o) {
   camera.lookAt(centre.x, Math.min(centre.y, eye - 0.25), centre.z);
   // The room reaches past the camera, with the windows behind the item and to its left.
   const reach = Math.max(1.5, dist + 1.2), side = Math.max(1.6, o.w / 2 + 1.4);
-  const plan = roomPlan([{ def, x: 0, z: 0, size: { w: o.w, d: o.d, h: o.h, ...(o.variant === undefined ? {} : { variant: o.variant }) } }], {
+  const plan = roomPlan([{ def, x: 0, z: 0, size: { w: o.w, d: o.d, h: o.h } }], {
     x0: -side - Math.max(0, -Math.sin(yaw) * reach), x1: side + Math.max(0, Math.sin(yaw) * reach),
     z0: -o.d / 2 - 1.1, z1: Math.max(o.d / 2 + 1.2, Math.cos(yaw) * reach + 0.6),
     height: Math.max(2.9, box.max.y + 0.3), floor: ROOM_FLOOR[def.category] || 'vinyl', open: false, exterior: 'campus',
@@ -596,8 +594,7 @@ try {
     if (!hasItem(itemType)) throw new Error(`No item "${itemType}" in the catalog`);
     const def = getItem(itemType);
     const num = (k) => (Number(params.get(k)) > 0 ? Math.min(60, Number(params.get(k))) : def[k]);
-    const look = Number(params.get('variant'));
-    const o = { w: num('w'), d: num('d'), h: num('h'), color: custom, top, variant: Number.isInteger(look) && look >= 0 ? look : undefined };
+    const o = { w: num('w'), d: num('d'), h: num('h'), color: custom, top };
     if (room) await renderRoomItem(def, o);
     else renderCloseUp(def, o);
     const fit = Math.min(300, Math.max(80, 400 / Math.max(o.w, o.d)));

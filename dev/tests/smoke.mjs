@@ -1,13 +1,14 @@
 // End-to-end smoke test: opens each sample through the welcome dialog and captures Plan, Split and
-// Walk, then does the same for a floor plan image imported and traced into a new plan ('import'),
-// and for the floor plan sheet of a PDF drawing set ('pdf', see pdf-sheets.mjs), after importing
-// the sheet printed to fit, the set scanned and the sheet with its text drawn as lines (the last
-// two read with OCR). Each PDF's rooms must be named and finished from its labels.
-// Usage: node dev/tests/smoke.mjs <baseUrl> <outDir> [sampleId | import | pdf ...]
+// Walk, then does the same for a floor plan drawing (SVG) imported and traced into a new plan
+// ('import'), for the drawing as a PNG and a JPG ('image'), and for the floor plan sheet of a PDF
+// drawing set ('pdf', see pdf-sheets.mjs), after importing the sheet printed to fit, the set
+// scanned and the sheet with its text drawn as lines (the last two read with OCR). Each import's
+// rooms must be named and finished from the drawing's labels (an image's read with OCR).
+// Usage: node dev/tests/smoke.mjs <baseUrl> <outDir> [sampleId | import | image | pdf ...]
 // Software rendering takes seconds to a minute per Realistic frame, so each 3D capture waits for the
 // walkthrough to stop drawing and for the GPU to finish, not for a fixed time. Exits 1 on any error.
 import { chromium } from 'playwright';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { makeTestPdfs } from './pdf-sheets.mjs';
 
@@ -17,7 +18,7 @@ mkdirSync(out, { recursive: true });
 const DRAW_TIMEOUT = 300000;
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const errors = [];
-const samples = only.length ? only : ['lab-suite', 'medical-office', 'office-floor', 'retail-warehouse', 'trace-demo', 'import', 'pdf'];
+const samples = only.length ? only : ['lab-suite', 'medical-office', 'office-floor', 'retail-warehouse', 'trace-demo', 'import', 'image', 'pdf'];
 // The trace demo's drawing (24 px per foot) and what tracing it finds: 15 walls, 8 doors, 12 windows,
 // 8 rooms and 28 pieces of furniture, among them these. The test allows for a few misses.
 const DRAWING = fileURLToPath(new URL('../../assets/samples/trace-demo.svg', import.meta.url));
@@ -29,13 +30,22 @@ const SAMPLE_FINISHES = { 'medical-office': ['exam', 'corridor', 'restroom', 'pr
 // The PDF set's floor plan sheet is the trace demo at 1/4" = 1'-0": its building is 60 by 40 ft on
 // wall centerlines, which the scale note gives exactly and the doors to a few percent.
 const PDF_SPAN = [60 * 0.3048, 40 * 0.3048];
-// The rooms its labels name (CONFERENCE over 101 and so on), with the finishes their names give.
-const PDF_ROOMS = { 'Conference 101': 'conference', 'Office 102': 'office', 'Office 103': 'office', 'Office 104': 'office', 'Reception 105': 'waiting', 'Restroom 108': 'restroom' };
-// Rooms named, not matching PDF_ROOMS: a page's text names them all, OCR may miss a number.
-const roomErrors = (name, got, misses) => {
-  const wrong = Object.entries(PDF_ROOMS).filter(([room, use]) => got.names[room] !== use);
-  return wrong.length > misses ? [`pdf: the ${name}'s rooms were not named and finished from its labels: missing ${wrong.map(([r, u]) => `${r} (${u})`).join(', ')} in ${JSON.stringify(got.names)}`] : [];
+// The rooms the drawing's labels name (CONFERENCE over 101 and so on), with the finishes their
+// names give.
+const DRAWING_ROOMS = { 'Conference 101': 'conference', 'Office 102': 'office', 'Office 103': 'office', 'Office 104': 'office', 'Reception 105': 'waiting', 'Restroom 108': 'restroom' };
+// Rooms named, not matching DRAWING_ROOMS: a page's text names them all, OCR may miss a number.
+const roomErrors = (id, name, got, misses) => {
+  const wrong = Object.entries(DRAWING_ROOMS).filter(([room, use]) => got.names[room] !== use);
+  return wrong.length > misses ? [`${id}: the ${name}'s rooms were not named and finished from its labels: missing ${wrong.map(([r, u]) => `${r} (${u})`).join(', ')} in ${JSON.stringify(got.names)}`] : [];
 };
+/** The plan's room names and the finishes they have, once an image's labels are read (or found to name none). */
+async function roomsNamed(page) {
+  await page.waitForFunction(() => window.cbre.store.plan.underlay?.labelsRead || [...document.querySelectorAll('.toast-text')].some((t) => /No room names/.test(t.textContent)), null, { timeout: 300000 });
+  return page.evaluate(async () => {
+    const { packageOf } = await import(new URL('src/finishes.js', document.baseURI).href);
+    return { names: Object.fromEntries(window.cbre.store.plan.rooms.map((r) => [r.name, packageOf(r)])) };
+  });
+}
 let pdfs = null;
 const packages = (page) => page.evaluate(async () => {
   const { packageOf } = await import(new URL('src/finishes.js', document.baseURI).href);
@@ -96,6 +106,47 @@ async function importDrawing(page) {
   const unmatched = MATCHED.filter((k) => !matched.includes(k));
   if (unmatched.length) errors.push(`import: no room took the ${unmatched.join(', ')} finishes from its furniture (${matched.join(', ') || 'none'})`);
   console.log(`import finishes: ${matched.join(', ')}`);
+  const got = await roomsNamed(page);
+  errors.push(...roomErrors('import', 'drawing', got, 1));
+  console.log(`import names: ${Object.entries(got.names).map(([n, u]) => `${n} [${u}]`).join(', ')}`);
+}
+
+/**
+ * The trace demo's drawing as a PNG and as a JPG (at full size), each imported into an empty plan:
+ * its rooms are named from the labels OCR reads on it.
+ */
+async function importImages(page) {
+  const svg = `data:image/svg+xml;base64,${readFileSync(DRAWING).toString('base64')}`;
+  let first = true;
+  for (const [type, quality, misses] of [['image/png', undefined, 1], ['image/jpeg', 0.8, 2]]) {
+    const url = await page.evaluate(async ({ svg, type, quality }) => {
+      const img = new Image();
+      img.src = svg;
+      await img.decode();
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0);
+      return c.toDataURL(type, quality);
+    }, { svg, type, quality });
+    const name = type === 'image/png' ? 'PNG' : 'JPG';
+    // A fresh page for each but the first (the one just opened).
+    if (!first) await page.goto(base, { waitUntil: 'load' });
+    first = false;
+    await page.waitForSelector('dialog[open]');
+    await page.keyboard.press('Escape');
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('#empty-import')]);
+    await chooser.setFiles({ name: `suite-210.${name.toLowerCase()}`, mimeType: type, buffer: Buffer.from(url.split(',')[1], 'base64') });
+    await page.waitForFunction(() => window.cbre.store.plan.underlay?.traced, null, { timeout: 120000 });
+    const got = await roomsNamed(page);
+    errors.push(...roomErrors('image', name, got, misses));
+    console.log(`image: ${name}, ${Object.entries(got.names).map(([n, u]) => `${n} [${u}]`).join(', ')}`);
+    // The 3D view the trace opened has loaded before the page is left (or its modules fail to load).
+    await page.waitForFunction(() => window.cbre.walk?._built, null, { timeout: DRAW_TIMEOUT });
+  }
 }
 
 /**
@@ -145,7 +196,7 @@ async function importPdf(page) {
     if (got.chosen !== want) errors.push(`pdf: the ${name} chose page ${got.chosen}, not ${want}`);
     if (!got.toasts.some((t) => /scale note, 1\/4" = 1'-0", read from the page by OCR/.test(t))) errors.push(`pdf: the ${name}'s scale was not read from its note by OCR (${got.toasts.join(' | ')})`);
     if (spanOff(got.span) > 0.02) errors.push(`pdf: the ${name} traced ${got.span.map((v) => v.toFixed(2)).join(' x ')} m, expected ${PDF_SPAN.map((v) => v.toFixed(2)).join(' x ')}`);
-    errors.push(...roomErrors(name, got, 1));
+    errors.push(...roomErrors('pdf', name, got, 1));
     console.log(`pdf: ${name}, page ${got.chosen}, ${got.walls} walls, ${got.doors} doors, ${got.rooms} rooms, ${got.span.map((v) => v.toFixed(2)).join(' x ')} m; ${Object.keys(got.names).join(', ')}`);
   }
   await page.goto(base, { waitUntil: 'load' });
@@ -156,7 +207,7 @@ async function importPdf(page) {
   for (const key of ['walls', 'doors', 'windows', 'rooms', 'items']) {
     if (set[key] < TRACED[key]) errors.push(`pdf: traced ${set[key]} ${key}, expected at least ${TRACED[key]}`);
   }
-  errors.push(...roomErrors('drawing set', set, 0));
+  errors.push(...roomErrors('pdf', 'drawing set', set, 0));
   console.log(`pdf: page ${set.chosen}, ${set.walls} walls, ${set.doors} doors, ${set.windows} windows, ${set.rooms} rooms, ${set.items} items, ${set.span.map((v) => v.toFixed(2)).join(' x ')} m; printed to fit ${fit.span.map((v) => v.toFixed(2)).join(' x ')} m; ${Object.keys(set.names).join(', ')}`);
 }
 
@@ -165,6 +216,8 @@ async function capture(page, id) {
   await page.goto(base, { waitUntil: 'load' });
   if (id === 'import') {
     await importDrawing(page);
+  } else if (id === 'image') {
+    await importImages(page);
   } else if (id === 'pdf') {
     await importPdf(page);
   } else {

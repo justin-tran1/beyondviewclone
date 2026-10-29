@@ -24,7 +24,8 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
 | `src/pdf-scan.js` | The floor plan on a rendered drawing sheet, how much a page looks like one, and the scale notes in its text or in the words OCR read (no DOM) |
 | `src/ui/pdf.js` | PDF import: the page and area dialog, reading pages with no text with OCR, and the chosen area rendered (or its picture's own pixels) as the plan's image |
 | `src/ui/ocr.js` | The text reader: Tesseract in a worker, loaded with the first page to read |
-| `src/room-names.js` | Room names from the tags drawn in the rooms traced from a PDF page (no DOM) |
+| `src/ui/image-labels.js` | The room labels on a floor plan image (PNG, JPG, WebP, SVG) read with OCR once it is traced |
+| `src/room-names.js` | Room names from the tags drawn in the rooms traced from a drawing, and OCR's room words put right (no DOM) |
 | `src/builder3d.js` | Plan to Three.js scene: walls with openings, floors, ceilings, items, exterior; lighting and the plan light map |
 | `src/postfx.js` | Post-processing for the walkthrough: AO, bloom, color grade, AgX, SMAA, quality levels (`createPostFX()`) |
 | `src/walkthrough.js` | `Walkthrough`: renderer, first-person and overview cameras, collisions, minimap, quality |
@@ -64,8 +65,10 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
     traced?,          // true when the plan's walls were detected in it: calibrating resizes the plan too
     scaleNote?,       // { text, metersPerPixel, ocr? }: the drawing scale written on the PDF page it came
                       // from; ocr: true when OCR read it off the page
-    labels?,          // [{ text, x, y, h, w? }]: room tags and other short text on that page, in image
-                      // px at their middle (h their capitals' height), that name the rooms traced
+    labels?,          // [{ text, x, y, h, w? }]: room tags and other short text on that page (or read
+                      // on the image by OCR once traced), in image px at their middle (h their
+                      // capitals' height), that name the rooms traced
+    labelsRead?,      // true once its text was read for labels: a PDF page's, or an image's OCR
   },
   walls:    [{ id, a: {x, y}, b: {x, y}, kind: 'exterior' | 'interior' | 'glass' | 'partial', thickness, height }],
   openings: [{ id, wallId, type: 'door' | 'double-door' | 'sliding-door' | 'opening' | 'window',
@@ -245,7 +248,13 @@ so far, keeping the edge against the wall (a toilet keeps its bowl's front, sinc
 drawn as part of it).
 `ui/trace.js` passes the underlay's `scaleNote` to the tracer unless the underlay was calibrated.
 `addTrace` names the rooms it adds from `underlay.labels` (`roomNames`, see `room-names.js`) before
-`matchFinishes`, so a named room takes the finishes its name tells.
+`matchFinishes`, so a named room takes the finishes its name tells. An image with no labels of its
+own (not a PDF page's, and not read before) is read for them once it is traced (`app.js`
+`nameRoomsFromImage`, see **Image labels** below), in the background: the rooms still called Room
+1, Room 2... are then named and take the finishes their names tell (`addLabels`, which keeps the
+labels on the underlay with `labelsRead`), in an undo step of its own, `Name rooms from the
+drawing`. The trace's toast goes when it lands, as its Undo would take back the names instead. The
+labels are dropped if the plan, its image or its trace changed meanwhile.
 `app.js` traces every image imported into a plan with no walls or rooms: the image takes the scale
 its scale note or doors give unless it was calibrated, the plan gets the walls, doors, windows and rooms in one undo
 step (`Detect walls`) with `underlay.traced` set, and the app shows the plan in Split beside the 3D
@@ -273,8 +282,8 @@ export function tsvWords(tsv) -> [{ str, x0, y0, x1, y1, conf }] // the words in
 export function ocrLines(words) -> [{ text, x0, x1, y, h, ocr: true }]
 export function ocrScale(text) -> { text, ratio } | null         // a note in text OCR read, written out in full
 // ui/pdf.js: pdf.js on the page
-export async function importPdf(file, { onOpen, onChosen }) -> { src, width, height, resized, scaleNote? } | null
-export async function openPdf(file), scanPage(page), readPage(page, scan, reader, onProgress), renderArea(page, area, note)
+export async function importPdf(file, { onOpen, onChosen }) -> { src, width, height, resized, scaleNote?, labels?, labelsRead } | null
+export async function openPdf(file), scanPage(page), readPage(page, scan, reader, onProgress), renderArea(page, area, note, { lines, scale })
 // ui/ocr.js: Tesseract
 export function canReadText() -> boolean                         // WebAssembly SIMD is there
 export async function createReader() -> { read(canvas, dpi, onProgress) -> words, close() }
@@ -352,26 +361,56 @@ numbers have (digits, capitals but I and O, and a dash), once with the paper mad
 as it is, since each reading misses or cuts short some strips. The two readings and the first one
 vote: the most of them wins, else the longest. Names read well the first time and are kept.
 
+**Image labels.** A PNG, JPG, WebP or SVG drawing has no text but its pixels. `readImageLabels`
+(`ui/image-labels.js`) reads the part of it the trace found walls in (`tracedArea`), enlarged so
+that labels 0.15 m tall at the drawing's scale (the trace's) are about 24 px tall, at most 6 times
+and 30 megapixels. It is read twice, with Tesseract's own threshold for ink and with Sauvola's (one
+taken around each pixel, which finds small and gray text), the words of both kept, the more
+confident of two over one another. OCR also reads furniture, hatching and door swings as words,
+mostly of other heights than the labels': the words kept are those about as tall as the ones read
+with confidence (from 0.55 to 1.45 times, as a number is often smaller than its name), or as tall
+as a few lines. A box as tall as two lines (a name and the number close under it, which the first
+reading takes as one) is parted into the bands of rows with ink in them. Each line left is then
+read again on its own, enlarged so its capitals are 44, 56 and 68 px tall (the first with its paper
+made white), as one line of text; each reading goes through `ocrLabel` (`room-names.js`), and the
+one nearest the others is taken (for numbers, the one the others are part of: a thin 1 is what a
+reading drops). It is kept when it holds a room word, or a number another reading agrees with or
+read with confidence, or when its readings agree with confidence. Under a name with no number of
+its own, and nothing else read there, the strip where one would be is read for one, for the
+characters room numbers have, with its paper made white and made black and white at two levels.
+It takes about 5 to 15 s; the plan can be edited meanwhile.
+
 ### `room-names.js`
 
 ```js
 export function roomNames(rooms, labels) -> [name | null]  // labels: [{ text, x, y, h, w? }] in plan meters
 export function labelKind(text) -> 'number' | 'name' | null
 export function cleanLabel(text), splitNumber(text) -> { name, number }, titleCase(text)
+export function ocrLabel(text, { caps }) -> { text, known: 'long' | 'short' | null }
+export function isDimension(text) -> boolean
 ```
 
-A room is named by the tags whose middle is inside it. Lines that are not a tag's are left out:
+A room is named by the tags whose middle is inside it: the innermost room's, since a corridor traced
+around a block of rooms holds their labels too. Lines that are not a tag's are left out:
 dimensions (`12'-6"`, `36"`, and OCR's `200°` for `20'-0"`), areas (`150 SF`), ceiling heights
 (`AFF`), equipment tags (`FE-1`), single digits and letters, short scraps in small letters (`ll`),
 lines of more than five words or 32 characters, and annotations (TYP., UP, REF, ALIGN). OCR's
 scraps around a tag go first (`cleanLabel`: `RESTROOM 0`, the 0 a toilet; `OFFICE lL`; `104.`).
 Names one over another at one size join (BREAK over ROOM), and each name takes the room number
 under it (within 2.8 times its capitals' height) or after it on its line, or written with it
-(`OFFICE 102`). A room holding several numbered tags (rooms the tracer could not part) is named for
-all of them, nearest its middle first, up to three (`Open Office 106 / Break Room 107`); a room
-with only names takes its largest; one with only a number is `Room 105`. Names in capitals are
-written as words (`CONF. RM.` is `Conf. Rm.`), short words such as IT, MRI or WC staying in
-capitals.
+(`OFFICE 102`, `EXAM ROOM #4`: a number written with # may be one digit, and keeps its #). A room
+holding several numbered tags (rooms the tracer could not part) is named for all of them, nearest
+its middle first, up to three (`Open Office 106 / Break Room 107`); a room with only names takes
+its largest; one with only a number is `Room 105`. Names in capitals are written as words (`CONF.
+RM.` is `Conf. Rm.`), short words such as IT, MRI or WC staying in capitals.
+
+`ocrLabel` puts right what OCR reads in a label: a word one letter off a room word (`ROOM_WORDS`:
+RESTROOM, OFFICE, EXAM, STORAGE, PROCEDURE and some 200 more; two letters off for words of seven
+letters or more, marks read in a word standing for a letter: `STOR~GE`) is taken for it, and two run
+together are parted (`BREAKRM`, `PROCEDURERM`); a # read as = and a number run onto its word
+(`ROOM#12`) are put back; scraps at its ends (two letters that are no room word, three beside a long
+one, a word with marks in it) go; in a drawing written in capitals, the line is too. `known` tells
+whether it holds a room word of five letters or more in all (`long`) or a shorter one (`short`).
 
 ### `kit3d.js`
 

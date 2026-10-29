@@ -222,6 +222,7 @@ export function normalizePlan(input) {
       ...(u.traced === true ? { traced: true } : {}),
       ...scaleNoteOf(u.scaleNote),
       ...labelsOf(u.labels),
+      ...(u.labelsRead === true ? { labelsRead: true } : {}),
     };
   }
 

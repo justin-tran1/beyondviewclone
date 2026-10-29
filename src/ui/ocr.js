@@ -35,6 +35,58 @@ function grayImage(canvas) {
 }
 
 /**
+ * A small image of a few characters made easier to read (the reader cannot tell them from a
+ * scan's gray, speckled paper on its own, as it does on a whole page): dark specks smaller than
+ * `speck` px on their longer side erased (none when it is 0), and when `tone`, the paper and its
+ * grain made white with the ink kept in its grays.
+ */
+export function cleanStrip(canvas, speck, tone) {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const W = canvas.width, H = canvas.height;
+  const img = ctx.getImageData(0, 0, W, H);
+  const d = img.data, n = W * H;
+  const lum = new Uint8Array(n), hist = new Uint32Array(256);
+  for (let i = 0, p = 0; i < n; i++, p += 4) hist[(lum[i] = (d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8)]++;
+  const level = (q) => {
+    for (let v = 0, c = 0; v < 256; v++) if ((c += hist[v]) >= q * n) return v;
+    return 255;
+  };
+  // The ink is the darkest 1%, the paper what most of the image is: its grain reaches down three
+  // quarters of the way to the ink.
+  const ink = level(0.01), paper = level(0.5);
+  if (paper - ink < 24) return;
+  const white = Math.max(120, ink + 0.75 * (paper - ink));
+  const seen = new Uint8Array(n), stack = [], blob = [];
+  for (let i0 = 0; i0 < n && speck > 0; i0++) {
+    if (seen[i0] || lum[i0] >= white) continue;
+    let x0 = W, x1 = -1, y0 = H, y1 = -1;
+    blob.length = 0;
+    stack.push(i0);
+    seen[i0] = 1;
+    while (stack.length) {
+      const i = stack.pop(), x = i % W, y = (i - x) / W;
+      blob.push(i);
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      if (x > 0 && !seen[i - 1] && lum[i - 1] < white) { seen[i - 1] = 1; stack.push(i - 1); }
+      if (x < W - 1 && !seen[i + 1] && lum[i + 1] < white) { seen[i + 1] = 1; stack.push(i + 1); }
+      if (y > 0 && !seen[i - W] && lum[i - W] < white) { seen[i - W] = 1; stack.push(i - W); }
+      if (y < H - 1 && !seen[i + W] && lum[i + W] < white) { seen[i + W] = 1; stack.push(i + W); }
+    }
+    if (Math.max(x1 - x0, y1 - y0) + 1 < speck) for (const i of blob) lum[i] = 255;
+  }
+  // Black stays black, the ink's grays are kept, the paper is white.
+  const k = 255 / (white - 40);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const v = lum[i] >= 255 ? 255 : tone ? (lum[i] >= white ? 255 : Math.max(0, (lum[i] - 40) * k)) : lum[i];
+    d[p] = d[p + 1] = d[p + 2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/**
  * Start a reader. read(canvas, dpi, onProgress, params) resolves with the words on a canvas ([{ str,
  * x0, y0, x1, y1, conf }] in its px; dpi: the image's resolution; onProgress(fraction) while it
  * reads; params: Tesseract settings for this image alone, such as tessedit_char_whitelist), one

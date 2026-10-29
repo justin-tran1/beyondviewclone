@@ -194,7 +194,7 @@ export async function readImageFile(file) {
 /**
  * A new underlay at the origin, at the scale its scale note gives (a PDF page's), else guessing that
  * the image spans about 30 m until it is calibrated. A PDF page's labels go with it, to name the
- * rooms traced from it.
+ * rooms traced from it, and labelsRead: its text was read for them (an image's is read once traced).
  */
 export function underlayFor(image) {
   const note = image.scaleNote;
@@ -211,6 +211,7 @@ export function underlayFor(image) {
     locked: true,
     ...(note ? { scaleNote: { text: note.text, metersPerPixel: note.metersPerPixel, ...(note.ocr ? { ocr: true } : {}) } } : {}),
     ...(image.labels?.length ? { labels: image.labels } : {}),
+    ...(image.labelsRead ? { labelsRead: true } : {}),
   };
 }
 

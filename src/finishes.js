@@ -164,22 +164,23 @@ export const PACKAGES = {
   nurse: { label: 'Nurse station', rooms: 'nurse stations', group: 'Healthcare', floor: 'sheet-vinyl', wall: 'paint', base: 'cove', guard: 'corners', ceiling: 'tile' },
   restroom: { label: 'Restroom', rooms: 'restrooms', group: 'Healthcare', floor: 'tile', wall: 'paint', wainscot: 'tile', base: 'tile', ceiling: 'tile' },
   utility: { label: 'Clean and soiled utility', rooms: 'utility rooms', group: 'Healthcare', floor: 'sheet-vinyl', wall: 'paint', wainscot: 'frp', base: 'cove', guard: 'rail', ceiling: 'clean' },
-  'wet-lab': { label: 'Wet lab', rooms: 'wet labs', group: 'Lab', floor: 'epoxy', wall: 'coating', wallColor: '#f2f1ec', base: 'cove', guard: 'corners', ceiling: 'clean' },
+  'wet-lab': { label: 'Wet lab', rooms: 'wet labs', group: 'Lab', floor: 'epoxy', floorColor: '#c6b9a1', wall: 'coating', wallColor: '#f2f1ec', base: 'cove', guard: 'corners', ceiling: 'clean' },
   'dry-lab': { label: 'Dry lab', rooms: 'dry labs', group: 'Lab', floor: 'esd', wall: 'paint', base: 'rubber', ceiling: 'tile' },
   'tissue-culture': {
-    label: 'Tissue culture (BSL-2)', rooms: 'tissue culture rooms', group: 'Lab', floor: 'sheet-vinyl', floorColor: '#c4cbc8', wall: 'coating', wallColor: '#f2f1ec',
+    label: 'Tissue culture (BSL-2)', rooms: 'tissue culture rooms', group: 'Lab', floor: 'sheet-vinyl', floorColor: '#d3c7b1', wall: 'coating', wallColor: '#f2f1ec',
     base: 'cove', guard: 'corners', ceiling: 'clean',
   },
   cleanroom: {
     label: 'Cleanroom', rooms: 'cleanrooms', group: 'Lab', floor: 'resinous', floorColor: '#dddcd6', wall: 'coating', wallColor: '#f2f1ec', base: 'cove', guard: 'corners', ceiling: 'clean',
   },
   vivarium: { label: 'Vivarium', rooms: 'vivarium rooms', group: 'Lab', floor: 'resinous', floorColor: '#c7bda9', wall: 'coating', wallColor: '#e5dfd3', base: 'cove', guard: 'rail', ceiling: 'drywall' },
-  'lab-support': { label: 'Glass wash and lab support', rooms: 'lab support rooms', group: 'Lab', floor: 'epoxy', wall: 'frp', base: 'cove', guard: 'rail', ceiling: 'clean' },
+  'lab-support': { label: 'Glass wash and lab support', rooms: 'lab support rooms', group: 'Lab', floor: 'epoxy', floorColor: '#c6b9a1', wall: 'frp', base: 'cove', guard: 'rail', ceiling: 'clean' },
   // Natural oak plank: waiting rooms have the weathered oak, and a package must differ from every other.
   office: { label: 'Office', rooms: 'offices', group: 'Workplace and support', floor: 'vinyl', floorColor: '#a49380', wall: 'paint', base: 'rubber', ceiling: 'tile' },
   conference: { label: 'Conference', rooms: 'conference rooms', group: 'Workplace and support', floor: 'carpet', floorColor: '#7a7262', wall: 'paint', base: 'rubber', ceiling: 'tile' },
   breakroom: { label: 'Break room', rooms: 'break rooms', group: 'Workplace and support', floor: 'tile', floorColor: '#c9bea9', wall: 'paint', base: 'rubber', ceiling: 'tile' },
-  lobby: { label: 'Lobby', rooms: 'lobbies', group: 'Workplace and support', floor: 'terrazzo', wall: 'paint', wainscot: 'wood', base: 'tile', ceiling: 'drywall' },
+  // Weathered oak plank under a walnut wainscot: the waiting room's floor, set apart by the wainscot.
+  lobby: { label: 'Lobby', rooms: 'lobbies', group: 'Workplace and support', floor: 'vinyl', wall: 'paint', wainscot: 'wood', wainscotColor: '#644531', base: 'rubber', ceiling: 'tile' },
   storage: { label: 'Storage', rooms: 'storage rooms', group: 'Workplace and support', floor: 'concrete', wall: 'paint', base: 'rubber', guard: 'corners', ceiling: 'tile' },
 };
 

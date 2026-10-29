@@ -86,8 +86,9 @@ without a code change, run the workflow from the Actions tab.
    walk there, save viewpoints, and use **Overview** for a dollhouse view. Save images of any view.
    Spaces look like a rendered architectural tour: warm greige walls on an espresso base, walnut
    doors and glass partitions in dark bronze frames, acoustic tile ceilings with 2 x 4 troffers, oak
-   plank floors (weathered in corridors and waiting rooms, natural in offices), walnut casework
-   with white tops, and warm light.
+   plank floors (weathered in corridors, waiting rooms and lobbies, natural in offices), walnut
+   casework under white quartz or black epoxy tops, and warm light. Labs keep white coated walls
+   and washable ceilings over warm tan epoxy or sand sheet floors.
 8. **Render photo**: the camera button beside Save image path traces the current view into a
    photographic still for client decks (1280 x 720 up to 4K; Draft, Standard or High quality). It
    takes a minute or more on the graphics card while the 3D view keeps running; save the PNG when

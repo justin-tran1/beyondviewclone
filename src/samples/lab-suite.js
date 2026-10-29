@@ -70,6 +70,8 @@ export function buildLabSuite() {
   L.alongWall(shell.n, [18, 23, 28, 33, 38, 43, 48, 53, 58], 'workstation', 's');
   L.against(corrWest, 2.2, 'printer', 'w');
   L.against(corrWest, 4.6, 'trash-recycling', 'w');
+  // Art at the end of the write-up, over the bins and clear of the door (look 7 in catalog/art.js)
+  L.against(corrWest, 5, 'wall-art', 'w', { w: 3, h: 2, variant: 7 });
 
   // Wet lab
   L.alongWall(shell.w, [17, 23, 29], 'fume-hood', 'e');

@@ -18,7 +18,8 @@ const MAX_CHARS = 32;
 // 101, 1203, B-112, RM 101, 101A (not an equipment tag such as FE-1, nor a single digit)
 const NUMBER = /^(?:(?:RM|ROOM|NO)\.?\s*)?#?\s*((?:[A-Z]{1,2}[-.]?\d{3,4}|\d{2,4})[A-Z]?)$/i;
 const CODE = /^[A-Z]{1,4}-\d{1,3}[A-Z]?$/i;
-const DIMENSION = /\d\s*['′’]|\d\s*["″”]|\b\d+(?:\.\d+)?\s*(?:SF|S\.F\.|SQ\.?\s*FT\.?|SQFT|NSF|GSF|USF|RSF|M2|M²|SM)\b|\bAFF\b|\bA\.F\.F\./i;
+// Feet, inches (OCR reads an inch mark as ° too: 20'-0" as 200°), areas and heights above the floor.
+const DIMENSION = /\d\s*['′’]|\d\s*["″”°]|\b\d+(?:\.\d+)?\s*(?:SF|S\.F\.|SQ\.?\s*FT\.?|SQFT|NSF|GSF|USF|RSF|M2|M²|SM)\b|\bAFF\b|\bA\.F\.F\./i;
 // Annotations drawn in rooms that name no room.
 const NOT_NAMES = new Set([
   'TYP', 'TYPICAL', 'SIM', 'SIMILAR', 'UP', 'DN', 'DOWN', 'EQ', 'NIC', 'ALIGN', 'ABOVE', 'BELOW', 'CLR', 'CLEAR', 'MIN', 'MAX',
@@ -56,12 +57,15 @@ export function splitNumber(text) {
 
 /** What a line of text is to a room: its number, its name, or neither (see the top of this file). */
 export function labelKind(text) {
+  // A dimension before it is cleaned, which takes the inch mark off its end (36" is not room 36).
+  if (DIMENSION.test(text || '')) return null;
   const t = cleanLabel(text);
   if (!t || t.length > MAX_CHARS || words(t).length > MAX_WORDS) return null;
   if (NUMBER.test(t)) return 'number';
   if (DIMENSION.test(t) || CODE.test(t) || NOT_NAMES.has(key(t))) return null;
-  // A name has a word of letters; a code like FE-1 or a single letter is not one.
-  return (t.match(/[A-Za-z]/g) || []).length >= 2 && /[A-Za-z]{2,}/.test(t) ? 'name' : null;
+  // A name has a word of letters; a code like FE-1, a single letter or a short scrap in small
+  // letters (OCR's ll for two lines) is not one.
+  return (t.match(/[A-Za-z]/g) || []).length >= 2 && /[A-Za-z]{2,}/.test(t) && (t.length > 3 || /^[A-Z]/.test(t)) ? 'name' : null;
 }
 
 /** A name written in capitals as words; one already in mixed case is left as it is. */
@@ -105,7 +109,7 @@ function tagsIn(labels) {
   const names = [], numbers = [];
   for (const l of labels) {
     const text = cleanLabel(l.text);
-    const kind = labelKind(text);
+    const kind = labelKind(l.text);
     // A width for lines that have none: capitals are about as wide as they are tall.
     const w = l.w ?? 0.95 * l.h * text.length;
     if (kind === 'name') {

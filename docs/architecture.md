@@ -361,16 +361,17 @@ export function cleanLabel(text), splitNumber(text) -> { name, number }, titleCa
 ```
 
 A room is named by the tags whose middle is inside it. Lines that are not a tag's are left out:
-dimensions (`12'-6"`), areas (`150 SF`), ceiling heights (`AFF`), equipment tags (`FE-1`), single
-digits and letters, lines of more than five words or 32 characters, and annotations (TYP., UP,
-REF, ALIGN). OCR's scraps around a tag go first (`cleanLabel`: `RESTROOM 0`, the 0 a toilet;
-`OFFICE lL`; `104.`). Names one over another at one size join (BREAK over ROOM), and each name
-takes the room number under it (within 2.8 times its capitals' height) or after it on its line,
-or written with it (`OFFICE 102`). A room holding several numbered tags (rooms the tracer could not
-part) is named for all of them, nearest its middle first, up to three (`Open Office 106 / Break
-Room 107`); a room with only names takes its largest; one with only a number is `Room 105`. Names
-in capitals are written as words (`CONF. RM.` is `Conf. Rm.`), short words such as IT, MRI or WC
-staying in capitals.
+dimensions (`12'-6"`, `36"`, and OCR's `200°` for `20'-0"`), areas (`150 SF`), ceiling heights
+(`AFF`), equipment tags (`FE-1`), single digits and letters, short scraps in small letters (`ll`),
+lines of more than five words or 32 characters, and annotations (TYP., UP, REF, ALIGN). OCR's
+scraps around a tag go first (`cleanLabel`: `RESTROOM 0`, the 0 a toilet; `OFFICE lL`; `104.`).
+Names one over another at one size join (BREAK over ROOM), and each name takes the room number
+under it (within 2.8 times its capitals' height) or after it on its line, or written with it
+(`OFFICE 102`). A room holding several numbered tags (rooms the tracer could not part) is named for
+all of them, nearest its middle first, up to three (`Open Office 106 / Break Room 107`); a room
+with only names takes its largest; one with only a number is `Room 105`. Names in capitals are
+written as words (`CONF. RM.` is `Conf. Rm.`), short words such as IT, MRI or WC staying in
+capitals.
 
 ### `kit3d.js`
 

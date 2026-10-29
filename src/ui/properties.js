@@ -677,7 +677,7 @@ export function createProperties(root, { store, editor, actions }) {
       b.readout({ label: 'Image spans', get: span }),
       u.scaleNote ? b.readout({
         label: 'Scale note',
-        get: () => { const x = store.plan.underlay; return x?.scaleNote ? `${x.scaleNote.text}${x.calibrated ? ', overridden by calibration' : ''}` : ''; },
+        get: () => { const x = store.plan.underlay; return x?.scaleNote ? `${x.scaleNote.text}${x.scaleNote.ocr ? ' (read by OCR)' : ''}${x.calibrated ? ', overridden by calibration' : ''}` : ''; },
       }) : null,
       actionsRow(
         h('button', { type: 'button', class: 'btn btn-primary btn-sm', dataset: { tip: 'Click both ends of a known length on the image' }, on: { click: actions.calibrate } }, iconEl('calibrate'), h('span', { class: 'btn-label', text: 'Calibrate scale' })),

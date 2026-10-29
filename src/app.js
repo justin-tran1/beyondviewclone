@@ -683,9 +683,14 @@ async function traceImage({ auto = false } = {}) {
   editor.zoomToFit();
   const { source, noteMismatch } = result.trace.scale;
   const note = now.scaleNote?.text;
+  // A note read by OCR may be misread, as well as printed to fit.
+  const ocr = !!now.scaleNote?.ocr;
   const scale = now.calibrated ? ''
-    : adopt && source === 'note' ? ` The scale is set from the drawing's scale note, ${note}.`
-      : adopt && source === 'doors' && noteMismatch ? ` The drawing's scale note (${note}) does not match its doors, so the page was likely printed to fit: the scale is set from the door widths. Use Calibrate scale if it is off.`
+    : adopt && source === 'note' ? ` The scale is set from the drawing's scale note, ${note}${ocr ? ', read from the page by OCR' : ''}.`
+      : adopt && source === 'doors' && noteMismatch
+        ? ocr
+          ? ` The scale note read from the page (${note}) does not match its doors, so the scale is set from the door widths. Use Calibrate scale if it is off.`
+          : ` The drawing's scale note (${note}) does not match its doors, so the page was likely printed to fit: the scale is set from the door widths. Use Calibrate scale if it is off.`
         : adopt && source === 'doors' ? ' The scale is set from the door widths. Use Calibrate scale if it is off.'
           : ' Use Calibrate scale to set its true size.';
   const finished = count.finished ? ` Finishes are set for ${plural(count.finished, 'room')} from the furniture in them.` : '';

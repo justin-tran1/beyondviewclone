@@ -4,10 +4,14 @@
 // in vector form is rendered as large as the tracer reads, and one that is a picture on the page
 // (a scan, a plan exported as an image) keeps that picture's own pixels, as re-rendering would
 // only blur them. pdf.js (assets/vendor/pdfjs, the "pdfjs-dist" import) loads with the first PDF.
+// A page with a drawing but no text in it (a scan, or a CAD export that draws its text as lines) is
+// read with OCR (ui/ocr.js) for its scale note and titles, as is the page shown when its text has no
+// scale note.
 import { h, iconEl } from './dom.js';
 import { openDialog } from './widgets.js';
 import { FileError, canvasDataURL } from './files.js';
-import { findPlanArea, textLines, scaleNotes, chooseScaleNote, planWords } from '../pdf-scan.js';
+import { findPlanArea, textLines, scaleNotes, chooseScaleNote, pageTitles, ocrLines, PLAN_TITLE_WEIGHT } from '../pdf-scan.js';
+import { canReadText, createReader } from './ocr.js';
 
 const SCAN_SIDE = 1600; // px: pages are scanned and previewed this large on their long side
 const OUT_SIDE = 3200; // px: the imported area on its long side, as large as the tracer reads
@@ -18,6 +22,9 @@ const THUMB_W = 136; // px
 const KEEP = 4; // scanned pages whose full render is kept for the preview
 const MIN_SIZE = 0.04; // the smallest area, of the page's width or height
 const PICTURE_WAIT = 20000; // ms to wait for pdf.js to decode a picture
+const TEXT_MIN = 20; // characters: a page with fewer has no text of its own to read
+const OCR_DPI = 200; // pages are read at about this resolution (text 3/32" high is 19 px tall)
+const OCR_PIXELS = 40e6; // and at most this many pixels
 const METERS_PER_PT = 0.0254 / 72;
 // The imported image stays small enough for the browser to keep the plan with it (see storage.js).
 const OUT_BYTES = 2.5 * 1024 * 1024;
@@ -70,7 +77,8 @@ async function renderPage(page, scale, area = WHOLE) {
 /**
  * Scan a page: its render at SCAN_SIDE, the plan found on it (area, fractions of the page, and
  * found: whether a drawing was), a rank for how much it looks like a floor plan, and the scale
- * note that holds for the plan ({ text, ratio } or null).
+ * note that holds for the plan ({ text, ratio, ocr? } or null). textless: the page has no text of
+ * its own, so readPage can read it with OCR. The rest is what readPage needs.
  */
 export async function scanPage(page) {
   const unit = page.getViewport({ scale: 1 });
@@ -82,24 +90,74 @@ export async function scanPage(page) {
   const viewport = page.getViewport({ scale });
   const content = await page.getTextContent().catch(() => ({ items: [] }));
   const items = [], turned = [];
-  let words = '';
+  let chars = 0;
   for (const t of content.items) {
     if (!t.str) continue;
-    words += ` ${t.str}`;
+    chars += t.str.replace(/\s+/g, '').length;
     const m = lib.Util.transform(viewport.transform, t.transform);
     const h = Math.hypot(m[2], m[3]);
     // Text across the page joins into lines; text turned on it (a rotated sheet's) stands alone.
     if (Math.abs(m[1]) > 0.2 * Math.abs(m[0]) || Math.abs(m[2]) > 0.2 * Math.abs(m[3])) turned.push({ text: t.str, x0: m[4], x1: m[4], y: m[5], h });
     else items.push({ str: t.str, x: m[4], y: m[5], w: (t.width || 0) * scale, h });
   }
-  const note = chooseScaleNote(scaleNotes([...textLines(items), ...turned]), box, Math.max(W, H));
+  const lines = [...textLines(items), ...turned];
+  const score = plan?.score ?? 0;
   return {
     canvas,
     area: { x0: box.x0 / W, y0: box.y0 / H, x1: box.x1 / W, y1: box.y1 / H },
     found: !!plan,
-    rank: (plan?.score ?? 0) * planWords(words),
-    note,
+    rank: score * pageTitles(lines),
+    note: chooseScaleNote(scaleNotes(lines), box, Math.max(W, H)),
+    textless: chars < TEXT_MIN,
+    scan: { scale, box, long: Math.max(W, H), score, lines },
   };
+}
+
+/**
+ * Read a scanned page's text with OCR (reader: ui/ocr.js's createReader()) and take the scale note
+ * and titles from it as well as from the page's own text: `s` (scanPage's result for the page) gets
+ * its note and rank again, and ocr: true. onProgress(fraction) while it reads.
+ */
+export async function readPage(page, s, reader, onProgress) {
+  const img = await ocrImage(page, s.scan.scale);
+  let words;
+  try {
+    words = await reader.read(img.canvas, img.dpi, onProgress);
+  } finally {
+    img.canvas.width = img.canvas.height = 0;
+  }
+  const placed = words.map((w) => {
+    const [ax, ay] = img.toScan(w.x0, w.y0), [bx, by] = img.toScan(w.x1, w.y1);
+    return { str: w.str, x0: Math.min(ax, bx), y0: Math.min(ay, by), x1: Math.max(ax, bx), y1: Math.max(ay, by) };
+  });
+  const { lines, box, long, score } = s.scan;
+  const all = [...lines, ...ocrLines(placed)];
+  s.note = chooseScaleNote(scaleNotes(all), box, long);
+  s.rank = score * pageTitles(all);
+  s.ocr = true;
+  return s;
+}
+
+/**
+ * A page as OCR reads it, at about OCR_DPI: a scan's own pixels (enlarged when there are fewer), or
+ * the page rendered. { canvas, dpi, toScan(x, y) -> [x, y] in the page's scan px }.
+ */
+async function ocrImage(page, scanScale) {
+  const unit = page.getViewport({ scale: 1 });
+  const want = Math.min(OCR_DPI / 72, Math.sqrt(OCR_PIXELS / (unit.width * unit.height)));
+  let picture = null;
+  try {
+    picture = await pictureArea(page, WHOLE, { maxSide: Infinity, pxPerPt: want, maxPixels: OCR_PIXELS });
+  } catch (err) {
+    console.warn('The picture on this page could not be read, so the page is rendered to read its text.', err);
+  }
+  if (picture) {
+    const scan = page.getViewport({ scale: scanScale });
+    return { canvas: picture.canvas, dpi: picture.pxPerPt * 72, toScan: (x, y) => scan.convertToViewportPoint(...picture.toPdf(x, y)) };
+  }
+  const canvas = await renderPage(page, want);
+  const k = scanScale / want;
+  return { canvas, dpi: want * 72, toScan: (x, y) => [x * k, y * k] };
 }
 
 /**
@@ -199,9 +257,11 @@ async function imageCanvas(page, im) {
 
 /**
  * The area as the picture that holds it, when one does (a scan, a plan exported as an image): its
- * own pixels and their size in px per point. Only upright pictures on unrotated pages; null else.
+ * own pixels, at most maxSide on the long side and maxPixels in all, enlarged to at least pxPerPt;
+ * their size in px per point; and toPdf(x, y), from them to the page's PDF points. Only upright
+ * pictures on unrotated pages; null else.
  */
-async function pictureArea(page, area) {
+async function pictureArea(page, area, { maxSide = RASTER_SIDE, pxPerPt: least = 0, maxPixels = Infinity } = {}) {
   if (page.rotate % 360 !== 0) return null;
   const vp = page.getViewport({ scale: 1 });
   const [ax0, ay0] = vp.convertToPdfPoint(area.x0 * vp.width, area.y1 * vp.height);
@@ -223,14 +283,17 @@ async function pictureArea(page, area) {
   const i0 = Math.max(0, Math.floor(((A.x0 - e) / a) * iw)), i1 = Math.min(iw, Math.ceil(((A.x1 - e) / a) * iw));
   const j0 = Math.max(0, Math.floor((1 - (A.y1 - f) / d) * ih)), j1 = Math.min(ih, Math.ceil((1 - (A.y0 - f) / d) * ih));
   if (i1 - i0 < 16 || j1 - j0 < 16) return null;
-  const k = Math.min(1, RASTER_SIDE / Math.max(i1 - i0, j1 - j0));
+  const own = iw / a; // the picture's px per point
+  let k = Math.min(1, maxSide / Math.max(i1 - i0, j1 - j0));
+  if (own * k < least) k = least / own;
+  k = Math.min(k, Math.sqrt(maxPixels / ((i1 - i0) * (j1 - j0))));
   const canvas = document.createElement('canvas');
   canvas.width = Math.round((i1 - i0) * k);
   canvas.height = Math.round((j1 - j0) * k);
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(pic, i0, j0, i1 - i0, j1 - j0, 0, 0, canvas.width, canvas.height);
-  return { canvas, pxPerPt: (iw / a) * k };
+  return { canvas, pxPerPt: own * k, toPdf: (x, y) => [e + ((i0 + x / k) / iw) * a, f + (1 - (j0 + y / k) / ih) * d] };
 }
 
 /** The image of `area` of a page for the plan's underlay, with the meters per pixel its scale note gives. */
@@ -253,7 +316,9 @@ export async function renderArea(page, area, note) {
   whitenPaper(canvas);
   const src = await canvasDataURL(canvas, OUT_BYTES);
   const image = { src, width: canvas.width, height: canvas.height, resized: false };
-  if (note?.ratio > 0) image.scaleNote = { text: note.text, metersPerPixel: (note.ratio * METERS_PER_PT) / pxPerPt };
+  if (note?.ratio > 0) {
+    image.scaleNote = { text: note.text, metersPerPixel: (note.ratio * METERS_PER_PT) / pxPerPt, ...(note.ocr ? { ocr: true } : {}) };
+  }
   return image;
 }
 
@@ -280,11 +345,13 @@ const clamp01 = (v) => Math.min(1, Math.max(0, v));
 function chooseArea(doc, onOpen) {
   const pages = doc.numPages;
   const scans = new Map(); // page number -> Promise of scanPage()
+  const results = new Map(); // page number -> scanPage() result, once scanned
   const kept = []; // page numbers whose renders are kept, oldest first
   let current = 0;
   let area = WHOLE;
   let touched = false; // the user chose a page or changed the area: no more suggestions
   let best = { page: 1, rank: -1 };
+  let scanned = false; // every page is scanned
   let closed = false;
   let dlg = null;
 
@@ -306,8 +373,12 @@ function chooseArea(doc, onOpen) {
         page.cleanup();
         return s;
       }).then((s) => {
+        results.set(n, s);
         thumb(n, s);
         keep(n);
+        rankPages();
+        if (s.textless && s.found) startReader();
+        readNext();
         return s;
       }));
     }
@@ -333,7 +404,7 @@ function chooseArea(doc, onOpen) {
     const badge = h('span', { class: 'pdf-badge', text: 'Floor plan', hidden: true });
     const b = h('button', {
       type: 'button', class: 'pdf-page', attrs: { 'aria-pressed': 'false' },
-      on: { click: () => { touched = true; show(n); } },
+      on: { click: () => { touched = true; waiting = 0; show(n); } },
     }, c, h('span', { class: 'pdf-page-label' }, h('span', { text: `Page ${n}` }), badge));
     b.canvas = c;
     b.badge = badge;
@@ -354,11 +425,84 @@ function chooseArea(doc, onOpen) {
       ctx.lineWidth = 2;
       ctx.strokeRect(a.x0 * c.width, a.y0 * c.height, (a.x1 - a.x0) * c.width, (a.y1 - a.y0) * c.height);
     }
-    if (s.rank > best.rank) {
-      best = { page: n, rank: s.rank };
-      for (const [k, o] of buttons.entries()) o.badge.hidden = k !== n - 1 || s.rank <= 0;
-      if (!touched && n !== current) show(n);
+  }
+  // The page most like a floor plan so far gets the badge, and is shown until the user chooses.
+  function rankPages() {
+    best = { page: 1, rank: -1 };
+    for (const [n, s] of results) if (s.rank > best.rank) best = { page: n, rank: s.rank };
+    for (const [k, o] of buttons.entries()) o.badge.hidden = k !== best.page - 1 || best.rank <= 0;
+    if (!touched && best.rank >= 0 && best.page !== current) show(best.page);
+  }
+
+  // ---- Reading pages' text with OCR, one at a time: the page shown first ----
+  let reader = null; // Promise of the text reader, started with the first page to read
+  let noReader = !canReadText(); // the reader cannot run here, or did not start
+  let reading = 0; // the page being read
+  let waiting = 0; // the page whose import waits for it to be read
+  // Pages with a drawing but no text, and the page shown, once it is chosen or every page is
+  // scanned, when its text gives no scale note.
+  const toRead = (n) => {
+    const s = results.get(n);
+    if (!s || s.ocr || s.unread || !s.found || s.note || noReader) return false;
+    return s.textless || (n === current && (scanned || touched));
+  };
+  // Once every page is scanned (or a page chosen), the page shown first, then the others in their
+  // order as floor plans while one could still be the best with a floor plan's title.
+  const nextToRead = () => {
+    if (toRead(current) && (scanned || touched || waiting === current)) return current;
+    if (!scanned) return 0;
+    const could = [...results.keys()].filter((n) => toRead(n) && results.get(n).scan.score * PLAN_TITLE_WEIGHT > best.rank);
+    return could.sort((a, b) => results.get(b).rank - results.get(a).rank)[0] || 0;
+  };
+  // The reader starts as soon as a page needs it, while the others are scanned.
+  const startReader = () => {
+    if (!reader && !noReader && !closed) {
+      reader = createReader();
+      reader.catch(() => {});
     }
+    return reader;
+  };
+  // Resolves when the page being read is done (read or not), or the dialog closes.
+  const ended = [];
+  const readEnd = () => new Promise((r) => { ended.push(r); });
+  async function readNext() {
+    if (reading || closed) return;
+    const n = nextToRead();
+    // Nothing more to read for now (for tests: dataset.read).
+    if (!n) {
+      if (scanned) dlg.el.dataset.read = 'true';
+      return;
+    }
+    delete dlg.el.dataset.read;
+    const s = results.get(n);
+    reading = n;
+    s.progress = null;
+    if (n === current) describe(s);
+    try {
+      let r;
+      try {
+        r = await startReader();
+      } catch (err) {
+        noReader = true;
+        throw err;
+      }
+      s.progress = 0;
+      const page = await doc.getPage(n);
+      await readPage(page, s, r, (f) => {
+        s.progress = f;
+        if (n === current && !closed) describe(s);
+      });
+      page.cleanup();
+    } catch (err) {
+      if (!closed) console.warn(`The text on page ${n} could not be read.`, err);
+      s.unread = true;
+    }
+    reading = 0;
+    for (const r of ended.splice(0)) r();
+    if (closed) return;
+    rankPages();
+    if (n === current) describe(s);
+    readNext();
   }
 
   // ---- Preview with the area ----
@@ -438,6 +582,14 @@ function chooseArea(doc, onOpen) {
     if (!ready && !body.contains(document.activeElement)) importBtn.focus({ preventScroll: true });
     ready = true;
     setArea(s.found ? s.area : WHOLE);
+    describe(s);
+    readNext();
+    return true;
+  }
+
+  // What the page shown is and where its scale comes from, as its text is read.
+  function describe(s) {
+    if (s !== results.get(current) || preview.hidden) return;
     // Beside the page most like a floor plan, a page with far less drawing on it is likely another sheet.
     const other = pages > 1 && best.rank > 0 && s.rank < 0.3 * best.rank;
     status.textContent = !s.found
@@ -445,10 +597,20 @@ function chooseArea(doc, onOpen) {
       : other
         ? `This page does not look like a floor plan; page ${best.page} does. Its largest drawing is outlined, and you can drag the outline to choose an area.`
         : 'The floor plan found on this page is outlined. Drag the outline, or its corners and edges, to change what is imported.';
-    scaleText.textContent = s.note
-      ? `Scale: ${s.note.text}, from the drawing's scale note. The door widths check it.`
-      : 'No scale note was found for this drawing, so its scale is taken from the door widths.';
-    return true;
+    const then = waiting === current ? ', then importing' : '';
+    scaleText.textContent = reading === current
+      ? s.progress === null
+        ? `Starting the text reader to read this page for its scale note${then}...`
+        : `Reading the text on this page for its scale note (${Math.round(s.progress * 100)}%)${then}...`
+      : toRead(current)
+        ? `Waiting to read the text on this page for its scale note${then}...`
+        : s.note
+          ? `Scale: ${s.note.text}, from the drawing's scale note${s.note.ocr ? ' (read by OCR)' : ''}. The door widths check it.`
+          : s.unread
+            ? 'The text on this page could not be read, so its scale is taken from the door widths.'
+            : s.textless && s.found && !canReadText()
+              ? 'This browser cannot read the text on a scanned page, so its scale is taken from the door widths.'
+              : 'No scale note was found for this drawing, so its scale is taken from the door widths.';
   }
 
   // ---- Dragging the area ----
@@ -516,8 +678,22 @@ function chooseArea(doc, onOpen) {
     on: {
       click: async () => {
         if (!(await settled()) || closed) return;
-        const s = await scan(current);
-        result = { page: current, area: { ...area }, note: s.note };
+        const n = current, s = await scan(n);
+        // The page's scale note may be in text still being read: wait for it, unless another page is
+        // chosen. Choosing to import it ends the suggestions, so reading does not move to another page.
+        if (reading === n || toRead(n)) {
+          if (waiting === n) return;
+          waiting = n;
+          touched = true;
+          describe(s);
+          while (!closed && waiting === n && (reading === n || toRead(n))) {
+            readNext();
+            await readEnd();
+          }
+          if (closed || waiting !== n || current !== n) return;
+          waiting = 0;
+        }
+        result = { page: n, area: { ...area }, note: s.note };
         dlg.close('import');
       },
     },
@@ -535,6 +711,8 @@ function chooseArea(doc, onOpen) {
       initialFocus: importBtn,
       onClose: () => {
         closed = true;
+        reader?.then((r) => r.close(), () => {});
+        for (const r of ended.splice(0)) r();
         resolve(result);
       },
     });
@@ -543,7 +721,12 @@ function chooseArea(doc, onOpen) {
     // Scan every page in turn, so the thumbnails fill in and the best one is suggested.
     (async () => {
       for (let n = 1; n <= pages && !closed; n++) await scan(n).catch(() => {});
-      if (!closed) dlg.el.dataset.scanned = 'true';
+      if (closed) return;
+      scanned = true;
+      dlg.el.dataset.scanned = 'true';
+      const s = results.get(current);
+      if (s) describe(s);
+      readNext();
     })();
   });
 }

@@ -13,10 +13,14 @@
 //   the most linework is the plan. score is that linework in lengths of the page's long side;
 //   share is its part of all the page's linework.
 // textLines(items) -> [{ text, x0, x1, y, h }]: positioned text runs joined into lines.
-// scaleNotes(lines) -> [{ text, ratio, x, y }]: the drawing scales written on the page (ratio: real
-//   length per length on paper; 0 for "not to scale").
-// chooseScaleNote(notes, box, long) -> { text, ratio } | null: the one that holds for the plan.
+// scaleNotes(lines) -> [{ text, ratio, x, y, ocr? }]: the drawing scales written on the page (ratio:
+//   real length per length on paper; 0 for "not to scale").
+// chooseScaleNote(notes, box, long) -> { text, ratio, ocr? } | null: the one that holds for the plan.
 // planWords(text) -> a weight for how a page's titles name it: above 1 for floor plans.
+// pageTitles(lines) -> planWords of the page's titles (its larger lines of text), else of all of it.
+// tsvWords(tsv) -> [{ str, x0, y0, x1, y1, conf }]: the words OCR read (Tesseract's TSV output), in
+//   its image's px. ocrLines(words) joins them into lines that carry ocr: true, whose notes
+//   scaleNotes reads leniently (see ocrScale).
 
 const LINE_MIN = 0.012; // a line is a run at least this long, of the page's long side
 const THICK_MAX = 0.012; // and no thicker than this: deeper ink is a filled area (a photo, a logo)
@@ -317,6 +321,11 @@ export function scaleNotes(lines) {
   for (const l of lines) {
     const text = QUOTES(l.text);
     const at = { x: (l.x0 + l.x1) / 2, y: l.y - l.h / 2 };
+    if (l.ocr) {
+      const note = ocrScale(text);
+      if (note) out.push({ ...note, ...at, ocr: true });
+      continue;
+    }
     let m = ARCH.exec(text);
     if (m) {
       const inches = number(m[1].replace(/\s*\/\s*/g, '/'));
@@ -356,15 +365,135 @@ export function chooseScaleNote(notes, box, long) {
   const scaled = sorted.filter((n) => n.ratio > 0);
   if (!scaled.length) return null;
   const same = scaled.every((n) => Math.abs(n.ratio / scaled[0].ratio - 1) < 1e-3);
-  if (same || scaled[0].d < 0.25 * long) return { text: scaled[0].text, ratio: scaled[0].ratio };
+  if (!same && !(scaled[0].d < 0.25 * long)) return null;
+  const { text, ratio, ocr } = scaled[0];
+  return ocr ? { text, ratio, ocr } : { text, ratio };
+}
+
+// ---- Text read by OCR ------------------------------------------------------------------------------
+
+/** The words in Tesseract's TSV output (rows of level 5), with their boxes in its image's px. */
+export function tsvWords(tsv) {
+  const out = [];
+  for (const row of (tsv || '').split('\n')) {
+    const c = row.split('\t');
+    if (c[0] !== '5' || c.length < 12) continue;
+    const str = c.slice(11).join(' ').trim();
+    const [x, y, w, h, conf] = c.slice(6, 11).map(Number);
+    if (str && w > 0 && h > 0) out.push({ str, x0: x, y0: y, x1: x + w, y1: y + h, conf });
+  }
+  return out;
+}
+
+/**
+ * Words OCR read ({ str, x0, y0, x1, y1 } in page px) joined into lines ({ text, x0, x1, y, h, ocr }
+ * as textLines makes them): left to right, each word sharing most of its height with the word before
+ * it and following it closely. A word's box is no baseline: a slash reaches below the line, and an
+ * = sign stays inside it.
+ */
+export function ocrLines(words) {
+  const lines = [];
+  for (const w of [...words].sort((a, b) => a.x0 - b.x0)) {
+    const h = w.y1 - w.y0;
+    const line = lines.find(({ last: p }) => {
+      const ph = p.y1 - p.y0, tall = Math.max(ph, h);
+      const overlap = Math.min(p.y1, w.y1) - Math.max(p.y0, w.y0);
+      return overlap >= 0.5 * Math.min(ph, h) && w.x0 >= p.x1 - 0.3 * tall && w.x0 - p.x1 < 2.5 * tall;
+    });
+    if (line) {
+      line.text += ` ${w.str}`;
+      line.last = w;
+      line.x1 = Math.max(line.x1, w.x1);
+      line.y0 = Math.min(line.y0, w.y0);
+      line.y1 = Math.max(line.y1, w.y1);
+    } else {
+      lines.push({ text: w.str, x0: w.x0, x1: w.x1, y0: w.y0, y1: w.y1, last: w });
+    }
+  }
+  return lines.map((l) => ({ text: l.text, x0: l.x0, x1: l.x1, y: l.y1, h: l.y1 - l.y0, ocr: true }));
+}
+
+// OCR misreads the marks of a scale note: it drops the foot mark (1-0"), doubles the inch mark
+// (1/4"'), drops the slash of a fraction or takes it for a 1 (14", 114") and reads 1 as I, l or i and
+// 0 as O. A note read so holds only as a standard drawing scale, and is written out again in full.
+const ARCH_SCALES = [1 / 32, 1 / 16, 3 / 32, 1 / 8, 3 / 16, 1 / 4, 3 / 8, 1 / 2, 3 / 4, 1, 1.5, 3]; // inches to the foot
+const FRACTION = ['1/32', '1/16', '3/32', '1/8', '3/16', '1/4', '3/8', '1/2', '3/4', '1', '1 1/2', '3'];
+const ENG_SCALES = [5, 10, 20, 30, 40, 50, 60, 80, 100, 200, 500, 1000]; // feet to the inch
+const METRIC_SCALES = [5, 10, 20, 25, 50, 75, 100, 125, 200, 250, 500, 1000, 1250, 2000, 2500, 5000];
+const OCR_NUM = String.raw`(?<![\d/.])(\d\s+\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+(?:\.\d+)?)`;
+const OCR_INCH = String.raw`(?:["']{1,3}|\s*in\b\.?)`;
+// 1/4" = 1'-0", read as 1/4"= 1-0", 14"'=1-0" or 1/4 = 10"; 1/4 in. = 1 ft.
+const ARCH_OCR = new RegExp(String.raw`${OCR_NUM}\s*${OCR_INCH}?\s*=\s*1\s*(?:'+\s*(?:-?\s*0)?|-?\s*0|ft\b\.?|foot\b)(?![\d'-])`, 'i');
+// 1" = 20'-0", read as 1"=20-0" or 1" = 20'
+const ENG_OCR = new RegExp(String.raw`(?<![\d/.])1\s*${OCR_INCH}\s*=\s*(\d{1,4})\s*'*\s*(?:-?\s*0)?(?![\d])`, 'i');
+const ocrDigits = (s) => s
+  .replace(/[–—−]/g, '-')
+  .replace(/(?<=[\d/'"=:-]\s?)[Il|!i](?![a-z])|[Il|!i](?=\s?[\d/'"=:])/g, '1')
+  .replace(/(?<=[\d'-])[Oo]+|[Oo]+(?=["'])/g, (m) => '0'.repeat(m.length));
+const nearest = (list, v) => list.findIndex((s) => Math.abs(s / v - 1) < 1e-6);
+
+/**
+ * Which of ARCH_SCALES OCR read as `raw`, mending a fraction whose slash it lost or took for a 1
+ * (14, 114) and a whole number and fraction run together (11/2); -1 if none.
+ */
+function ocrInches(raw) {
+  const i = nearest(ARCH_SCALES, number(raw.replace(/\s*\/\s*/g, '/')));
+  if (i >= 0) return i;
+  const mixed = /^(\d)(\d+)\s*\/\s*(\d+)$/.exec(raw.trim());
+  if (mixed) return nearest(ARCH_SCALES, +mixed[1] + mixed[2] / mixed[3]);
+  const d = raw.replace(/\s+/g, '');
+  if (!/^\d{2,4}$/.test(d)) return -1;
+  for (let p = 1; p < d.length; p++) {
+    const tries = [[d.slice(0, p), d.slice(p)]];
+    if (d[p] === '1' && p < d.length - 1) tries.push([d.slice(0, p), d.slice(p + 1)]);
+    for (const [a, b] of tries) {
+      const j = +b > +a ? nearest(ARCH_SCALES, +a / +b) : -1;
+      if (j >= 0) return j;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The drawing scale in a line of text OCR read ({ text, ratio } with text written out in full;
+ * ratio 0 for "not to scale"), or null. See above for the misreads it allows.
+ */
+export function ocrScale(raw) {
+  const text = ocrDigits(QUOTES(raw));
+  let m = ARCH_OCR.exec(text);
+  if (m) {
+    const i = ocrInches(m[1]);
+    if (i >= 0) return { text: `${FRACTION[i]}" = 1'-0"`, ratio: 12 / ARCH_SCALES[i] };
+  }
+  m = ENG_OCR.exec(text);
+  if (m && ENG_SCALES.includes(+m[1])) return { text: `1" = ${+m[1]}'-0"`, ratio: +m[1] * 12 };
+  m = METRIC.exec(text);
+  if (m && /scale/i.test(text) && METRIC_SCALES.includes(+m[1])) return { text: `1:${+m[1]}`, ratio: +m[1] };
+  if (NTS.test(text)) return { text: 'Not to scale', ratio: 0 };
   return null;
 }
 
+const TITLE_SIZE = 1.4; // titles are at least this much larger than the page's usual text
 const PLAN_TITLE = /\b(FLOOR|FURNITURE|FINISH|DIMENSION|PARTITION|EQUIPMENT|LIFE SAFETY|ENLARGED|OVERALL)\s+PLANS?\b|\b(LEVEL|FLOOR)\s+\w+\s+PLAN\b|\b(FIRST|SECOND|THIRD|FOURTH|GROUND|MAIN)\s+FLOOR\b/i;
 const OTHER_TITLE = /\b(REFLECTED\s+CEILING|CEILING|ROOF|SITE|DEMOLITION|FOUNDATION|FRAMING)\s+PLANS?\b|\bRCP\b|\bELEVATIONS?\b|\bSECTIONS?\b|\bDETAILS?\b|\bSCHEDULES?\b|\bCOVER\s+SHEET\b|\bSHEET\s+INDEX\b|\bGENERAL\s+NOTES\b/i;
 
+/** The most a page's titles weigh its rank: a floor plan's (see planWords). */
+export const PLAN_TITLE_WEIGHT = 1.6;
+
 /** How a page's text names it: 1.6 for a floor plan, 0.6 for other sheets, 1 when it does not say. */
 export function planWords(text) {
-  if (PLAN_TITLE.test(text)) return 1.6;
+  if (PLAN_TITLE.test(text)) return PLAN_TITLE_WEIGHT;
   return OTHER_TITLE.test(text) ? 0.6 : 1;
+}
+
+/**
+ * How a page's titles name it (see planWords): its lines of text (textLines, ocrLines) well above
+ * the usual size, the sheet's and drawings' titles, else all of them. A note that mentions the
+ * equipment plan, or a cover sheet's list of sheets, names no page.
+ */
+export function pageTitles(lines) {
+  const hs = lines.map((l) => l.h).filter((v) => v > 0).sort((a, b) => a - b);
+  const usual = hs[hs.length >> 1] || 0;
+  const titles = planWords(lines.filter((l) => l.h >= TITLE_SIZE * usual).map((l) => l.text).join(' '));
+  return titles !== 1 ? titles : planWords(lines.map((l) => l.text).join(' '));
 }

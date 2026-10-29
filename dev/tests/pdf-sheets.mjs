@@ -1,13 +1,17 @@
 // Test PDFs for the PDF import, printed by Chromium from HTML drawing sheets: the trace demo's floor
 // plan (assets/samples/trace-demo.svg, 24 px per foot) on a 36 x 24 in sheet at 1/4" = 1'-0", with a
 // frame, title block, general notes, a legend, a north arrow and the drawing's title and scale note,
-// between a cover sheet and a door schedule sheet. Variants: the floor plan sheet printed to fit an
-// 11 x 17 in page (so its scale note no longer holds), and scanned (a raster page with no text).
+// in a set with a cover sheet, the reflected ceiling plan (the same drawing under a ceiling grid, so
+// with more linework than the floor plan) and a door schedule sheet. Variants: the floor plan sheet
+// printed to fit an 11 x 17 in page (so its scale note no longer holds), scanned (a raster page with
+// no text), the set scanned, and the floor plan sheet with its text drawn as strokes (a CAD export
+// of SHX text: vector, with no text layer).
 // Usage: node dev/tests/pdf-sheets.mjs <baseUrl> <outDir>, or import makeTestPdfs().
 import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { ROMAN_SIMPLEX } from './hershey.mjs';
 
 const SHEET = { w: 36, h: 24 };
 
@@ -82,15 +86,19 @@ function northArrow(left, top) {
     <text x="60" y="22" text-anchor="middle" font-size="22" font-family="Arial" font-weight="700">N</text></svg>`;
 }
 
-function planSheet(svgUrl) {
-  // 1680 px at 24 px per foot is 70 ft: 17.5 in at 1/4" = 1'-0".
+function planSheet(svgUrl, { title = 'FLOOR PLAN', number = 'A-101', ceiling = false } = {}) {
+  // 1680 px at 24 px per foot is 70 ft: 17.5 in at 1/4" = 1'-0". The building, 60 by 40 ft, is 15 by
+  // 10 in from 9.85 in across and 4.483 in down: a ceiling plan has its 2 by 2 ft grid over it.
+  const grid = ceiling ? `<svg style="position:absolute;left:9.85in;top:4.483in" width="15in" height="10in" viewBox="0 0 60 40">
+    <g stroke="#555555" stroke-width="0.04">${Array.from({ length: 29 }, (_, i) => `<line x1="${2 + 2 * i}" y1="0" x2="${2 + 2 * i}" y2="40"/>`).join('')}${Array.from({ length: 19 }, (_, i) => `<line x1="0" y1="${2 + 2 * i}" x2="60" y2="${2 + 2 * i}"/>`).join('')}</g></svg>` : '';
   return `<div class="sheet">
     <div class="frame"></div>
-    ${titleBlock('FLOOR PLAN', 'A-101')}
+    ${titleBlock(title, number)}
     <div class="notes"><h2>GENERAL NOTES</h2><ol>${NOTES.map((n) => `<li>${n}</li>`).join('')}</ol></div>
     ${legend()}
     <img src="${svgUrl}" style="position:absolute;left:8.6in;top:2.4in;width:17.5in">
-    <div class="title" style="left:8.9in;top:17.2in"><div class="num">1</div><div><div class="name">FLOOR PLAN</div><div class="scale">SCALE: 1/4" = 1'-0"</div></div></div>
+    ${grid}
+    <div class="title" style="left:8.9in;top:17.2in"><div class="num">1</div><div><div class="name">${title}</div><div class="scale">SCALE: 1/4" = 1'-0"</div></div></div>
     ${northArrow(27.4, 2.6)}
   </div>`;
 }
@@ -128,9 +136,91 @@ function scheduleSheet() {
 const page = (body, size = `${SHEET.w}in ${SHEET.h}in`) => `<!doctype html><html><head><meta charset="utf-8"><style>@page { size: ${size}; margin: 0; } ${STYLE}</style></head><body>${body}</body></html>`;
 
 /**
- * Write set.pdf (cover, floor plan, schedule), tabloid.pdf (the floor plan sheet printed to fit
- * 17 x 11 in) and scan.pdf (the floor plan sheet as a 100 dpi raster, as a scanner makes it) to
- * outDir. Returns their paths.
+ * In the page: draw every character as Hershey strokes in its own place and hide the text, as CAD
+ * programs export SHX text, so the printed PDF has the sheet's text only as lines (no text layer).
+ * The plan drawing (source: its SVG) is put inline first so that its labels are drawn too. glyphs:
+ * ROMAN_SIMPLEX.
+ */
+function outlineText({ glyphs, source }) {
+  const NS = 'http://www.w3.org/2000/svg';
+  for (const img of [...document.querySelectorAll('img[src$=".svg"]')]) {
+    const r = img.getBoundingClientRect();
+    const svg = new DOMParser().parseFromString(source, 'image/svg+xml').documentElement;
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.setAttribute('style', `${img.getAttribute('style')};width:${r.width}px;height:${r.height}px`);
+    img.replaceWith(document.importNode(svg, true));
+  }
+  // List numbers are drawn by the browser, as text: write them out to be drawn as strokes too.
+  for (const ol of document.querySelectorAll('ol')) {
+    ol.style.listStyle = 'none';
+    [...ol.children].forEach((li, i) => li.prepend(`${i + 1}. `));
+  }
+  const mids = glyphs.map(([d]) => {
+    const xs = (d.match(/-?\d+(?:\.\d+)?,/g) || []).map((v) => parseFloat(v));
+    return (Math.min(...xs) + Math.max(...xs)) / 2;
+  });
+  // A character centered in its box (an em box: its baseline 81% of the way down, as in Arial).
+  const glyph = (ch, box, size, bold) => {
+    const i = ch.charCodeAt(0) - 33;
+    if (!glyphs[i]) return null;
+    const s = (0.716 * size) / 21;
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', glyphs[i][0]);
+    p.setAttribute('transform', `translate(${box.x + box.width / 2 - mids[i] * s} ${box.y + 0.81 * box.height - 22 * s}) scale(${s})`);
+    p.setAttribute('fill', 'none');
+    p.setAttribute('stroke', '#111111');
+    p.setAttribute('stroke-width', bold ? 2.9 : 1.9);
+    p.setAttribute('stroke-linecap', 'round');
+    p.setAttribute('stroke-linejoin', 'round');
+    return p;
+  };
+  const bold = (el) => parseInt(getComputedStyle(el).fontWeight, 10) >= 600;
+  for (const t of [...document.querySelectorAll('svg text')]) {
+    const g = document.createElementNS(NS, 'g');
+    if (t.getAttribute('transform')) g.setAttribute('transform', t.getAttribute('transform'));
+    const size = parseFloat(getComputedStyle(t).fontSize);
+    for (let i = 0; i < t.getNumberOfChars(); i++) {
+      const p = t.textContent[i] === ' ' ? null : glyph(t.textContent[i], t.getExtentOfChar(i), size, bold(t));
+      if (p) g.append(p);
+    }
+    t.replaceWith(g);
+  }
+  for (const sheet of document.querySelectorAll('.sheet')) {
+    const origin = sheet.getBoundingClientRect();
+    const overlay = document.createElementNS(NS, 'svg');
+    overlay.setAttribute('style', 'position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible');
+    const walk = document.createTreeWalker(sheet, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (n.parentElement.closest('svg') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT) });
+    const range = document.createRange();
+    const texts = [];
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      texts.push(n);
+      const size = parseFloat(getComputedStyle(n.parentElement).fontSize);
+      for (let i = 0; i < n.length; i++) {
+        if (!n.data[i].trim()) continue;
+        range.setStart(n, i);
+        range.setEnd(n, i + 1);
+        const r = range.getClientRects()[0];
+        const p = r && glyph(n.data[i], { x: r.left - origin.left, y: r.top - origin.top, width: r.width, height: r.height }, size, bold(n.parentElement));
+        if (p) overlay.append(p);
+      }
+    }
+    sheet.append(overlay);
+    // Hidden text keeps its place in the layout but is not printed.
+    for (const n of texts) {
+      const span = document.createElement('span');
+      span.style.visibility = 'hidden';
+      n.replaceWith(span);
+      span.append(n);
+    }
+  }
+}
+
+/**
+ * Write set.pdf (cover, floor plan, ceiling plan, schedule), tabloid.pdf (the floor plan sheet
+ * printed to fit 17 x 11 in), scan.pdf (the floor plan sheet as a 100 dpi raster, as a scanner
+ * makes it), scanset.pdf (cover, ceiling plan, floor plan and schedule scanned) and outlined.pdf
+ * (the floor plan sheet with its text drawn as strokes) to outDir. Returns their paths.
  */
 export async function makeTestPdfs(browser, base, outDir) {
   mkdirSync(outDir, { recursive: true });
@@ -143,37 +233,49 @@ export async function makeTestPdfs(browser, base, outDir) {
     await tab.pdf({ path, printBackground: true, preferCSSPageSize: true, ...opts });
     return path;
   };
-  const set = await print(page(coverSheet() + planSheet(svgUrl) + scheduleSheet()), 'set.pdf');
+  const ceiling = planSheet(svgUrl, { title: 'REFLECTED CEILING PLAN', number: 'A-201', ceiling: true });
+  const set = await print(page(coverSheet() + planSheet(svgUrl) + ceiling + scheduleSheet()), 'set.pdf');
   // Fit to an 11 x 17 in page: 11 / 24 of full size.
   const k = 11 / SHEET.h;
   const tabloid = await print(page(`<div style="width:17in;height:11in;overflow:hidden"><div style="transform:scale(${k});transform-origin:0 0">${planSheet(svgUrl)}</div></div>`, '17in 11in'), 'tabloid.pdf');
-  // A scan: the sheet at 100 dpi on slightly gray paper with speckles, placed as an image.
+  // Scans: sheets at 100 dpi on slightly gray paper with speckles, each placed as an image.
   await tab.setViewportSize({ width: SHEET.w * 96, height: SHEET.h * 96 });
+  const scanned = async (sheet) => {
+    await tab.setContent(page(sheet), { waitUntil: 'load' });
+    await tab.evaluate(() => Promise.all([...document.images].map((i) => i.decode().catch(() => {}))));
+    const shot = await tab.screenshot({ clip: { x: 0, y: 0, width: SHEET.w * 96, height: SHEET.h * 96 }, scale: 'css' });
+    const noisy = await tab.evaluate(async (b64) => {
+      const img = new Image();
+      img.src = `data:image/png;base64,${b64}`;
+      await img.decode();
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * 100 / 96);
+      c.height = Math.round(img.height * 100 / 96);
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      const d = ctx.getImageData(0, 0, c.width, c.height);
+      let seed = 7;
+      const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+      for (let i = 0; i < d.data.length; i += 4) {
+        const v = d.data[i] * 0.88 + 20 + (rnd() - 0.5) * 18 - (rnd() < 0.0015 ? 120 : 0);
+        d.data[i] = d.data[i + 1] = d.data[i + 2] = Math.max(0, Math.min(255, v));
+      }
+      ctx.putImageData(d, 0, 0);
+      return c.toDataURL('image/jpeg', 0.85);
+    }, shot.toString('base64'));
+    return `<div class="sheet"><img src="${noisy}" style="position:absolute;inset:0;width:100%;height:100%"></div>`;
+  };
+  const plan = await scanned(planSheet(svgUrl));
+  const scan = await print(page(plan), 'scan.pdf');
+  const sheets = [await scanned(coverSheet()), await scanned(ceiling), plan, await scanned(scheduleSheet())];
+  const scanset = await print(page(sheets.join('')), 'scanset.pdf');
+  // A CAD export: the floor plan sheet in vector form with its text drawn as strokes.
   await tab.setContent(page(planSheet(svgUrl)), { waitUntil: 'load' });
-  await tab.evaluate(() => Promise.all([...document.images].map((i) => i.decode().catch(() => {}))));
-  const shot = await tab.screenshot({ clip: { x: 0, y: 0, width: SHEET.w * 96, height: SHEET.h * 96 }, scale: 'css' });
-  const noisy = await tab.evaluate(async (b64) => {
-    const img = new Image();
-    img.src = `data:image/png;base64,${b64}`;
-    await img.decode();
-    const c = document.createElement('canvas');
-    c.width = Math.round(img.width * 100 / 96);
-    c.height = Math.round(img.height * 100 / 96);
-    const ctx = c.getContext('2d');
-    ctx.drawImage(img, 0, 0, c.width, c.height);
-    const d = ctx.getImageData(0, 0, c.width, c.height);
-    let seed = 7;
-    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    for (let i = 0; i < d.data.length; i += 4) {
-      const v = d.data[i] * 0.88 + 20 + (rnd() - 0.5) * 18 - (rnd() < 0.0015 ? 120 : 0);
-      d.data[i] = d.data[i + 1] = d.data[i + 2] = Math.max(0, Math.min(255, v));
-    }
-    ctx.putImageData(d, 0, 0);
-    return c.toDataURL('image/jpeg', 0.85);
-  }, shot.toString('base64'));
-  const scan = await print(page(`<div class="sheet"><img src="${noisy}" style="position:absolute;inset:0;width:100%;height:100%"></div>`), 'scan.pdf');
+  await tab.evaluate(outlineText, { glyphs: ROMAN_SIMPLEX, source: await (await fetch(svgUrl)).text() });
+  const outlined = join(outDir, 'outlined.pdf');
+  await tab.pdf({ path: outlined, printBackground: true, preferCSSPageSize: true });
   await tab.close();
-  return { set, tabloid, scan };
+  return { set, tabloid, scan, scanset, outlined };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

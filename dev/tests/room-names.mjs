@@ -1,9 +1,8 @@
-// Checks for naming traced rooms from the labels drawn in them (src/room-names.js), for the room
-// use their names tell (src/finishes.js namedUse) and for the finish packages those uses set, each
-// of which must read back as itself (packageOf matches finishes, so two alike would be taken for
-// one another). Usage: node dev/tests/room-names.mjs. Exits 1 on any failure.
+// Checks for naming traced rooms from the labels drawn in them (src/room-names.js) and for the room
+// use their names tell (src/finishes.js namedUse). Usage: node dev/tests/room-names.mjs. Exits 1 on
+// any failure.
 import { roomNames, labelKind, titleCase, cleanLabel, splitNumber, ocrLabel } from '../../src/room-names.js';
-import { namedUse, PACKAGES, applyPackage, packageOf } from '../../src/finishes.js';
+import { namedUse } from '../../src/finishes.js';
 
 let failed = 0;
 const check = (what, got, want) => {
@@ -74,12 +73,6 @@ for (const [n, want] of [
   ['Room 3', null], ['Room 105', null], ['Workroom 109', null], ['Corridor 1 / Reception 105', 'corridor'],
   ['Break Rm', 'breakroom'], ['Breakrm', 'breakroom'], ['MA Station', 'nurse'], ['Exam Room #4', 'exam'], ['Consult/Office', 'exam'],
 ]) check(`use of "${n}"`, namedUse(n), want);
-
-for (const key of Object.keys(PACKAGES)) {
-  const r = { points: [] };
-  applyPackage(r, key);
-  check(`package "${key}" reads as itself`, packageOf(r), key);
-}
 
 console.log(failed ? `${failed} failed` : 'all passed');
 process.exit(failed ? 1 : 0);

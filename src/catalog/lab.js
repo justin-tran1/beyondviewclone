@@ -36,16 +36,16 @@ function seq(seed) {
 // ---- Materials ----------------------------------------------------------------------
 
 /**
- * Lab finishes: walnut casework (or a CASEWORK_COLORS laminate or veneer), black epoxy resin tops
- * and sinks, brushed stainless, powder coated and enameled steel, molded plastics. A custom color
- * tints the door fronts and the equipment enamel, keeping their texture.
+ * Lab finishes: white laminate casework, black epoxy resin tops and sinks, brushed stainless,
+ * powder coated and enameled steel, molded plastics. A custom color tints the door fronts and the
+ * equipment enamel, keeping their texture.
  */
 /** Lab materials; color recolors the casework (or an appliance's enamel), top picks the worksurface. */
 function palette(kit, color, top) {
   const custom = isColor(color) ? color : null;
   const steel = kit.mat.steel, plastic = kit.mat.plastic;
   const enamel = kit.paintMaterial(custom || '#e8e8e4', { roughness: 0.34 });
-  const door = caseworkFinish(kit, custom, kit.mat.walnut);
+  const door = caseworkFinish(kit, custom, kit.mat.casework);
   return {
     custom,
     // Panels and end panels match colored doors.
@@ -1040,8 +1040,7 @@ function buildFumeHood(kit, { w, d, h, color }) {
   const H = hoodLayout(w, d, h);
   const { post, fz, bodyTop, sashTop, sash } = H;
   const ix0 = -w / 2 + post, ix1 = w / 2 - post;
-  // The hood stands on steel safety storage cabinets, enameled like the hood.
-  const run = cabinetRun(kit, { ...m, case: m.body, door: m.body }, w, d - 0.05, TOP - TOP_T, { doorsOnly: true });
+  const run = cabinetRun(kit, m, w, d - 0.05, TOP - TOP_T, { doorsOnly: true });
   run.position.z = d / 2 - 0.05;
   g.add(run);
   kit.block(g, m.top, -w / 2, w / 2, TOP - TOP_T, TOP, -d / 2, fz);

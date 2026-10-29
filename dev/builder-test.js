@@ -56,8 +56,8 @@ try {
   await import('../src/catalog/index.js');
 } catch (err) {
   // Category modules land independently; load whichever exist and use placeholders for the rest.
-  const loaded = await Promise.allSettled(['lab', 'medical', 'office', 'retail', 'art'].map((c) => import(`../src/catalog/${c}.js`)));
-  const ready = ['lab', 'medical', 'office', 'retail', 'art'].filter((c, i) => loaded[i].status === 'fulfilled');
+  const loaded = await Promise.allSettled(['lab', 'medical', 'office', 'retail'].map((c) => import(`../src/catalog/${c}.js`)));
+  const ready = ['lab', 'medical', 'office', 'retail'].filter((c, i) => loaded[i].status === 'fulfilled');
   catalog = ready.length ? `partial catalog (${ready.join(', ')})` : 'placeholders';
   console.warn('Catalog index is not ready:', err.message);
 }

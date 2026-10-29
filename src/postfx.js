@@ -75,12 +75,12 @@ const BLOOM = { strength: 0.16, radius: 0.45, threshold: 3, knee: 2, ceiling: 16
 // (0.02) 29, a lit white wall (0.6 to 1) 178 to 202, a pale floor (2) 223, a sun patch on a pale
 // floor (4 to 8) 236 to 244, the view out of a window (20) 248.
 const GRADE = {
-  balance: [1.07, 1, 0.9], // warm, as interiors lit by 3500 K fixtures read; normalized, brightness holds
+  balance: [0.945, 1, 1.06], // a touch cool, so lit warm-white paint reads white; normalized, brightness holds
   contrast: 1.5, // log-space contrast below the pivot
   pivot: 0.75, // a lit wall: contrast turns around it, so whites hold
   shoulder: 4.5, // stops above the pivot that highlights approach (AgX white is about 4.4 above)
-  toe: 0.006, // flare-like floor that keeps the deepest shadows open
-  saturation: 1.05,
+  toe: 0.012, // flare-like floor that keeps the deepest shadows open
+  saturation: 1.08,
   vignette: 0.05, // barely there: about 3 percent at the far corners
 };
 

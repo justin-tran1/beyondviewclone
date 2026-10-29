@@ -42,7 +42,7 @@ const CANONICAL = {
   'checkout-counter': [1.83, 0.91, 1.07], 'display-table': [1.52, 0.91, 0.81], 'clothing-rack': [1.52, 0.61, 1.6],
   mannequin: [0.51, 0.41, 1.83], 'pallet-racking': [2.74, 1.07, 4.88, true], pallet: [1.22, 1.02, 1.37],
   forklift: [1.22, 2.44, 2.13], workbench: [1.83, 0.76, 1.5], bollard: [0.2, 0.2, 1.07],
-  'floor-zone': [2.44, 2.44, 0.005, true, false], 'wall-art': [1.22, 0.04, 0.81, true, false],
+  'floor-zone': [2.44, 2.44, 0.005, true, false],
 };
 
 /** Target gross area (sq ft) from the brief, per sample. */
@@ -54,8 +54,8 @@ window.addEventListener('error', (e) => fail(e.error || e.message));
 
 // ---- Loading ----------------------------------------------------------------
 
-const catalogStatus = await Promise.allSettled(['lab', 'medical', 'office', 'retail', 'art'].map((c) => import(`../src/catalog/${c}.js`)));
-const catalogLoaded = ['lab', 'medical', 'office', 'retail', 'art'].filter((c, i) => catalogStatus[i].status === 'fulfilled');
+const catalogStatus = await Promise.allSettled(['lab', 'medical', 'office', 'retail'].map((c) => import(`../src/catalog/${c}.js`)));
+const catalogLoaded = ['lab', 'medical', 'office', 'retail'].filter((c, i) => catalogStatus[i].status === 'fulfilled');
 const { SAMPLES } = await import('../src/samples/index.js');
 let planRender = null;
 try {

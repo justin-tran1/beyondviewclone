@@ -70,8 +70,6 @@ export function buildLabSuite() {
   L.alongWall(shell.n, [18, 23, 28, 33, 38, 43, 48, 53, 58], 'workstation', 's');
   L.against(corrWest, 2.2, 'printer', 'w');
   L.against(corrWest, 4.6, 'trash-recycling', 'w');
-  // Art at the end of the write-up, over the bins and clear of the door (look 7 in catalog/art.js)
-  L.against(corrWest, 5, 'wall-art', 'w', { w: 3, h: 2, variant: 7 });
 
   // Wet lab
   L.alongWall(shell.w, [17, 23, 29], 'fume-hood', 'e');
@@ -115,7 +113,6 @@ export function buildLabSuite() {
   L.against(corrEast, 7, 'tv-display', 'e');
   L.item('conference-table-6', 81.5, 8);
   L.item('plant', 90.2, 14.3);
-  L.against(confSouth, 81.5, 'wall-art', 'n', { w: 6, h: 3.5, variant: 4 });
 
   // Break area
   L.against(confSouth, 79, 'pantry-counter', 's', { w: 14 });
@@ -124,7 +121,6 @@ export function buildLabSuite() {
   L.item('round-table-4', 85.5, 25.2);
   L.item('area-rug', 81, 33.6, 0, { w: 9, d: 7 });
   L.against(breakSouth, 81, 'sofa', 'n');
-  L.against(breakSouth, 81, 'wall-art', 'n', { w: 5.5, h: 3, variant: 8 });
   L.item('coffee-table', 81, 32.3);
   L.item('lounge-chair', 75.6, 32.3, 'e');
   L.item('lounge-chair', 86.4, 32.3, 'w');
@@ -134,17 +130,10 @@ export function buildLabSuite() {
   L.against(breakSouth, 84, 'tv-display', 's');
   L.item('reception-desk', 84, 43.4);
   L.against(corrEast, 49.8, 'sofa', 'e');
-  L.against(corrEast, 49.8, 'wall-art', 'e', { w: 5.5, h: 3, variant: 0 });
   L.item('coffee-table', 75.6, 49.8, 90);
   L.item('lounge-chair', 89.6, 47.2, 'w');
   L.item('lounge-chair', 89.6, 51, 'w');
   L.item('plant', 90.4, 39.4);
-
-  // Art along the corridor, between its doors (looks by index in catalog/art.js)
-  L.against(corrWest, 20, 'wall-art', 'e', { variant: 1 });
-  L.against(corrWest, 39.5, 'wall-art', 'e', { variant: 3 });
-  L.against(corrEast, 19.5, 'wall-art', 'w', { variant: 2 });
-  L.against(corrEast, 35, 'wall-art', 'w', { variant: 10 });
 
   L.camera('Lobby', 87.4, 52.4, 308, -4);
   L.camera('Write-up', 16.8, 10.4, 72, -5);

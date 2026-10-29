@@ -53,8 +53,6 @@ function mats(kit) {
     celadon: kit.mat.fabricCeladon,
     wheat: kit.mat.fabricWheat,
     green: kit.mat.fabricGreen,
-    taupe: kit.mat.fabricTaupe,
-    oatmeal: kit.mat.fabricOatmeal,
     accent: kit.mat.accentGreen,
     // Graphite powder coat on steel frames, white powder coat on pedestals and files.
     frame: tint(kit, kit.mat.darkSteel, '#3b4043'),
@@ -64,7 +62,7 @@ function mats(kit) {
     shadow: kit.material('#2a2e30', { roughness: 0.9 }),
     leather: tint(kit, kit.mat.vinylBlue, '#2e3133'),
     sagePaint: tint(kit, kit.mat.laminate, '#5f807d'),
-    felt: tint(kit, kit.mat.fabricGrey, '#7b7d7b'),
+    felt: tint(kit, kit.mat.fabricSage, '#5c7f79'),
     porcelain: kit.material('#efeeea', { roughness: 0.07 }),
     // A mirror reflects the room at full strength (the captured environment is dimmed for diffuse use).
     mirror: kit.material('#dfe6e9', { roughness: 0.03, metalness: 1, envMapIntensity: 1 }),
@@ -146,7 +144,7 @@ function drawerFront(kit, g, m, mat, x0, x1, y0, y1, z, pull = 0.16) {
 }
 
 /** Mobile pedestal (box, box, file) between x0..x1 and z0..z1, fronts facing +z, top at y1. */
-function pedestal(kit, g, m, x0, x1, z0, z1, y1, mat = m.walnut) {
+function pedestal(kit, g, m, x0, x1, z0, z1, y1, mat = m.frameLight) {
   const zf = z1 - 0.03;
   kit.block(g, m.shadow, x0 + 0.03, x1 - 0.03, 0.012, 0.04, z0 + 0.03, zf - 0.03);
   for (const x of [x0 + 0.05, x1 - 0.05]) for (const z of [z0 + 0.06, zf - 0.06]) kit.cyl(g, m.rubber, 0.02, 0.016, x, 0.02, z, { axis: 'x', segments: 12 });
@@ -224,7 +222,7 @@ function curvedPanel(kit, g, mat, width, height, thick, radius, y0, z) {
 }
 
 /** Four-leg side chair centered at (x, z), facing local +z turned by yaw: tapered legs, a padded seat and a curved back. */
-function sideChair(kit, g, m, x, z, yaw, { fabric = m.taupe, wood = m.walnut } = {}) {
+function sideChair(kit, g, m, x, z, yaw, { fabric = m.sage, wood = m.oak } = {}) {
   const c = assembly(kit, `side|${fabric.uuid}|${wood.uuid}`, (a) => {
     for (const lx of [-0.19, 0.19]) {
       for (const lz of [-0.18, 0.18]) kit.cyl(a, wood, 0.014, 0.39, lx, 0.006, lz, { rTop: 0.02, segments: 12 });
@@ -393,14 +391,13 @@ function drawFoliage(ctx, o, x, y, r, lobes = 9, seed = 1) {
  * Freestanding desk over x0..x1, z0..z1 (users sit at z1) with its top at y = top: sled legs,
  * a back beam, a modesty panel and an optional mobile pedestal at the +x end.
  */
-/** Desk on graphite sled legs with a walnut modesty panel and, when `ped`, a walnut pedestal. */
 function deskUnit(kit, g, m, { x0, x1, z0, z1, top, surface, ped = false, modesty = true }) {
   worksurface(kit, g, surface, x0, x1, z0, z1, top);
   const under = top - TOP_T;
   const legs = [x0 + 0.06, x1 - 0.06];
   for (const x of legs) sledLeg(kit, g, m, m.frame, x, z0 + 0.04, z1 - 0.04, under);
   kit.block(g, m.frame, legs[0] + 0.02, legs[1] - 0.02, under - 0.06, under, z0 + 0.06, z0 + 0.1);
-  if (modesty) kit.block(g, m.walnut, legs[0] + 0.02, legs[1] - 0.02, under - 0.38, under - 0.06, z0 + 0.07, z0 + 0.09);
+  if (modesty) kit.block(g, m.frame, legs[0] + 0.02, legs[1] - 0.02, under - 0.38, under - 0.06, z0 + 0.075, z0 + 0.085);
   const pd = Math.min(0.55, z1 - z0 - 0.2);
   if (ped && x1 - x0 >= 1.0 && pd > 0.3) pedestal(kit, g, m, x1 - 0.5, x1 - 0.1, z1 - 0.05 - pd, z1 - 0.05, under - 0.02);
 }
@@ -419,7 +416,7 @@ function drawDeskTop(ctx, o, x0, y0, x1, y1, ped) {
 function buildDesk(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  deskUnit(kit, g, m, { x0: -w / 2, x1: w / 2, z0: -d / 2, z1: d / 2, top: h, surface: finish(kit, color, m.walnut), ped: true });
+  deskUnit(kit, g, m, { x0: -w / 2, x1: w / 2, z0: -d / 2, z1: d / 2, top: h, surface: finish(kit, color, m.oak), ped: true });
   return g;
 }
 
@@ -435,8 +432,8 @@ function buildWorkstation(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
   const z0 = -d / 2, z1 = z0 + WS.deskD;
-  deskUnit(kit, g, m, { x0: -w / 2, x1: w / 2, z0, z1, top: WS.top, surface: m.white, ped: true });
-  privacyScreen(kit, g, m, finish(kit, color, m.taupe), -w / 2 + 0.01, w / 2 - 0.01, z0 + 0.004, WS.top, h);
+  deskUnit(kit, g, m, { x0: -w / 2, x1: w / 2, z0, z1, top: WS.top, surface: m.oak, ped: true });
+  privacyScreen(kit, g, m, finish(kit, color, m.sage), -w / 2 + 0.01, w / 2 - 0.01, z0 + 0.004, WS.top, h);
   dualMonitors(kit, g, m, 0, WS.top, z0 + 0.2);
   keyboard(kit, g, m, -0.03, WS.top, z0 + 0.5);
   mug(kit, g, m, -0.55, WS.top, z0 + 0.42);
@@ -512,11 +509,11 @@ function buildBenching(kit, { w, h, color }) {
   const top = BENCH.top, under = top - TOP_T, half = BENCH.gap / 2;
   for (const side of [1, -1]) {
     const r = sub(kit, g, 0, 0, 0, { yaw: side > 0 ? 0 : Math.PI });
-    for (const [a, b] of [[-w / 2, -half], [half, w / 2]]) worksurface(kit, r, m.white, a, b, half, BENCH.deskD + half, top);
+    for (const [a, b] of [[-w / 2, -half], [half, w / 2]]) worksurface(kit, r, m.oak, a, b, half, BENCH.deskD + half, top);
   }
   for (const x of [-w / 2 + 0.06, 0, w / 2 - 0.06]) sledLeg(kit, g, m, m.frame, x, -BENCH.deskD + 0.04, BENCH.deskD - 0.04, under);
   kit.block(g, m.frame, -w / 2 + 0.08, w / 2 - 0.08, under - 0.07, under, -0.05, 0.05);
-  privacyScreen(kit, g, m, finish(kit, color, m.taupe), -w / 2 + 0.02, w / 2 - 0.02, -0.013, top, h);
+  privacyScreen(kit, g, m, finish(kit, color, m.sage, 0.95), -w / 2 + 0.02, w / 2 - 0.02, -0.013, top, h);
   for (const s of benchSeats(w)) {
     const r = sub(kit, g, 0, 0, 0, { yaw: s.side > 0 ? 0 : Math.PI });
     const x = s.side * s.x;
@@ -653,7 +650,7 @@ function buildConference(seats) {
     const m = mats(kit);
     const { tw, td } = spec;
     const t = 0.04, under = h - t;
-    roundedSlab(kit, g, finish(kit, color, m.walnut), -tw / 2, tw / 2, under, h, -td / 2, td / 2, 0.06);
+    roundedSlab(kit, g, finish(kit, color, m.oak), -tw / 2, tw / 2, under, h, -td / 2, td / 2, 0.06);
     // Two T bases of rectangular tube, a spine between them and leveling glides at each foot.
     for (const s of [-1, 1]) {
       const x = s * (tw / 2 - 0.5);
@@ -701,7 +698,7 @@ function roundSeats() {
 function buildRoundTable(kit, { h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const top = finish(kit, color, m.walnut);
+  const top = finish(kit, color, m.oak);
   slabTop(kit, g, top, -ROUND.r, ROUND.r, h - 0.03, h, -ROUND.r, ROUND.r, { corner: ROUND.r, edge: 0.006 });
   kit.cyl(g, m.frame, 0.14, 0.02, 0, h - 0.05, 0, { segments: 24 });
   // Pedestal: a turned column on a weighted, chamfered disc base.
@@ -769,7 +766,7 @@ function buildSofa(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
   const S = upholstered(kit, g, m, {
-    w, d, h, seats: 3, fabric: finish(kit, color, m.taupe),
+    w, d, h, seats: 3, fabric: finish(kit, color, m.green),
     arm: 0.16, armH: 0.62, seatH: 0.45, leg: 0.07, legMat: m.frame, tapered: false,
   });
   // Throw pillows: plump, crowned on both faces, leaning into the corners.
@@ -784,7 +781,7 @@ function buildLounge(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
   upholstered(kit, g, m, {
-    w, d, h, seats: 1, fabric: finish(kit, color, m.oatmeal),
+    w, d, h, seats: 1, fabric: finish(kit, color, m.celadon),
     arm: 0.13, armH: 0.6, seatH: 0.44, leg: 0.15, legMat: m.walnut, tapered: true, backH: h,
   });
   return g;
@@ -824,7 +821,7 @@ function drawLounge(ctx, o) {
 function buildCoffeeTable(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const top = finish(kit, color, m.walnut);
+  const top = finish(kit, color, m.oak);
   roundedSlab(kit, g, top, -w / 2, w / 2, h - 0.03, h, -d / 2, d / 2, 0.07);
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) kit.cyl(g, m.walnut, 0.015, h - 0.036, sx * (w / 2 - 0.1), 0.006, sz * (d / 2 - 0.09), { rTop: 0.022, segments: 12 });
@@ -844,7 +841,7 @@ function buildTable(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
   const t = 0.03, under = h - t, leg = 0.022;
-  roundedSlab(kit, g, finish(kit, color, m.walnut), -w / 2, w / 2, under, h, -d / 2, d / 2, 0.02);
+  roundedSlab(kit, g, finish(kit, color, m.oak), -w / 2, w / 2, under, h, -d / 2, d / 2, 0.02);
   const lx = w / 2 - 0.06, lz = d / 2 - 0.06;
   kit.block(g, m.frame, -lx, lx, under - 0.07, under, -lz - 0.008, -lz + 0.008);
   kit.block(g, m.frame, -lx, lx, under - 0.07, under, lz - 0.008, lz + 0.008);
@@ -869,7 +866,7 @@ function buildPedestalTable(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
   const r = Math.min(w, d) / 2;
-  slabTop(kit, g, finish(kit, color, m.walnut), -w / 2, w / 2, h - 0.03, h, -d / 2, d / 2, { corner: r, edge: 0.006 });
+  slabTop(kit, g, finish(kit, color, m.oak), -w / 2, w / 2, h - 0.03, h, -d / 2, d / 2, { corner: r, edge: 0.006 });
   const base = Math.min(0.26, r * 0.62);
   kit.cyl(g, m.frame, Math.min(0.14, r * 0.4), 0.02, 0, h - 0.05, 0, { segments: 24 });
   turned(kit, g, m.frame, [[base, 0], [base + 0.01, 0.004], [base + 0.005, 0.016], [base - 0.02, 0.026], [0.05, 0.034], [0.04, 0.06], [0.04, h - 0.06], [0.06, h - 0.05], [0, h - 0.05]], 0, 0, 0, { segments: 40 });
@@ -983,7 +980,7 @@ function fillShelf(kit, g, rnd, x0, x1, y, z0, depth, maxH) {
 function buildBookshelf(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const body = finish(kit, color, m.walnut);
+  const body = finish(kit, color, m.oak);
   const t = 0.02, zb = -d / 2 + 0.012;
   kit.block(g, body, -w / 2, -w / 2 + t, 0, h, -d / 2, d / 2);
   kit.block(g, body, w / 2 - t, w / 2, 0, h, -d / 2, d / 2);
@@ -1040,7 +1037,7 @@ function buildPhoneBooth(kit, { w, d, h, color }) {
   // Ventilation slots in the roof fascia.
   kit.block(g, m.shadow, -w / 2 + 0.12, w / 2 - 0.12, h - 0.07, h - 0.05, d / 2 - 0.0005, d / 2 + 0.0005, false, { bevel: false });
   boothDoor(kit, g, m, -w / 2 + t, w / 2 - t, base, ceil, fz);
-  kit.block(g, m.walnut, -w / 2 + t + 0.02, w / 2 - t - 0.02, BOOTH.shelfY - 0.03, BOOTH.shelfY, -d / 2 + t + 0.02, -d / 2 + t + 0.32);
+  kit.block(g, m.oak, -w / 2 + t + 0.02, w / 2 - t - 0.02, BOOTH.shelfY - 0.03, BOOTH.shelfY, -d / 2 + t + 0.02, -d / 2 + t + 0.32);
   kit.block(g, m.frame, -0.05, 0.05, BOOTH.shelfY - 0.08, BOOTH.shelfY - 0.03, -d / 2 + t + 0.02, -d / 2 + t + 0.06);
   stool(kit, g, m, 0, BOOTH.stoolZ, base + 0.02, felt);
   return g;
@@ -1129,7 +1126,7 @@ function buildPantry(kit, { w, d, h, color, top: surface }) {
   const g = kit.group();
   const m = mats(kit);
   const P = pantryLayout(w, d, h);
-  const doors = caseworkFinish(kit, color, m.walnut);
+  const doors = caseworkFinish(kit, color, m.sagePaint);
   const counter = topMaterial(kit, surface, m.quartz);
   const { top, toe } = PANTRY;
   const ct = 0.03, base = top - ct, zf = P.zf, bowl = 0.2;
@@ -1154,7 +1151,7 @@ function buildPantry(kit, { w, d, h, color, top: surface }) {
   faucet(kit, g, m, sx, top, -d / 2 + 0.07, Math.min(0.2, (hole.z0 + hole.z1) / 2 + d / 2 - 0.07));
   const uy = P.upperY;
   kit.block(g, counter, P.cx0, P.cx1, top, uy, -d / 2, -d / 2 + 0.012);
-  upperRun(kit, g, m, doors, P.cx0, P.cx1, uy, h, -d / 2, -d / 2 + P.upperD, P.n);
+  upperRun(kit, g, m, P.cx0, P.cx1, uy, h, -d / 2, -d / 2 + P.upperD, P.n);
   if (P.coffee) coffeeMachine(kit, g, m, P.coffeeX, top, -d / 2 + 0.24);
   if (P.fridgeW) fridgeColumn(kit, g, m, P.cx1, w / 2, h, d, zf);
   return g;
@@ -1223,8 +1220,7 @@ function faucet(kit, g, m, x, y, z, reach = 0.2) {
   bent(kit, g, m.chrome, [[x + 0.012, y + 0.12, z], [x + 0.05, y + 0.13, z], [x + 0.075, y + 0.16, z + 0.01]], 0.006, { segments: 8, radial: 8 });
 }
 
-/** Wall cabinets over the counter, doors in `doors` like the base below, with a light strip under them. */
-function upperRun(kit, g, m, doors, x0, x1, y0, y1, z0, z1, n) {
+function upperRun(kit, g, m, x0, x1, y0, y1, z0, z1, n) {
   const zf = z1 - 0.02;
   kit.block(g, m.casework, x0, x1, y0, y1, z0 + 0.012, zf);
   kit.block(g, m.panelLight, x0 + 0.03, x1 - 0.03, y0 - 0.006, y0, zf - 0.06, zf - 0.03, false);
@@ -1233,7 +1229,7 @@ function upperRun(kit, g, m, doors, x0, x1, y0, y1, z0, z1, n) {
     const a = x0 + i * mw, b = a + mw;
     const halves = mw >= 0.5 ? [[a, (a + b) / 2, 1], [(a + b) / 2, b, -1]] : [[a, b, i % 2 ? 1 : -1]];
     for (const [p, q, hand] of halves) {
-      kit.block(g, doors, p + GAP, q - GAP, y0 + GAP, y1 - GAP, zf, z1);
+      kit.block(g, m.white, p + GAP, q - GAP, y0 + GAP, y1 - GAP, zf, z1);
       const px = hand > 0 ? q - 0.035 : p + 0.035;
       barPull(kit, g, m.alu, px, y0 + 0.11, z1, 0.13, { vertical: true });
     }
@@ -1307,7 +1303,7 @@ const MEDIA = { legH: 0.12, top: 0.62, screenW: 1.44, screenY: 0.77, screenZ: [0
 function buildMedia(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = mats(kit);
-  const doors = finish(kit, color, m.walnut);
+  const doors = finish(kit, color, m.sagePaint);
   const zf = d / 2 - 0.035, { legH, top } = MEDIA;
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
@@ -1315,8 +1311,8 @@ function buildMedia(kit, { w, d, h, color }) {
       kit.cyl(g, m.black, 0.016, 0.006, sx * (w / 2 - 0.08), 0, sz * (d / 2 - 0.08), { segments: 10 });
     }
   }
-  kit.block(g, m.walnut, -w / 2, w / 2, legH, top, -d / 2 + 0.06, zf);
-  kit.block(g, m.walnut, -w / 2, w / 2, top - 0.02, top, -d / 2 + 0.05, d / 2 - 0.01);
+  kit.block(g, m.oak, -w / 2, w / 2, legH, top, -d / 2 + 0.06, zf);
+  kit.block(g, m.oak, -w / 2, w / 2, top - 0.02, top, -d / 2 + 0.05, d / 2 - 0.01);
   const n = Math.max(2, Math.round((w - 0.04) / 0.45)), dw = (w - 0.04) / n;
   for (let i = 0; i < n; i++) {
     const a = -w / 2 + 0.02 + i * dw;
@@ -1359,8 +1355,8 @@ function drawMedia(ctx, o) {
 
 function buildColumn(kit, { w, d, h, color }) {
   const g = kit.group();
-  // Painted like the walls (the paint as made, finishes.js WALL_COLORS), on a rubber cove base.
-  const paint = kit.paintMaterial(isColor(color) ? color : '#d4ccc3');
+  // Painted like the walls, on a rubber cove base.
+  const paint = kit.paintMaterial(isColor(color) ? color : '#efece6');
   kit.block(g, kit.mat.rubber, -w / 2, w / 2, 0, 0.1, -d / 2, d / 2);
   kit.block(g, paint, -w / 2 + 0.004, w / 2 - 0.004, 0.1, h, -d / 2 + 0.004, d / 2 - 0.004);
   return g;
@@ -1524,9 +1520,9 @@ function buildRug(kit, { w, d, h, color }) {
   // Flatweave wool: the field takes the caller's color, the border and inlay stay fixed. Wool has
   // little of upholstery's sheen, which would glow at the grazing angles a rug is seen from.
   const wool = (hex) => tint(kit, m.grey, hex, 1, { sheen: 0.08 });
-  const field = wool(isColor(color) ? color : '#9a9086');
-  const border = wool('#5e544b');
-  const stripe = wool('#c9bfae');
+  const field = wool(isColor(color) ? color : '#8e918a');
+  const border = wool('#566f6b');
+  const stripe = wool('#c4bd95');
   const R = rugLayout(w, d);
   const t = Math.max(0.004, h), b = R.band;
   // Field and border are woven flush; the border's outer edge is bound in a soft roll.
@@ -1697,7 +1693,7 @@ function buildVanity(kit, { w, d, h, color, top: surface }) {
   const g = kit.group();
   const m = mats(kit);
   const V = vanityLayout(w, d);
-  const apron = caseworkFinish(kit, color, m.walnut), counter = topMaterial(kit, surface, m.quartz);
+  const apron = caseworkFinish(kit, color, m.oak), counter = topMaterial(kit, surface, m.quartz);
   const t = 0.04;
   kit.block(g, counter, -w / 2, w / 2, h - t, h, -d / 2, d / 2);
   kit.block(g, apron, -w / 2, w / 2, h - 0.22, h - t, d / 2 - 0.03, d / 2 - 0.005);

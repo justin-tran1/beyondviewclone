@@ -26,7 +26,7 @@ export const ITEM_SIZES = {
   'gondola-shelving': [2.44, 1.22], 'wall-shelving': [2.44, 0.51], 'checkout-counter': [1.83, 0.91],
   'display-table': [1.52, 0.91], 'clothing-rack': [1.52, 0.61], mannequin: [0.51, 0.41],
   'pallet-racking': [2.74, 1.07], pallet: [1.22, 1.02], forklift: [1.22, 2.44], workbench: [1.83, 0.76],
-  bollard: [0.2, 0.2], 'floor-zone': [2.44, 2.44], 'wall-art': [1.22, 0.04],
+  bollard: [0.2, 0.2], 'floor-zone': [2.44, 2.44],
 };
 
 const TOL = 0.01;
@@ -179,7 +179,7 @@ export class Layout {
   }
 
   /** Item centered at (x, y). rotation: degrees clockwise, or the compass direction its front faces. */
-  item(type, x, y, rotation = 0, { w, d, h, elevation, color, variant, label } = {}) {
+  item(type, x, y, rotation = 0, { w, d, h, elevation, color, label } = {}) {
     if (!ITEM_SIZES[type]) throw new Error(`Unknown item type "${type}"`);
     const rot = typeof rotation === 'string' ? ROTATION[rotation] : rotation;
     if (rot === undefined) throw new Error(`Unknown facing "${rotation}"`);
@@ -189,7 +189,6 @@ export class Layout {
     if (h !== undefined) item.h = h;
     if (elevation !== undefined) item.elevation = elevation;
     if (color) item.color = color;
-    if (variant !== undefined) item.variant = variant;
     if (label) item.label = label;
     this.items.push(item);
     return item;
@@ -266,7 +265,6 @@ export class Layout {
       const item = { id: `i${++n}`, type: it.type, x: m(it.x), y: m(it.y), rotation: it.rotation };
       for (const k of ['w', 'd', 'h', 'elevation']) if (it[k] !== undefined) item[k] = m(it[k]);
       if (it.color) item.color = it.color;
-      if (it.variant !== undefined) item.variant = it.variant;
       if (it.label) item.label = it.label;
       plan.items.push(item);
     }

@@ -85,8 +85,9 @@ without a code change, run the workflow from the Actions tab.
 7. **Walk**: switch to **Walk** or **Split**. Drag to look, `W A S D` to move, click the floor to
    walk there, save viewpoints, and use **Overview** for a dollhouse view. Save images of any view.
    Spaces look like a rendered architectural tour: warm greige walls on an espresso base, walnut
-   doors in dark bronze frames, acoustic tile ceilings with 2 x 4 troffers, weathered oak plank in
-   corridors and waiting rooms, walnut casework with white tops, and warm light.
+   doors and glass partitions in dark bronze frames, acoustic tile ceilings with 2 x 4 troffers, oak
+   plank floors (weathered in corridors and waiting rooms, natural in offices), walnut casework
+   with white tops, and warm light.
 8. **Render photo**: the camera button beside Save image path traces the current view into a
    photographic still for client decks (1280 x 720 up to 4K; Draft, Standard or High quality). It
    takes a minute or more on the graphics card while the 3D view keeps running; save the PNG when

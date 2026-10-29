@@ -645,8 +645,11 @@ function buildDesk(kit, { w, d, h, color, top }, variant) {
   const fz = L.front - 0.012;
   const ledgeY = h - 0.03;
 
+  // The body and the work surface's end panels stop a few millimeters short of the ends, so a
+  // face that wraps an end (the reception desk's slats) stands proud of them instead of z-fighting.
+  const end = 0.004;
   kit.block(g, m.plinth, -w / 2 + 0.015, w / 2 - 0.015, 0, 0.08, L.inner + 0.01, fz - 0.025);
-  kit.block(g, m.laminate, -w / 2, w / 2, 0.08, ledgeY, L.inner, fz - 0.02);
+  kit.block(g, m.laminate, -w / 2 + end, w / 2 - end, 0.08, ledgeY, L.inner, fz - 0.02);
   variant.dress(kit, g, m, w, fz, ledgeY, face);
   kit.block(g, topMaterial(kit, top, m.quartz), -w / 2, w / 2, ledgeY, h, L.ledge0, L.front);
   kit.block(g, m.led, -w / 2 + 0.06, w / 2 - 0.06, ledgeY - 0.006, ledgeY, L.ledge0 + 0.02, L.ledge0 + 0.04, false);
@@ -658,7 +661,7 @@ function buildDesk(kit, { w, d, h, color, top }, variant) {
 
   kit.block(g, work, -w / 2 + 0.025, w / 2 - 0.025, DESK - 0.03, DESK, L.work0, L.inner);
   for (const s of [-1, 1]) {
-    const x = s * w / 2;
+    const x = s * (w / 2 - end);
     kit.block(g, m.white, ...span(x, x - s * 0.025), 0, DESK, L.work0, L.inner);
   }
   if (L.ped) {

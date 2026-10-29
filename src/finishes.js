@@ -288,15 +288,56 @@ export function suggestPackage(points, types) {
   return null;
 }
 
-/** The package the items standing in a room of `plan` suggest for its use (see suggestPackage), or null. */
-export function roomUse(plan, room) {
-  if (!room.points || room.points.length < 3) return null;
-  return suggestPackage(room.points, plan.items.filter((it) => pointInPolygon(it, room.points)).map((it) => it.type));
+// Words in a room's name that tell its use, the most particular first: a patient toilet is a
+// restroom, the lab manager's room an office, a cath lab a procedure room, office storage storage.
+const USE_NAMES = [
+  ['office', /\b(MANAGER|DIRECTOR|SUPERVISOR|COORDINATOR|ADMINISTRATOR|WRITE ?-?UP)\b/],
+  ['restroom', /\b(TOILETS?|RESTROOMS?|REST ROOMS?|LAVATORY|LAV|WC|BATH|BATHROOM|SHOWERS?|LOCKERS?|LOCKER ROOM|MENS?|WOMENS?|UNISEX|ALL GENDER|RR)\b/],
+  ['utility', /\b(SOILED|SOIL|DIRTY|CLEAN (?:UTIL|UTILITY|SUPPLY|LINEN)|UTILITY|UTIL)\b/],
+  ['cleanroom', /\b(CLEAN ?ROOMS?)\b/],
+  ['lab-support', /\b(GLASS ?WASH|CAGE ?WASH|AUTOCLAVE|STERILE PROCESSING|COLD ROOM|LAB SUPPORT|DECON|EQUIPMENT (?:CORRIDOR|ROOM))\b/],
+  ['tissue-culture', /\b(TISSUE CULTURE|CELL CULTURE|TC LAB|BSL ?-?[1-3]|BIOSAFETY)\b/],
+  ['vivarium', /\b(VIVARIUM|ANIMAL)\b/],
+  ['surgery', /\b(OPERATING|SURGERY|SURGICAL)\b|^O ?R\b/],
+  ['procedure', /\b(PROCEDURES?|PROC|TREATMENT|ENDOSCOPY|ENDO|INFUSION|DIALYSIS|CATH ?LAB|INJECTION)\b/],
+  ['dry-lab', /\b(DRY LAB|COMPUTATIONAL|INSTRUMENTATION|ELECTRONICS LAB|MICROSCOPY)\b/],
+  ['imaging', /\b(IMAGING|RADIOLOGY|X ?-?RAY|XRAY|CT|MRI|ULTRASOUND|MAMMO|MAMMOGRAPHY|DEXA|FLUORO|FLUOROSCOPY|NUCLEAR MEDICINE)\b/],
+  ['exam', /\b(EXAM|EXAMS|EXAMINATION|TRIAGE|CONSULT|CONSULTATION)\b/],
+  ['patient', /\b(PATIENT|INPATIENT|RECOVERY|PACU|PRE ?-?OP|POST ?-?OP|ICU|NICU|OBSERVATION|HOLDING|ISOLATION|LDR|POSTPARTUM)\b/],
+  ['nurse', /\b(NURSES?|NURSING|NURSE STATION|CHARTING|MEDICATION|MED ROOM)\b/],
+  ['waiting', /\b(WAITING|WAIT|RECEPTION|CHECK ?-?IN|CHECK ?-?OUT|REGISTRATION|INTAKE)\b/],
+  ['corridor', /\b(CORRIDOR|CORR|HALL|HALLWAY|PASSAGE|CIRCULATION)\b/],
+  ['wet-lab', /\b(WET LAB|LAB|LABS|LABORATORY|CHEMISTRY|CHEM|BIOLOGY|MICROBIOLOGY|PATHOLOGY|HISTOLOGY)\b/],
+  ['conference', /\b(CONFERENCE|CONF|MEETING|BOARD ?ROOM|HUDDLE|TRAINING|CLASSROOM|SEMINAR|TEAM ROOM)\b/],
+  ['breakroom', /\b(BREAK|BREAKROOM|LOUNGE|KITCHEN|KITCHENETTE|PANTRY|CAFE|CAFETERIA|DINING|LUNCH|COFFEE|VENDING)\b/],
+  ['lobby', /\b(LOBBY|VESTIBULE|VEST|ENTRY|ENTRANCE|FOYER|ATRIUM)\b/],
+  ['storage', /\b(STORAGE|STOR|STORE|STOREROOM|CLOSET|CLO|JAN|JANITOR|JANITORS|CUSTODIAL|HOUSEKEEPING|EVS|MECH|MECHANICAL|ELEC|ELECTRICAL|IT|IDF|MDF|TELECOM|DATA|SERVER|FILES?|RECORDS|SUPPLY|SUPPLIES|LINEN|ARCHIVE|WAREHOUSE)\b/],
+  ['office', /\b(OFFICES?|OFF|OFC|WORKSTATIONS?|STUDY|ADMIN|ADMINISTRATION|MANAGER|DIRECTOR|PHYSICIAN|PROVIDER|DOCTOR|STAFF|BILLING|FOCUS|PHONE ROOM)\b/],
+];
+
+/**
+ * The package a room's name tells its use by (an exam room, a soiled utility room, a wet lab), or
+ * null: "Room 3" or a number says nothing. A name for several rooms traced as one ("Reception 105 /
+ * Open Office 106") goes by its first.
+ */
+export function namedUse(name) {
+  const text = (name || '').split(' / ')[0].toUpperCase().replace(/[.'’]/g, '').replace(/[^A-Z0-9 /-]+/g, ' ');
+  for (const [use, words] of USE_NAMES) if (words.test(text)) return use;
+  return null;
 }
 
 /**
- * In a draft plan, give each of `rooms` the package for its use (roomUse). Rooms whose use their
- * items do not tell keep their finishes. Returns how many rooms changed.
+ * The package for a room's use (see PACKAGES), or null: the one its name tells (namedUse), else the
+ * one the items standing in it in `plan` suggest (suggestPackage).
+ */
+export function roomUse(plan, room) {
+  if (!room.points || room.points.length < 3) return null;
+  return namedUse(room.name) ?? suggestPackage(room.points, plan.items.filter((it) => pointInPolygon(it, room.points)).map((it) => it.type));
+}
+
+/**
+ * In a draft plan, give each of `rooms` the package for its use (roomUse). Rooms whose name and
+ * items do not tell their use keep their finishes. Returns how many rooms changed.
  */
 export function matchFinishes(draft, rooms = draft.rooms) {
   let changed = 0;

@@ -7,6 +7,7 @@ import { rotate, clamp, normDeg, deg2rad } from '../geometry.js';
 import { getItem, hasItem } from '../catalog/registry.js';
 import { loadUnderlayImage } from '../plan-render.js';
 import { matchFinishes } from '../finishes.js';
+import { roomNames } from '../room-names.js';
 
 const TRACE_SIDE = 3200; // px: larger images are traced at this size on their long side
 const SVG_SIDE = 2400; // px: drawings in SVG are drawn this large to be traced
@@ -132,8 +133,10 @@ function addFurniture(draft, f, turn, turnBy) {
 
 /**
  * Inside store.update: add a trace's walls, openings, rooms and furniture where the image lies on
- * the plan (draft.underlay's position, rotation and scale). Returns how many of each were added,
- * and in how many rooms the furniture set the finishes (`finished`).
+ * the plan (draft.underlay's position, rotation and scale). Rooms take their names from the labels
+ * drawn in them (draft.underlay.labels, from a PDF page). Returns how many of each were added, how
+ * many rooms were named (`named`), and in how many rooms their names or furniture set the finishes
+ * (`finished`).
  */
 export function addTrace(draft, { trace, factor }) {
   const U = draft.underlay;
@@ -150,7 +153,17 @@ export function addTrace(draft, { trace, factor }) {
   }
   const rooms = geo.rooms.map((r) => addRoom(draft, r.points.map(turn)));
   for (const f of geo.items) count.items += addFurniture(draft, f, turn, U.rotation || 0);
-  // Rooms whose furniture tells their use (an exam room's casework, a restroom's toilet) take its finishes.
+  // The labels on the plan, from the image's px as the rooms are.
+  const labels = (U.labels || []).map((l) => ({
+    text: l.text, ...turn({ x: U.x + l.x * U.scale, y: U.y + l.y * U.scale }), h: l.h * U.scale, ...(l.w ? { w: l.w * U.scale } : {}),
+  }));
+  count.named = 0;
+  roomNames(rooms, labels).forEach((name, i) => {
+    if (!name) return;
+    rooms[i].name = name;
+    count.named++;
+  });
+  // Rooms whose name or furniture tells their use (an exam room, a restroom's toilet) take its finishes.
   count.finished = matchFinishes(draft, rooms);
   clampOpenings(draft);
   return count;

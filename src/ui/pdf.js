@@ -5,12 +5,14 @@
 // (a scan, a plan exported as an image) keeps that picture's own pixels, as re-rendering would
 // only blur them. pdf.js (assets/vendor/pdfjs, the "pdfjs-dist" import) loads with the first PDF.
 // A page with a drawing but no text in it (a scan, or a CAD export that draws its text as lines) is
-// read with OCR (ui/ocr.js) for its scale note and titles, as is the page shown when its text has no
-// scale note.
+// read with OCR (ui/ocr.js) for its scale note, titles and room labels, as is the page shown when
+// its text has no scale note or no labels in the plan. The labels in the area imported go with its
+// image (image.labels), to name the rooms traced from it (src/room-names.js).
 import { h, iconEl } from './dom.js';
 import { openDialog } from './widgets.js';
 import { FileError, canvasDataURL } from './files.js';
 import { findPlanArea, textLines, scaleNotes, chooseScaleNote, pageTitles, ocrLines, PLAN_TITLE_WEIGHT } from '../pdf-scan.js';
+import { labelKind, splitNumber, cleanLabel } from '../room-names.js';
 import { canReadText, createReader } from './ocr.js';
 
 const SCAN_SIDE = 1600; // px: pages are scanned and previewed this large on their long side
@@ -25,6 +27,11 @@ const PICTURE_WAIT = 20000; // ms to wait for pdf.js to decode a picture
 const TEXT_MIN = 20; // characters: a page with fewer has no text of its own to read
 const OCR_DPI = 200; // pages are read at about this resolution (text 3/32" high is 19 px tall)
 const OCR_PIXELS = 40e6; // and at most this many pixels
+const MAX_LABELS = 400; // labels kept with an image
+const CAP = 0.7; // capitals' height, of the font size a page's text gives (OCR gives the capitals')
+const TAG_DPI = 400; // room tags OCR found are read again this sharp, for their small numbers
+const TAG_PIXELS = 40e6; // the area they are cut from, at most
+const NUMBER_CHARS = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ-'; // a room number's (no I or O: they are 1 and 0)
 const METERS_PER_PT = 0.0254 / 72;
 // The imported image stays small enough for the browser to keep the plan with it (see storage.js).
 const OUT_BYTES = 2.5 * 1024 * 1024;
@@ -102,6 +109,10 @@ export async function scanPage(page) {
   }
   const lines = [...textLines(items), ...turned];
   const score = plan?.score ?? 0;
+  const labeled = lines.some((l) => {
+    const [x, y] = middle(l);
+    return x >= box.x0 && x <= box.x1 && y >= box.y0 && y <= box.y1 && labelKind(l.text);
+  });
   return {
     canvas,
     area: { x0: box.x0 / W, y0: box.y0 / H, x1: box.x1 / W, y1: box.y1 / H },
@@ -109,9 +120,14 @@ export async function scanPage(page) {
     rank: score * pageTitles(lines),
     note: chooseScaleNote(scaleNotes(lines), box, Math.max(W, H)),
     textless: chars < TEXT_MIN,
+    // No room labels in the plan's own text: they may be drawn as lines.
+    unlabeled: !labeled,
     scan: { scale, box, long: Math.max(W, H), score, lines },
   };
 }
+
+/** A line of text's middle (lines in a page's text stand on their baseline; OCR's on their box's foot). */
+const middle = (l) => [(l.x0 + l.x1) / 2, l.y - (l.ocr ? 0.5 : 0.35) * l.h];
 
 /**
  * Read a scanned page's text with OCR (reader: ui/ocr.js's createReader()) and take the scale note
@@ -131,7 +147,8 @@ export async function readPage(page, s, reader, onProgress) {
     return { str: w.str, x0: Math.min(ax, bx), y0: Math.min(ay, by), x1: Math.max(ax, bx), y1: Math.max(ay, by) };
   });
   const { lines, box, long, score } = s.scan;
-  const all = [...lines, ...ocrLines(placed)];
+  s.scan.read = ocrLines(placed);
+  const all = [...lines, ...s.scan.read];
   s.note = chooseScaleNote(scaleNotes(all), box, long);
   s.rank = score * pageTitles(all);
   s.ocr = true;
@@ -182,6 +199,58 @@ function whitenPaper(canvas) {
   const t = paper - 22;
   for (let p = 0; p < d.length; p += 4) {
     if ((d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8 >= t) d[p] = d[p + 1] = d[p + 2] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/**
+ * A small image of a few characters made easier to read (the reader cannot tell them from a
+ * scan's gray, speckled paper on its own, as it does on a whole page): dark specks smaller than
+ * `speck` px on their longer side erased, and when `tone`, the paper and its grain made white with
+ * the ink kept in its grays.
+ */
+function cleanStrip(canvas, speck, tone) {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const W = canvas.width, H = canvas.height;
+  const img = ctx.getImageData(0, 0, W, H);
+  const d = img.data, n = W * H;
+  const lum = new Uint8Array(n), hist = new Uint32Array(256);
+  for (let i = 0, p = 0; i < n; i++, p += 4) hist[(lum[i] = (d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8)]++;
+  const level = (q) => {
+    for (let v = 0, c = 0; v < 256; v++) if ((c += hist[v]) >= q * n) return v;
+    return 255;
+  };
+  // The ink is the darkest 1%, the paper what most of the image is: its grain reaches down three
+  // quarters of the way to the ink.
+  const ink = level(0.01), paper = level(0.5);
+  if (paper - ink < 24) return;
+  const white = Math.max(120, ink + 0.75 * (paper - ink));
+  const seen = new Uint8Array(n), stack = [], blob = [];
+  for (let i0 = 0; i0 < n; i0++) {
+    if (seen[i0] || lum[i0] >= white) continue;
+    let x0 = W, x1 = -1, y0 = H, y1 = -1;
+    blob.length = 0;
+    stack.push(i0);
+    seen[i0] = 1;
+    while (stack.length) {
+      const i = stack.pop(), x = i % W, y = (i - x) / W;
+      blob.push(i);
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      if (x > 0 && !seen[i - 1] && lum[i - 1] < white) { seen[i - 1] = 1; stack.push(i - 1); }
+      if (x < W - 1 && !seen[i + 1] && lum[i + 1] < white) { seen[i + 1] = 1; stack.push(i + 1); }
+      if (y > 0 && !seen[i - W] && lum[i - W] < white) { seen[i - W] = 1; stack.push(i - W); }
+      if (y < H - 1 && !seen[i + W] && lum[i + W] < white) { seen[i + W] = 1; stack.push(i + W); }
+    }
+    if (Math.max(x1 - x0, y1 - y0) + 1 < speck) for (const i of blob) lum[i] = 255;
+  }
+  // Black stays black, the ink's grays are kept, the paper is white.
+  const k = 255 / (white - 40);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const v = lum[i] >= 255 ? 255 : tone ? (lum[i] >= white ? 255 : Math.max(0, (lum[i] - 40) * k)) : lum[i];
+    d[p] = d[p + 1] = d[p + 2] = v;
   }
   ctx.putImageData(img, 0, 0);
 }
@@ -258,8 +327,8 @@ async function imageCanvas(page, im) {
 /**
  * The area as the picture that holds it, when one does (a scan, a plan exported as an image): its
  * own pixels, at most maxSide on the long side and maxPixels in all, enlarged to at least pxPerPt;
- * their size in px per point; and toPdf(x, y), from them to the page's PDF points. Only upright
- * pictures on unrotated pages; null else.
+ * their size in px per point; and toPdf(x, y) and fromPdf(x, y), between them and the page's PDF
+ * points. Only upright pictures on unrotated pages; null else.
  */
 async function pictureArea(page, area, { maxSide = RASTER_SIDE, pxPerPt: least = 0, maxPixels = Infinity } = {}) {
   if (page.rotate % 360 !== 0) return null;
@@ -293,25 +362,39 @@ async function pictureArea(page, area, { maxSide = RASTER_SIDE, pxPerPt: least =
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(pic, i0, j0, i1 - i0, j1 - j0, 0, 0, canvas.width, canvas.height);
-  return { canvas, pxPerPt: own * k, toPdf: (x, y) => [e + ((i0 + x / k) / iw) * a, f + (1 - (j0 + y / k) / ih) * d] };
+  return {
+    canvas, pxPerPt: own * k,
+    toPdf: (x, y) => [e + ((i0 + x / k) / iw) * a, f + (1 - (j0 + y / k) / ih) * d],
+    fromPdf: (x, y) => [(((x - e) / a) * iw - i0) * k, ((1 - (y - f) / d) * ih - j0) * k],
+  };
 }
 
-/** The image of `area` of a page for the plan's underlay, with the meters per pixel its scale note gives. */
-export async function renderArea(page, area, note) {
+/**
+ * The image of `area` of a page for the plan's underlay, with the meters per pixel its scale note
+ * gives, and the labels among `lines` (the page's lines of text, in its scan px at `scale`) that
+ * fall in it, in the image's px: { text, x, y, h, w? } at their middle, h their capitals' height.
+ */
+export async function renderArea(page, area, note, { lines = [], scale = 1 } = {}) {
   let picture = null;
   try {
     picture = await pictureArea(page, area);
   } catch (err) {
     console.warn('The picture on this page could not be read, so the page is rendered instead.', err);
   }
-  let canvas, pxPerPt;
+  let canvas, pxPerPt, toImage;
   if (picture) {
     ({ canvas, pxPerPt } = picture);
+    const scan = page.getViewport({ scale });
+    toImage = (x, y) => picture.fromPdf(...scan.convertToPdfPoint(x, y));
   } else {
     const unit = page.getViewport({ scale: 1 });
     const long = Math.max((area.x1 - area.x0) * unit.width, (area.y1 - area.y0) * unit.height);
     pxPerPt = Math.min(MAX_PX_PER_PT, OUT_SIDE / long);
     canvas = await renderPage(page, pxPerPt, area);
+    // As renderPage places the area: its corner at the whole page's render's pixel.
+    const full = page.getViewport({ scale: pxPerPt }), k = pxPerPt / scale;
+    const ox = Math.floor(area.x0 * full.width), oy = Math.floor(area.y0 * full.height);
+    toImage = (x, y) => [x * k - ox, y * k - oy];
   }
   whitenPaper(canvas);
   const src = await canvasDataURL(canvas, OUT_BYTES);
@@ -319,29 +402,160 @@ export async function renderArea(page, area, note) {
   if (note?.ratio > 0) {
     image.scaleNote = { text: note.text, metersPerPixel: (note.ratio * METERS_PER_PT) / pxPerPt, ...(note.ocr ? { ocr: true } : {}) };
   }
+  const k = pxPerPt / scale, round = (v) => Math.round(v * 10) / 10;
+  const labels = [];
+  for (const l of lines) {
+    const text = l.text.trim();
+    if (!labelKind(text)) continue;
+    const [x, y] = toImage(...middle(l));
+    if (!(x >= 0 && y >= 0 && x <= canvas.width && y <= canvas.height)) continue;
+    const w = (l.x1 - l.x0) * k;
+    labels.push({ text, x: round(x), y: round(y), h: round(l.h * k * (l.ocr ? 1 : CAP)), ...(w > 0 ? { w: round(w) } : {}) });
+    if (labels.length >= MAX_LABELS) break;
+  }
+  if (labels.length) image.labels = labels;
   return image;
 }
 
 /**
  * Import a floor plan from a PDF: the dialog to choose the page and the area of it, then the image
- * of that area ({ src, width, height, resized, scaleNote? }), or null when cancelled. onOpen is
- * called once the dialog shows, and onChosen once it closes with an area, as it is rendered.
+ * of that area ({ src, width, height, resized, scaleNote?, labels? }), or null when cancelled.
+ * onOpen is called once the dialog shows, and onChosen once it closes with an area, as it is
+ * rendered.
  */
 export async function importPdf(file, { onOpen, onChosen } = {}) {
   const doc = await openPdf(file);
+  let reader = null;
   try {
     const choice = await chooseArea(doc, onOpen);
     if (!choice) return null;
     onChosen?.();
-    return await renderArea(await doc.getPage(choice.page), choice.area, choice.note);
+    const page = await doc.getPage(choice.page);
+    const { lines, read = [], scale } = choice.scan;
+    let tags = read;
+    if (choice.reader) {
+      try {
+        reader = await choice.reader;
+        tags = await rereadTags(page, choice.scan, choice.area, reader);
+      } catch (err) {
+        console.warn('The room tags could not be read again.', err);
+      }
+    }
+    return await renderArea(page, choice.area, choice.note, { lines: [...lines, ...tags], scale });
   } finally {
+    reader?.close();
     doc.destroy();
   }
 }
 
+/**
+ * The lines OCR read on a page (scan.read), with the numbers of the room tags among them in `area`
+ * read again: the page's reading at about OCR_DPI often gets a tag's small number wrong (a stroke
+ * font's thin 1 dropped, a 3 read as 5), and reading the strip under the tag's name (or after it,
+ * on its line) alone, at TAG_DPI, cleaned of specks and for the characters numbers have, mostly
+ * does not. The strip is read twice (its paper made white, and as it is), and the two readings and
+ * the first vote. Names read well the first time and are kept. The strips are cut from the area's
+ * image: a scan's own pixels, enlarged for each, or the area rendered once (at most TAG_PIXELS).
+ */
+async function rereadTags(page, scan, area, reader) {
+  const { scale, read = [] } = scan;
+  const unit = page.getViewport({ scale: 1 });
+  const W = unit.width * scale, H = unit.height * scale; // the scan's px
+  const within = (l, b) => {
+    const [x, y] = middle(l);
+    return x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1;
+  };
+  const whole = { x0: area.x0 * W, y0: area.y0 * H, x1: area.x1 * W, y1: area.y1 * H };
+  // Names, not OCR's scraps of linework (ll, BFT): three letters or more.
+  const names = read.filter((l) => within(l, whole) && labelKind(l.text) === 'name' && /[A-Z]{3}/i.test(l.text));
+  if (!names.length) return read;
+  // A name's height, not a line's that took in a symbol beside it.
+  const heights = names.map((l) => l.h).sort((a, b) => a - b);
+  const usual = heights[heights.length >> 1];
+  // The area's image, and the map from the scan's px to its px and back.
+  let source, toSource, fromSource, perPt;
+  const picture = await pictureArea(page, area, { maxSide: Infinity, maxPixels: TAG_PIXELS }).catch(() => null);
+  if (picture) {
+    const view = page.getViewport({ scale });
+    source = picture.canvas;
+    perPt = picture.pxPerPt;
+    toSource = (x, y) => picture.fromPdf(...view.convertToPdfPoint(x, y));
+    fromSource = (x, y) => view.convertToViewportPoint(...picture.toPdf(x, y));
+  } else {
+    perPt = Math.min(TAG_DPI / 72, Math.sqrt(TAG_PIXELS / ((area.x1 - area.x0) * unit.width * (area.y1 - area.y0) * unit.height)));
+    source = await renderPage(page, perPt, area);
+    const full = page.getViewport({ scale: perPt }), k = perPt / scale;
+    const ox = Math.floor(area.x0 * full.width), oy = Math.floor(area.y0 * full.height);
+    toSource = (x, y) => [x * k - ox, y * k - oy];
+    fromSource = (x, y) => [(x + ox) / k, (y + oy) / k];
+  }
+  const up = Math.max(1, TAG_DPI / 72 / perPt); // a scan's pixels enlarged to TAG_DPI
+  // The readings of the numbers in a strip (scan px; h: its tag's capitals there), each a list of
+  // lines at their place on the page: with the paper made white, and as it is (each reading
+  // misses or cuts short some strips).
+  const readingsOf = async (b, h) => {
+    const [ax, ay] = toSource(b.x0, b.y0), [bx, by] = toSource(b.x1, b.y1);
+    const sx = Math.max(0, Math.floor(Math.min(ax, bx))), sy = Math.max(0, Math.floor(Math.min(ay, by)));
+    const sw = Math.min(source.width, Math.ceil(Math.max(ax, bx))) - sx, sh = Math.min(source.height, Math.ceil(Math.max(ay, by))) - sy;
+    if (sw < 8 || sh < 8) return [];
+    const readings = [];
+    // A speck is less than a third of the capitals' height, in the strip's px.
+    const speck = 0.35 * h * up * (perPt / scale);
+    for (const tone of [true, false]) {
+      const crop = document.createElement('canvas');
+      crop.width = Math.round(sw * up);
+      crop.height = Math.round(sh * up);
+      const ctx = crop.getContext('2d', { willReadFrequently: true });
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(source, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
+      cleanStrip(crop, speck, tone);
+      const words = await reader.read(crop, perPt * up * 72, null, { tessedit_char_whitelist: NUMBER_CHARS });
+      const placed = words.map((w) => {
+        const [x0, y0] = fromSource(sx + w.x0 / up, sy + w.y0 / up), [x1, y1] = fromSource(sx + w.x1 / up, sy + w.y1 / up);
+        return { str: w.str, x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1) };
+      });
+      const numbers = ocrLines(placed).filter((l) => labelKind(l.text) === 'number');
+      if (numbers.length) readings.push(numbers);
+    }
+    return readings;
+  };
+  // A line's name without a number at its end (OFFICE 02), which is read again.
+  const nameOf = (l) => {
+    const { name, number } = splitNumber(l.text);
+    return number ? { ...l, text: name, x1: l.x0 + ((l.x1 - l.x0) * name.length) / Math.max(1, l.text.trim().length) } : l;
+  };
+  let lines = read;
+  try {
+    for (const t of names) {
+      const n = nameOf(t), h = Math.min(t.h, 1.5 * usual), cx = (n.x0 + n.x1) / 2;
+      // Under the name, centered on it; else after it, on its line.
+      const strips = [
+        { x0: cx - 6 * h, x1: cx + 6 * h, y0: t.y + 0.2 * h, y1: t.y + 3.3 * h },
+        { x0: n.x1 + 0.2 * h, x1: n.x1 + 6 * h, y0: t.y - 1.4 * h, y1: t.y + 0.4 * h },
+      ];
+      for (const b of strips) {
+        const readings = await readingsOf(b, h);
+        if (!readings.length) continue;
+        // The readings again and the first one there vote: the most of them, else the longest.
+        const old = (l) => within(l, b) && labelKind(l.text) === 'number';
+        const first = lines.filter(old);
+        const text = (r) => r.map((l) => cleanLabel(l.text)).join(' ');
+        const votes = [...readings, ...(first.length ? [first] : [])];
+        const count = (r) => votes.filter((v) => text(v) === text(r)).length;
+        const best = votes.reduce((a, r) => (count(r) > count(a) || (count(r) === count(a) && text(r).length > text(a).length) ? r : a));
+        if (best !== first) lines = [...lines.filter((l) => !old(l)).map((l) => (l === t ? n : l)), ...best];
+        break;
+      }
+    }
+  } finally {
+    source.width = source.height = 0;
+  }
+  return lines;
+}
+
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
-/** The dialog: resolves with { page, area, note } or null. */
+/** The dialog: resolves with { page, area, note, scan, read, reader? } (scan: scanPage's; read: by OCR) or null. */
 function chooseArea(doc, onOpen) {
   const pages = doc.numPages;
   const scans = new Map(); // page number -> Promise of scanPage()
@@ -440,11 +654,12 @@ function chooseArea(doc, onOpen) {
   let reading = 0; // the page being read
   let waiting = 0; // the page whose import waits for it to be read
   // Pages with a drawing but no text, and the page shown, once it is chosen or every page is
-  // scanned, when its text gives no scale note.
+  // scanned, when its text gives no scale note or no room labels in the plan.
   const toRead = (n) => {
     const s = results.get(n);
-    if (!s || s.ocr || s.unread || !s.found || s.note || noReader) return false;
-    return s.textless || (n === current && (scanned || touched));
+    if (!s || s.ocr || s.unread || !s.found || noReader) return false;
+    if (s.textless) return true;
+    return (!s.note || s.unlabeled) && n === current && (scanned || touched);
   };
   // Once every page is scanned (or a page chosen), the page shown first, then the others in their
   // order as floor plans while one could still be the best with a floor plan's title.
@@ -600,10 +815,10 @@ function chooseArea(doc, onOpen) {
     const then = waiting === current ? ', then importing' : '';
     scaleText.textContent = reading === current
       ? s.progress === null
-        ? `Starting the text reader to read this page for its scale note${then}...`
-        : `Reading the text on this page for its scale note (${Math.round(s.progress * 100)}%)${then}...`
+        ? `Starting the text reader to read this page's scale note and room names${then}...`
+        : `Reading the text on this page for its scale note and room names (${Math.round(s.progress * 100)}%)${then}...`
       : toRead(current)
-        ? `Waiting to read the text on this page for its scale note${then}...`
+        ? `Waiting to read the text on this page for its scale note and room names${then}...`
         : s.note
           ? `Scale: ${s.note.text}, from the drawing's scale note${s.note.ocr ? ' (read by OCR)' : ''}. The door widths check it.`
           : s.unread
@@ -693,7 +908,7 @@ function chooseArea(doc, onOpen) {
           if (closed || waiting !== n || current !== n) return;
           waiting = 0;
         }
-        result = { page: n, area: { ...area }, note: s.note };
+        result = { page: n, area: { ...area }, note: s.note, scan: s.scan, read: !!s.ocr };
         dlg.close('import');
       },
     },
@@ -711,7 +926,9 @@ function chooseArea(doc, onOpen) {
       initialFocus: importBtn,
       onClose: () => {
         closed = true;
-        reader?.then((r) => r.close(), () => {});
+        // A page read by OCR is read again where its room tags are, with this reader.
+        if (result?.read && reader) result.reader = reader;
+        else reader?.then((r) => r.close(), () => {});
         for (const r of ended.splice(0)) r();
         resolve(result);
       },

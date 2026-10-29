@@ -24,6 +24,7 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
 | `src/pdf-scan.js` | The floor plan on a rendered drawing sheet, how much a page looks like one, and the scale notes in its text or in the words OCR read (no DOM) |
 | `src/ui/pdf.js` | PDF import: the page and area dialog, reading pages with no text with OCR, and the chosen area rendered (or its picture's own pixels) as the plan's image |
 | `src/ui/ocr.js` | The text reader: Tesseract in a worker, loaded with the first page to read |
+| `src/room-names.js` | Room names from the tags drawn in the rooms traced from a PDF page (no DOM) |
 | `src/builder3d.js` | Plan to Three.js scene: walls with openings, floors, ceilings, items, exterior; lighting and the plan light map |
 | `src/postfx.js` | Post-processing for the walkthrough: AO, bloom, color grade, AgX, SMAA, quality levels (`createPostFX()`) |
 | `src/walkthrough.js` | `Walkthrough`: renderer, first-person and overview cameras, collisions, minimap, quality |
@@ -63,6 +64,8 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
     traced?,          // true when the plan's walls were detected in it: calibrating resizes the plan too
     scaleNote?,       // { text, metersPerPixel, ocr? }: the drawing scale written on the PDF page it came
                       // from; ocr: true when OCR read it off the page
+    labels?,          // [{ text, x, y, h, w? }]: room tags and other short text on that page, in image
+                      // px at their middle (h their capitals' height), that name the rooms traced
   },
   walls:    [{ id, a: {x, y}, b: {x, y}, kind: 'exterior' | 'interior' | 'glass' | 'partial', thickness, height }],
   openings: [{ id, wallId, type: 'door' | 'double-door' | 'sliding-door' | 'opening' | 'window',
@@ -119,11 +122,15 @@ export function setFinish(room, part, key, color)   // in a draft; drops a color
 export function applyPackage(room, key), packageOf(room) -> key | null, copyFinishes(from, to)
 export function finishColor(room, part), defaultColor(part, key), planColor(room)   // planColor: the plan's room fill
 export function suggestPackage(points, itemTypes) -> key | null   // the use a room's furniture shows
+export function namedUse(name) -> key | null                     // the use a room's name tells
 export function roomUse(plan, room), matchFinishes(draft, rooms) -> rooms changed
 ```
 
 Packages are matched, not stored: a room shows a package while its finishes are exactly that
-package's. Tracing calls `matchFinishes` on the rooms it adds.
+package's. Tracing calls `matchFinishes` on the rooms it adds. A room's use is the one its name
+tells (`namedUse`: words such as EXAM, SOILED, CATH LAB, LAB, STOR, in an order that puts a patient
+toilet among restrooms and the lab manager's room among offices; a name for rooms traced as one goes
+by its first), else the one its furniture shows. "Room 3", a number or Workroom tell nothing.
 
 ### `catalog/registry.js`
 
@@ -237,6 +244,8 @@ storage (`filing-cabinet`, `bookshelf`, side by side for a long run) and applian
 so far, keeping the edge against the wall (a toilet keeps its bowl's front, since its tank is not
 drawn as part of it).
 `ui/trace.js` passes the underlay's `scaleNote` to the tracer unless the underlay was calibrated.
+`addTrace` names the rooms it adds from `underlay.labels` (`roomNames`, see `room-names.js`) before
+`matchFinishes`, so a named room takes the finishes its name tells.
 `app.js` traces every image imported into a plan with no walls or rooms: the image takes the scale
 its scale note or doors give unless it was calibrated, the plan gets the walls, doors, windows and rooms in one undo
 step (`Detect walls`) with `underlay.traced` set, and the app shows the plan in Split beside the 3D
@@ -303,7 +312,8 @@ passes 2.5 MB, so the browser can keep the plan. With a scale note, `scaleNote.m
 
 **OCR.** A page with a drawing and fewer than 20 characters of text (a scan, or a CAD export that
 draws its text as lines, as AutoCAD does SHX fonts) is read with OCR, and so is the page shown
-when its text has no scale note, once it is chosen or every page is scanned. `readPage` reads the
+when its text has no scale note or no room labels in the plan, once it is chosen or every page is
+scanned. `readPage` reads the
 page at about 200 dpi and at most 40 megapixels: a scan's own pixels, enlarged with smoothing when
 there are fewer (a 100 dpi scan reads far better twice as large), or the page rendered. The words
 (`tsvWords`, in the page's scan px) join into lines by their boxes (`ocrLines`: each word shares
@@ -328,6 +338,39 @@ which also keeps Tesseract from logging its estimate). It is given a gray PGM, w
 without decoding. It loads with the first page to read (about 6 MB: the SIMD core and the model)
 and stops when the dialog closes. A browser without WebAssembly SIMD imports pages with no text
 without reading them.
+
+**Room labels.** `renderArea` keeps the page's lines of text that fall in the area imported and
+could be part of a room tag (`labelKind`: a name or a room number) as `image.labels`, in the image's
+px at their middle, with their capitals' height (a page's text gives the font size: 0.7 of it).
+They go with the underlay (`underlay.labels`) and name the rooms traced from it. On a page read
+by OCR the tags' numbers are read again first (`rereadTags`): the reading at about 200 dpi often
+gets a small number wrong (a stroke font's thin 1 dropped, a 3 read as 5, a scan's 105 read as
+"( 5"). The strip under each name, or after it on its line, is cut from the area's image (a scan's
+own pixels enlarged to 400 dpi, or the area rendered once at up to 400 dpi and 40 megapixels),
+cleaned of specks smaller than a third of the capitals' height, and read for the characters room
+numbers have (digits, capitals but I and O, and a dash), once with the paper made white and once
+as it is, since each reading misses or cuts short some strips. The two readings and the first one
+vote: the most of them wins, else the longest. Names read well the first time and are kept.
+
+### `room-names.js`
+
+```js
+export function roomNames(rooms, labels) -> [name | null]  // labels: [{ text, x, y, h, w? }] in plan meters
+export function labelKind(text) -> 'number' | 'name' | null
+export function cleanLabel(text), splitNumber(text) -> { name, number }, titleCase(text)
+```
+
+A room is named by the tags whose middle is inside it. Lines that are not a tag's are left out:
+dimensions (`12'-6"`), areas (`150 SF`), ceiling heights (`AFF`), equipment tags (`FE-1`), single
+digits and letters, lines of more than five words or 32 characters, and annotations (TYP., UP,
+REF, ALIGN). OCR's scraps around a tag go first (`cleanLabel`: `RESTROOM 0`, the 0 a toilet;
+`OFFICE lL`; `104.`). Names one over another at one size join (BREAK over ROOM), and each name
+takes the room number under it (within 2.8 times its capitals' height) or after it on its line,
+or written with it (`OFFICE 102`). A room holding several numbered tags (rooms the tracer could not
+part) is named for all of them, nearest its middle first, up to three (`Open Office 106 / Break
+Room 107`); a room with only names takes its largest; one with only a number is `Room 105`. Names
+in capitals are written as words (`CONF. RM.` is `Conf. Rm.`), short words such as IT, MRI or WC
+staying in capitals.
 
 ### `kit3d.js`
 

@@ -221,6 +221,7 @@ export function normalizePlan(input) {
       ...(u.calibrated === true ? { calibrated: true } : {}),
       ...(u.traced === true ? { traced: true } : {}),
       ...scaleNoteOf(u.scaleNote),
+      ...labelsOf(u.labels),
     };
   }
 
@@ -290,6 +291,21 @@ export function addRoom(draft, points, props = {}) {
   if (props.height > 0) room.height = props.height;
   draft.rooms.push(room);
   return room;
+}
+
+const MAX_LABELS = 500;
+
+/**
+ * The labels an underlay keeps (the text drawn on the PDF page it came from, in image px: [{ text,
+ * x, y, h, w? }] at their middle), the valid ones.
+ */
+function labelsOf(list) {
+  if (!Array.isArray(list)) return {};
+  const ok = (v) => typeof v === 'number' && Number.isFinite(v);
+  const labels = list.slice(0, MAX_LABELS).filter((l) => typeof l?.text === 'string' && l.text.trim() && l.text.length <= 60
+    && ok(l.x) && ok(l.y) && ok(l.h) && l.h > 0 && (l.w === undefined || (ok(l.w) && l.w >= 0)))
+    .map((l) => ({ text: l.text.trim(), x: l.x, y: l.y, h: l.h, ...(l.w !== undefined ? { w: l.w } : {}) }));
+  return labels.length ? { labels } : {};
 }
 
 /**

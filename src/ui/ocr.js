@@ -35,9 +35,10 @@ function grayImage(canvas) {
 }
 
 /**
- * Start a reader. read(canvas, dpi, onProgress) resolves with the words on a canvas ([{ str, x0,
- * y0, x1, y1, conf }] in its px; dpi: the image's resolution; onProgress(fraction) while it reads),
- * one image at a time. close() stops the reader. Throws when it cannot start.
+ * Start a reader. read(canvas, dpi, onProgress, params) resolves with the words on a canvas ([{ str,
+ * x0, y0, x1, y1, conf }] in its px; dpi: the image's resolution; onProgress(fraction) while it
+ * reads; params: Tesseract settings for this image alone, such as tessedit_char_whitelist), one
+ * image at a time. close() stops the reader. Throws when it cannot start.
  */
 export async function createReader() {
   if (!canReadText()) throw new Error('This browser cannot run the text reader: it needs WebAssembly SIMD.');
@@ -67,15 +68,16 @@ export async function createReader() {
   } finally {
     clearTimeout(timer);
   }
-  await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT });
+  // Sparse text; Tesseract's own messages (Detected 5 diacritics) to nowhere, not the console.
+  await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT, debug_file: '/dev/null' });
   let queue = Promise.resolve();
   return {
-    read(canvas, dpi, onProgress) {
+    read(canvas, dpi, onProgress, params = {}) {
       const job = queue.then(async () => {
         progress = onProgress;
         try {
           await worker.setParameters({ user_defined_dpi: String(Math.round(dpi)) });
-          const { data } = await worker.recognize(grayImage(canvas), {}, { text: false, tsv: true });
+          const { data } = await worker.recognize(grayImage(canvas), params, { text: false, tsv: true });
           return tsvWords(data.tsv);
         } finally {
           progress = null;

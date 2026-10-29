@@ -57,6 +57,26 @@ function pick(readings) {
 }
 
 /**
+ * Labels without the room numbers a reading cut short: a drawing writes its room numbers alike (101
+ * to 109), so a number of fewer digits than most of them (05 for 105) is left out, a name keeping
+ * its name. Numbers written with # (#4, #12) count their rooms and are left as they are.
+ */
+function shortNumbersOut(labels) {
+  const digits = (t) => /(?:^|\s)(\d{2,4})[A-Z]?$/.exec(t)?.[1].length || 0;
+  const counts = new Map();
+  for (const l of labels) if (digits(l.text)) counts.set(digits(l.text), (counts.get(digits(l.text)) || 0) + 1);
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  const [most, n] = [...counts].reduce((a, b) => (b[1] > a[1] ? b : a), [0, 0]);
+  if (total < 3 || n < 0.6 * total) return labels;
+  return labels.flatMap((l) => {
+    const d = digits(l.text);
+    if (!d || d >= most) return [l];
+    const name = l.text.replace(/\s*\S+$/, '');
+    return name ? [{ ...l, text: name }] : [];
+  });
+}
+
+/**
  * A canvas's gray made black or white at a level `q` of the way from its ink (its darkest pixels)
  * to its paper: small text enlarged reads better so than blurred.
  */
@@ -240,7 +260,7 @@ export async function readImageLabels(underlay, { metersPerPixel, area = null, o
     const over = (a, b) => Math.abs(a.y - b.y) < 0.6 * Math.max(a.h, b.h) && Math.abs(a.x - b.x) < (a.w + b.w) / 2;
     const whole = labels.filter((a) => !labels.some((b) => b !== a && over(a, b) && b.text.length > a.text.length && b.text.includes(a.text)));
     const round = (v) => Math.round(v * 10) / 10;
-    return whole.map((l) => ({ text: l.text, x: round(l.x), y: round(l.y), h: round(l.h), w: round(l.w) }));
+    return shortNumbersOut(whole).map((l) => ({ text: l.text, x: round(l.x), y: round(l.y), h: round(l.h), w: round(l.w) }));
   } finally {
     reader.close();
   }

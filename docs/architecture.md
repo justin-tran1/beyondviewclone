@@ -378,7 +378,10 @@ reading drops). It is kept when it holds a room word, or a number another readin
 read with confidence, or when its readings agree with confidence. Under a name with no number of
 its own, and nothing else read there, the strip where one would be is read for one, for the
 characters room numbers have, with its paper made white and made black and white at two levels.
-It takes about 5 to 15 s; the plan can be edited meanwhile.
+A drawing writes its room numbers alike (101 to 109), so where most have one number of digits, a
+number with fewer (05 for 105: a reading cut it short) is left out, and a name keeps its name;
+numbers written with # (#4, #12) are left as they are. It takes about 5 to 15 s; the plan can be
+edited meanwhile.
 
 ### `room-names.js`
 

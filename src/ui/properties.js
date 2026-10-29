@@ -642,7 +642,7 @@ export function createProperties(root, { store, editor, actions }) {
         return;
       }
       store.update((d) => { for (const r of d.rooms) if (ids.includes(r.id)) applyPackage(r, roomUse(d, r)); }, { label: 'Match finishes to room use' });
-      toast(`Finishes set for ${ids.length} ${ids.length === 1 ? 'room' : 'rooms'} from their names and furniture`, { action: { label: 'Undo', onClick: () => store.undo() } });
+      toast(`Finishes set for ${ids.length} ${ids.length === 1 ? 'room from its name or furniture' : 'rooms from their names and furniture'}`, { action: { label: 'Undo', onClick: () => store.undo() } });
     };
     return section('Finishes',
       h('p', { class: 'prop-note', text: 'Select a room to choose its floor, walls, base, wall protection and ceiling, or a package of finishes for its use.' }),

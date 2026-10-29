@@ -25,7 +25,7 @@ export function buildOfficeFloor() {
   // Private offices with glass fronts
   const fronts = L.wall([0, 15], [120, 15], 'glass');
   const sides = [24, 36, 48, 60, 72, 84, 96, 108].map((x) => L.wall([x, 0], [x, 15]));
-  L.room('Executive office', [0, 0, 24, 15], 'carpet');
+  L.room('Executive office', [0, 0, 24, 15], null, { finish: 'office' });
   L.door(fronts, 21, { swing: 'n', hinge: 'e' });
   L.item('executive-desk', 7.5, 4.6);
   L.row('side-chair', [6.3, 9.3], [2.4, 0], 2, 'n');
@@ -34,14 +34,15 @@ export function buildOfficeFloor() {
   L.against(sides[0], 7.5, 'wall-art', 'w', { w: 5, h: 3.25, variant: 9 });
   for (let i = 0; i < 8; i++) {
     const x0 = 24 + 12 * i;
-    L.room('Office', [x0, 0, x0 + 12, 15], 'carpet');
+    L.room('Office', [x0, 0, x0 + 12, 15], null, { finish: 'office' });
     L.door(fronts, x0 + 2.2, { swing: 'n', hinge: 'w' });
     L.item('executive-desk', x0 + 6.6, 4.4);
     L.row('side-chair', [x0 + 5.4, 9.2], [2.4, 0], 2, 'n');
     L.item('bookshelf', x0 + 0.8, 5.2, 'e');
     L.item('plant', x0 + 10.4, 13.8);
-    // On the east side wall, except in the corner office where that wall has a window
-    if (i < 7) L.against(sides[i + 1], 7, 'wall-art', 'w');
+    // On the east side wall, except in the corner office where that wall has a window. The office
+    // in the Private office view hangs a gray storm (look 1 in catalog/art.js); the others vary.
+    if (i < 7) L.against(sides[i + 1], 7, 'wall-art', 'w', i === 2 ? { variant: 1 } : {});
   }
 
   // South band: reception, conference rooms and the work cafe
@@ -53,11 +54,12 @@ export function buildOfficeFloor() {
   L.door(southFronts, 52.5, { swing: 's', hinge: 'e' });
   L.door(southFronts, 72.5, { swing: 's', hinge: 'e' });
 
-  L.room('Open office', [0, 15, 120, 57], 'carpet', { ceiling: 'open' });
-  L.room('Reception', [0, 57, 30, 75], 'tile', { ceiling: 'drywall' });
-  L.room('Conference', [30, 57, 56, 75], 'carpet', { ceiling: 'drywall' });
-  L.room('Conference', [56, 57, 76, 75], 'carpet', { ceiling: 'drywall' });
-  L.room('Work cafe', [76, 57, 120, 75], 'vinyl', { ceiling: 'open' });
+  // Rooms in the finish packages for their use: oak plank, acoustic tile and troffers throughout.
+  L.room('Open office', [0, 15, 120, 57], null, { finish: 'office' });
+  L.room('Reception', [0, 57, 30, 75], null, { finish: 'waiting' });
+  L.room('Conference', [30, 57, 56, 75], null, { finish: 'conference' });
+  L.room('Conference', [56, 57, 76, 75], null, { finish: 'conference' });
+  L.room('Work cafe', [76, 57, 120, 75], null, { finish: 'breakroom' });
 
   // Reception
   L.item('reception-desk', 15, 62.6);
@@ -90,7 +92,9 @@ export function buildOfficeFloor() {
   L.item('plant', 118.4, 58.6);
 
   // Open office: benching to the north of the column line, workstation pods to the south
-  for (const x of [30, 60, 90]) L.item('column', x, 36, 0, { h: 12.4 });
+  for (const x of [30, 60, 90]) L.item('column', x, 36);
+  // Portrait pieces on the columns' west faces, 1 ft from their middles (looks by index in catalog/art.js)
+  [[30, 0], [60, 8], [90, 3]].forEach(([x, variant]) => L.item('wall-art', x - 1.07, 36, 'w', { w: 1.5, h: 2.25, variant }));
   for (const x of [45, 75, 105]) L.item('planter', x, 36);
   for (const x of [36, 46, 61, 71, 86, 96, 111]) L.item('benching-4', x, 25.25);
   for (const x0 of [33.5, 58.5, 83.5, 103]) {

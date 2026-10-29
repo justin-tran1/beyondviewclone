@@ -594,7 +594,8 @@ function createMaterials(kit) {
     handrail: kit.mat.walnut,
     bracket: kit.mat.steel,
     // Satin painted hollow metal door frames in a dark bronze, framing walnut veneer leaves as
-    // the base frames the floor, and clear anodized aluminum storefront and window frames.
+    // the base frames the floor, and interior glazing in the same bronze; storefront and window
+    // frames in the exterior walls are clear anodized aluminum.
     frame: kit.material('#453b34', { roughness: 0.42 }),
     alu: kit.material('#b9bdbf', { roughness: 0.34, metalness: 0.65 }),
     leaf: kit.mat.walnut,
@@ -2072,15 +2073,15 @@ function lever(ctx, LF, s, y, face) {
 }
 
 function glassLeaf(ctx, LF, width, y0, y1, stiles) {
-  const alu = ctx.main.get(ctx.mats.alu, !ctx.low);
+  const rail = ctx.main.get(stiles ? ctx.mats.alu : ctx.mats.frame, !ctx.low);
   const st = stiles ? 0.07 : 0, bottom = stiles ? 0.18 : 0.09, face = stiles ? 0.02 : 0.006;
   // Storefront leaves are exterior glazing; frameless interior leaves match the partitions.
   box(LF, faces2(ctx.main.get(stiles ? ctx.mats.glass : ctx.mats.partition, false)), st, width - st, -0.006, 0.006, y0 + bottom, y1 - 0.06);
-  rbox(ctx, LF, alu, 0, width, -0.02, 0.02, y0, y0 + bottom, 0.003);
-  rbox(ctx, LF, alu, 0, width, -0.02, 0.02, y1 - 0.06, y1, 0.003);
+  rbox(ctx, LF, rail, 0, width, -0.02, 0.02, y0, y0 + bottom, 0.003);
+  rbox(ctx, LF, rail, 0, width, -0.02, 0.02, y1 - 0.06, y1, 0.003);
   if (stiles) {
-    rbox(ctx, LF, alu, 0, st, -0.02, 0.02, y0 + bottom, y1 - 0.06, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
-    rbox(ctx, LF, alu, width - st, width, -0.02, 0.02, y0 + bottom, y1 - 0.06, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
+    rbox(ctx, LF, rail, 0, st, -0.02, 0.02, y0 + bottom, y1 - 0.06, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
+    rbox(ctx, LF, rail, width - st, width, -0.02, 0.02, y0 + bottom, y1 - 0.06, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
   }
   pullBar(ctx, LF, width - (stiles ? 0.035 : 0.09), face, Math.min(1.45, y1 - 0.2));
 }
@@ -2104,10 +2105,12 @@ function pullBar(ctx, LF, s, face, yTop, signs = [1, -1]) {
 function slidingPanels(ctx, info, sp, s0, s1, top) {
   const { F, w } = info;
   const { o } = sp;
-  const alu = ctx.main.get(ctx.mats.alu, !ctx.low);
+  const outside = w.kind === 'exterior';
+  const frame = outside ? ctx.mats.alu : ctx.mats.frame;
+  const track = ctx.main.get(frame, !ctx.low);
   const trackTop = top, trackBottom = top - 0.05;
-  rbox(ctx, F, alu, s0, s1, -0.05, 0.05, trackBottom, trackTop, 0.004);
-  box(F, noBottom(alu), s0, s1, -0.05, 0.05, 0, 0.008);
+  rbox(ctx, F, track, s0, s1, -0.05, 0.05, trackBottom, trackTop, 0.004);
+  box(F, noBottom(track), s0, s1, -0.05, 0.05, 0, 0.008);
   const clear = s1 - s0;
   const pw = clear / 2 + 0.03;
   // Open to 2 cm short of the fixed panel, so both leading stiles show.
@@ -2119,24 +2122,24 @@ function slidingPanels(ctx, info, sp, s0, s1, top) {
   const r = 0.04;
   const glass = fixedAtStart ? [sp.start, s1 - slide - r] : [s0 + slide + r, sp.end];
   if (glass[1] > glass[0]) ctx.colliders.push({ a: pointOnWall(w, glass[0]), b: pointOnWall(w, glass[1]), r });
-  const pane = w.kind === 'exterior' ? ctx.mats.glass : ctx.mats.partition;
-  glassPanel(ctx, F, fixed[0], fixed[1], -side * 0.022, 0.008, trackBottom, pane);
-  glassPanel(ctx, F, moving[0], moving[1], side * 0.022, 0.008, trackBottom, pane);
+  const pane = outside ? ctx.mats.glass : ctx.mats.partition;
+  glassPanel(ctx, F, fixed[0], fixed[1], -side * 0.022, 0.008, trackBottom, pane, frame);
+  glassPanel(ctx, F, moving[0], moving[1], side * 0.022, 0.008, trackBottom, pane, frame);
   const lead = fixedAtStart ? moving[1] - 0.06 : moving[0] + 0.06;
   const u = side * 0.022;
   const PF = { o: { x: F.o.x + F.n.x * u, y: F.o.y + F.n.y * u }, d: F.d, n: F.n };
   pullBar(ctx, PF, lead, 0.0175, Math.min(1.45, trackBottom - 0.2), [side]);
 }
 
-/** Framed glass panel centered at uc: stiles, rails and a glass light. */
-function glassPanel(ctx, F, s0, s1, uc, y0, y1, glass = ctx.mats.partition) {
-  const alu = ctx.main.get(ctx.mats.alu, !ctx.low);
+/** Framed glass panel centered at uc: stiles and rails in `frame`, and a glass light. */
+function glassPanel(ctx, F, s0, s1, uc, y0, y1, glass = ctx.mats.partition, frame = ctx.mats.frame) {
+  const rail = ctx.main.get(frame, !ctx.low);
   const g = ctx.main.get(glass, false);
   const t = 0.0175, st = 0.045, r = 0.003;
-  rbox(ctx, F, alu, s0, s0 + st, uc - t, uc + t, y0, y1, r);
-  rbox(ctx, F, alu, s1 - st, s1, uc - t, uc + t, y0, y1, r);
-  rbox(ctx, F, alu, s0 + st, s1 - st, uc - t, uc + t, y0, y0 + 0.09, r, { faces: ['pu', 'nu', 'top', 'bottom'] });
-  rbox(ctx, F, alu, s0 + st, s1 - st, uc - t, uc + t, y1 - 0.06, y1, r, { faces: ['pu', 'nu', 'top', 'bottom'] });
+  rbox(ctx, F, rail, s0, s0 + st, uc - t, uc + t, y0, y1, r);
+  rbox(ctx, F, rail, s1 - st, s1, uc - t, uc + t, y0, y1, r);
+  rbox(ctx, F, rail, s0 + st, s1 - st, uc - t, uc + t, y0, y0 + 0.09, r, { faces: ['pu', 'nu', 'top', 'bottom'] });
+  rbox(ctx, F, rail, s0 + st, s1 - st, uc - t, uc + t, y1 - 0.06, y1, r, { faces: ['pu', 'nu', 'top', 'bottom'] });
   box(F, faces2(g), s0 + st, s1 - st, uc - 0.005, uc + 0.005, y0 + 0.09, y1 - 0.06);
 }
 
@@ -2162,8 +2165,9 @@ function windowOpening(ctx, info, sp, f, get) {
   const fd = Math.min(0.1, w.thickness * 0.6), fw = 0.05;
   const uc = inner !== 0 ? -inner * Math.max(0, ht - fd / 2 - 0.03) : 0;
   const u0 = uc - fd / 2, u1 = uc + fd / 2;
-  const fr = B.get(M.alu, !ctx.low);
-  // Extruded aluminum frame and mullions with eased edges; the glass sits in the middle of the frame.
+  const fr = B.get(inner !== 0 ? M.alu : M.frame, !ctx.low);
+  // Extruded aluminum frame and mullions with eased edges (bronze between rooms); the glass sits in
+  // the middle of the frame.
   const r = 0.003;
   rbox(ctx, F, fr, start, start + fw, u0, u1, sill, top, r, { faces: ['s1', 'pu', 'nu'] });
   rbox(ctx, F, fr, end - fw, end, u0, u1, sill, top, r, { faces: ['s0', 'pu', 'nu'] });
@@ -2187,25 +2191,28 @@ function windowOpening(ctx, info, sp, f, get) {
   }
 }
 
-/** Glass partition: aluminum head and base, mullions about every 1.5 m, a frosted privacy band, glass doors. */
+/**
+ * Glass partition: head and base in the door frames' dark bronze, mullions about every 1.5 m, a
+ * frosted privacy band, glass doors.
+ */
 function glassWall(ctx, info) {
   const { w, L, F, ext, spans } = info;
   const { main: B, mats: M } = ctx;
   const ht = w.thickness / 2, H = w.height;
   const head = 0.05, foot = 0.07;
-  const alu = B.get(M.alu);
+  const frame = B.get(M.frame);
   const glass = faces2(B.get(M.partition, false));
   const frost = faces2(B.get(M.frosted, false));
-  box(F, endFaces(ctx, info, { ...noBottom(alu), top: B.get(M.cut) }, true, true, H), -ext.a, L + ext.b, -ht, ht, H - head, H);
+  box(F, endFaces(ctx, info, { ...noBottom(frame), top: B.get(M.cut) }, true, true, H), -ext.a, L + ext.b, -ht, ht, H - head, H);
 
-  const post = (s) => rbox(ctx, F, alu, s - 0.02, s + 0.02, -ht, ht, foot, H - head, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
+  const post = (s) => rbox(ctx, F, frame, s - 0.02, s + 0.02, -ht, ht, foot, H - head, 0.003, { faces: ['s0', 's1', 'pu', 'nu'] });
   const pane = (s0, s1, y0) => {
     box(F, glass, s0, s1, -0.006, 0.006, y0, H - head);
     if (H - head > 1.25 && y0 < 1.05) box(F, frost, s0, s1, -0.0075, 0.0075, 1.05, 1.2);
   };
   const solid = (s0, s1, v0, v1, postA, postB) => {
     if (s1 - s0 < 1e-3) return;
-    box(F, endFaces(ctx, info, noBottom(alu), postA, postB, foot), s0, s1, -ht, ht, 0, foot);
+    box(F, endFaces(ctx, info, noBottom(frame), postA, postB, foot), s0, s1, -ht, ht, 0, foot);
     pane(s0, s1, foot);
     const bays = clamp(Math.round((v1 - v0) / MULLION_STEP), 1, 2000);
     for (let k = postA ? 0 : 1; k <= (postB ? bays : bays - 1); k++) post(clamp(v0 + ((v1 - v0) * k) / bays, v0 + 0.02, v1 - 0.02));
@@ -2213,22 +2220,22 @@ function glassWall(ctx, info) {
   let cursor = -ext.a, visible = ext.a;
   spans.forEach((sp, i) => {
     solid(cursor, sp.start, visible, sp.start, i === 0, false);
-    glassDoor(ctx, info, sp, alu, pane);
+    glassDoor(ctx, info, sp, frame, pane);
     cursor = visible = sp.end;
   });
   solid(cursor, L + ext.b, visible, L - ext.b, spans.length === 0, true);
   floorTrim(ctx, info, floorRuns(info, false), { base: false, width: 0.18 });
 }
 
-function glassDoor(ctx, info, sp, alu, pane) {
+function glassDoor(ctx, info, sp, frame, pane) {
   const { w, F } = info;
   const { o, start, end } = sp;
   const ht = w.thickness / 2;
   const oh = Math.min(o.height, w.height - 0.12);
   const jamb = 0.045;
-  rbox(ctx, F, alu, start, start + jamb, -ht, ht, 0, oh, 0.003, { faces: ['s0', 's1', 'pu', 'nu', 'top'] });
-  rbox(ctx, F, alu, end - jamb, end, -ht, ht, 0, oh, 0.003, { faces: ['s0', 's1', 'pu', 'nu', 'top'] });
-  rbox(ctx, F, alu, start, end, -ht, ht, oh, oh + 0.05, 0.003);
+  rbox(ctx, F, frame, start, start + jamb, -ht, ht, 0, oh, 0.003, { faces: ['s0', 's1', 'pu', 'nu', 'top'] });
+  rbox(ctx, F, frame, end - jamb, end, -ht, ht, 0, oh, 0.003, { faces: ['s0', 's1', 'pu', 'nu', 'top'] });
+  rbox(ctx, F, frame, start, end, -ht, ht, oh, oh + 0.05, 0.003);
   pane(start + jamb, end - jamb, oh + 0.05);
   const s0 = start + jamb, s1 = end - jamb;
   if (o.type === 'door') {

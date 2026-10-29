@@ -146,7 +146,7 @@ function drawerFront(kit, g, m, mat, x0, x1, y0, y1, z, pull = 0.16) {
 }
 
 /** Mobile pedestal (box, box, file) between x0..x1 and z0..z1, fronts facing +z, top at y1. */
-function pedestal(kit, g, m, x0, x1, z0, z1, y1, mat = m.frameLight) {
+function pedestal(kit, g, m, x0, x1, z0, z1, y1, mat = m.walnut) {
   const zf = z1 - 0.03;
   kit.block(g, m.shadow, x0 + 0.03, x1 - 0.03, 0.012, 0.04, z0 + 0.03, zf - 0.03);
   for (const x of [x0 + 0.05, x1 - 0.05]) for (const z of [z0 + 0.06, zf - 0.06]) kit.cyl(g, m.rubber, 0.02, 0.016, x, 0.02, z, { axis: 'x', segments: 12 });
@@ -393,13 +393,14 @@ function drawFoliage(ctx, o, x, y, r, lobes = 9, seed = 1) {
  * Freestanding desk over x0..x1, z0..z1 (users sit at z1) with its top at y = top: sled legs,
  * a back beam, a modesty panel and an optional mobile pedestal at the +x end.
  */
+/** Desk on graphite sled legs with a walnut modesty panel and, when `ped`, a walnut pedestal. */
 function deskUnit(kit, g, m, { x0, x1, z0, z1, top, surface, ped = false, modesty = true }) {
   worksurface(kit, g, surface, x0, x1, z0, z1, top);
   const under = top - TOP_T;
   const legs = [x0 + 0.06, x1 - 0.06];
   for (const x of legs) sledLeg(kit, g, m, m.frame, x, z0 + 0.04, z1 - 0.04, under);
   kit.block(g, m.frame, legs[0] + 0.02, legs[1] - 0.02, under - 0.06, under, z0 + 0.06, z0 + 0.1);
-  if (modesty) kit.block(g, m.frame, legs[0] + 0.02, legs[1] - 0.02, under - 0.38, under - 0.06, z0 + 0.075, z0 + 0.085);
+  if (modesty) kit.block(g, m.walnut, legs[0] + 0.02, legs[1] - 0.02, under - 0.38, under - 0.06, z0 + 0.07, z0 + 0.09);
   const pd = Math.min(0.55, z1 - z0 - 0.2);
   if (ped && x1 - x0 >= 1.0 && pd > 0.3) pedestal(kit, g, m, x1 - 0.5, x1 - 0.1, z1 - 0.05 - pd, z1 - 0.05, under - 0.02);
 }
@@ -435,7 +436,7 @@ function buildWorkstation(kit, { w, d, h, color }) {
   const m = mats(kit);
   const z0 = -d / 2, z1 = z0 + WS.deskD;
   deskUnit(kit, g, m, { x0: -w / 2, x1: w / 2, z0, z1, top: WS.top, surface: m.white, ped: true });
-  privacyScreen(kit, g, m, finish(kit, color, m.grey), -w / 2 + 0.01, w / 2 - 0.01, z0 + 0.004, WS.top, h);
+  privacyScreen(kit, g, m, finish(kit, color, m.taupe), -w / 2 + 0.01, w / 2 - 0.01, z0 + 0.004, WS.top, h);
   dualMonitors(kit, g, m, 0, WS.top, z0 + 0.2);
   keyboard(kit, g, m, -0.03, WS.top, z0 + 0.5);
   mug(kit, g, m, -0.55, WS.top, z0 + 0.42);
@@ -515,7 +516,7 @@ function buildBenching(kit, { w, h, color }) {
   }
   for (const x of [-w / 2 + 0.06, 0, w / 2 - 0.06]) sledLeg(kit, g, m, m.frame, x, -BENCH.deskD + 0.04, BENCH.deskD - 0.04, under);
   kit.block(g, m.frame, -w / 2 + 0.08, w / 2 - 0.08, under - 0.07, under, -0.05, 0.05);
-  privacyScreen(kit, g, m, finish(kit, color, m.grey, 0.95), -w / 2 + 0.02, w / 2 - 0.02, -0.013, top, h);
+  privacyScreen(kit, g, m, finish(kit, color, m.taupe), -w / 2 + 0.02, w / 2 - 0.02, -0.013, top, h);
   for (const s of benchSeats(w)) {
     const r = sub(kit, g, 0, 0, 0, { yaw: s.side > 0 ? 0 : Math.PI });
     const x = s.side * s.x;
@@ -1153,7 +1154,7 @@ function buildPantry(kit, { w, d, h, color, top: surface }) {
   faucet(kit, g, m, sx, top, -d / 2 + 0.07, Math.min(0.2, (hole.z0 + hole.z1) / 2 + d / 2 - 0.07));
   const uy = P.upperY;
   kit.block(g, counter, P.cx0, P.cx1, top, uy, -d / 2, -d / 2 + 0.012);
-  upperRun(kit, g, m, P.cx0, P.cx1, uy, h, -d / 2, -d / 2 + P.upperD, P.n);
+  upperRun(kit, g, m, doors, P.cx0, P.cx1, uy, h, -d / 2, -d / 2 + P.upperD, P.n);
   if (P.coffee) coffeeMachine(kit, g, m, P.coffeeX, top, -d / 2 + 0.24);
   if (P.fridgeW) fridgeColumn(kit, g, m, P.cx1, w / 2, h, d, zf);
   return g;
@@ -1222,7 +1223,8 @@ function faucet(kit, g, m, x, y, z, reach = 0.2) {
   bent(kit, g, m.chrome, [[x + 0.012, y + 0.12, z], [x + 0.05, y + 0.13, z], [x + 0.075, y + 0.16, z + 0.01]], 0.006, { segments: 8, radial: 8 });
 }
 
-function upperRun(kit, g, m, x0, x1, y0, y1, z0, z1, n) {
+/** Wall cabinets over the counter, doors in `doors` like the base below, with a light strip under them. */
+function upperRun(kit, g, m, doors, x0, x1, y0, y1, z0, z1, n) {
   const zf = z1 - 0.02;
   kit.block(g, m.casework, x0, x1, y0, y1, z0 + 0.012, zf);
   kit.block(g, m.panelLight, x0 + 0.03, x1 - 0.03, y0 - 0.006, y0, zf - 0.06, zf - 0.03, false);
@@ -1231,7 +1233,7 @@ function upperRun(kit, g, m, x0, x1, y0, y1, z0, z1, n) {
     const a = x0 + i * mw, b = a + mw;
     const halves = mw >= 0.5 ? [[a, (a + b) / 2, 1], [(a + b) / 2, b, -1]] : [[a, b, i % 2 ? 1 : -1]];
     for (const [p, q, hand] of halves) {
-      kit.block(g, m.white, p + GAP, q - GAP, y0 + GAP, y1 - GAP, zf, z1);
+      kit.block(g, doors, p + GAP, q - GAP, y0 + GAP, y1 - GAP, zf, z1);
       const px = hand > 0 ? q - 0.035 : p + 0.035;
       barPull(kit, g, m.alu, px, y0 + 0.11, z1, 0.13, { vertical: true });
     }

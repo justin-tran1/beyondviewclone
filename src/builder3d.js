@@ -584,22 +584,22 @@ function createMaterials(kit) {
     facade: sharedMaterial(kit, 'facade', () => outdoor(kit.paintMaterial('#cbc7be', { roughness: 0.8 }).clone())),
     cut: kit.material('#454d4f', { roughness: 0.9 }),
     // Rubber cove base in a soft charcoal, so it grounds the walls without drawing a black line.
-    base: kit.material('#4b4f4f', { roughness: 0.62 }),
+    base: kit.material('#463d36', { roughness: 0.62 }),
     // Wall protection: satin stainless corner guards (mostly diffuse, so they read light like the
-    // walls they wrap rather than mirror the floor), a vinyl crash rail in warm grey and an oak
+    // walls they wrap rather than mirror the floor), a vinyl crash rail in warm grey and a walnut
     // handrail on stainless brackets.
     guard: kit.material('#cfd1d0', { roughness: 0.3, metalness: 0.35 }),
     rail: kit.material('#b3ada2', { roughness: 0.4 }),
-    handrail: kit.mat.oak,
+    handrail: kit.mat.walnut,
     bracket: kit.mat.steel,
-    // Satin painted hollow metal door frames in a warm light grey (dark frames read as outlines),
-    // and clear anodized aluminum storefront and window frames.
-    frame: kit.material('#a9aaa5', { roughness: 0.42 }),
+    // Satin painted hollow metal door frames in a dark bronze, framing walnut veneer leaves as
+    // the base frames the floor, and clear anodized aluminum storefront and window frames.
+    frame: kit.material('#453b34', { roughness: 0.42 }),
     alu: kit.material('#b9bdbf', { roughness: 0.34, metalness: 0.65 }),
-    leaf: kit.mat.oak,
+    leaf: kit.mat.walnut,
     handle: kit.mat.steel,
     sill: kit.mat.quartz,
-    cap: kit.mat.oak,
+    cap: kit.mat.walnut,
     glass: kit.glassMaterial({ tint: WINDOW_TINT }),
     partition: kit.glassMaterial({ tint: PARTITION_TINT }),
     frosted: kit.glassMaterial({ frosted: true }),
@@ -2685,16 +2685,31 @@ function largestRect(ok, nx, ny) {
   return best;
 }
 
-function fits(region, p, half) {
+const fits = (region, p, half) => fitsRect(region, p, half, half);
+
+/** Whether a rectangle of half sizes hx, hy around p lies in the region. */
+function fitsRect(region, p, hx, hy) {
   const c = region.contains;
-  return c(p) && c({ x: p.x - half, y: p.y - half }) && c({ x: p.x + half, y: p.y - half })
-    && c({ x: p.x + half, y: p.y + half }) && c({ x: p.x - half, y: p.y + half });
+  return c(p) && c({ x: p.x - hx, y: p.y - hy }) && c({ x: p.x + hx, y: p.y - hy })
+    && c({ x: p.x + hx, y: p.y + hy }) && c({ x: p.x - hx, y: p.y + hy });
 }
 
-/** LED troffers on the tile grid, plus supply diffusers and sprinkler heads between them. */
+/**
+ * 2 x 4 LED troffers on the tile grid, along the region's longer side: each covers the tile at a
+ * point and its neighbor toward the region's middle, so the layout stays centered. A 2 x 2 where
+ * one does not fit. Plus supply diffusers and sprinkler heads between them.
+ */
 function tileFixtures(ctx, region, points) {
-  const h = region.height;
-  for (const p of points) if (fits(region, p, TILE / 2 + 0.1)) troffer(ctx, p, h);
+  const h = region.height, b = region.bounds;
+  const axis = b.maxX - b.minX >= b.maxY - b.minY ? 'x' : 'y';
+  const mid = axis === 'x' ? (b.minX + b.maxX) / 2 : (b.minY + b.maxY) / 2;
+  const reach = TILE + 0.1, side = TILE / 2 + 0.1;
+  for (const p of points) {
+    const v = axis === 'x' ? p.x : p.y, step = v <= mid ? TILE / 2 : -TILE / 2;
+    const c = axis === 'x' ? { x: p.x + step, y: p.y } : { x: p.x, y: p.y + step };
+    if (fitsRect(region, c, axis === 'x' ? reach : side, axis === 'x' ? side : reach)) troffer(ctx, c, h, axis);
+    else if (fits(region, p, side)) troffer(ctx, p, h);
+  }
   if (ctx.low) return;
   const half = TROFFER_STEP / 2;
   points.forEach((p, i) => {
@@ -2716,39 +2731,50 @@ function drywallFixtures(ctx, region, points) {
 }
 
 /**
- * 2 x 2 LED troffer: a slim white frame with eased edges, a short reflector sloping up to a lens
- * recessed about a centimeter into it, and the glowing lens itself.
+ * Lay-in LED troffer, 2 x 4 (two tiles along `axis`, 'x' or 'y') or else 2 x 2: a slim white frame
+ * with eased edges, a short reflector sloping up to a lens recessed about a centimeter into it, and
+ * the glowing lens itself. Its light goes into the light map from the middle of each tile it covers,
+ * a 2 x 4 giving a 2 x 2's light (a grid of them lights a room as the 2 x 2s did).
  */
-function troffer(ctx, p, h) {
+function troffer(ctx, p, h, axis = null) {
   const B = ctx.ceil;
   const hs = TILE / 2 - 0.004, rim = 0.024, depth = 0.014;
+  const hx = axis === 'x' ? TILE - 0.004 : hs, hy = axis === 'y' ? TILE - 0.004 : hs;
   const lens = B.get(ctx.mats.led, false, false);
-  ctx.emitters.push({ x: p.x, y: p.y, h, power: PLAN_LIGHT.troffer, cone: 1 });
+  if (axis) {
+    for (const s of [-1, 1]) {
+      const e = axis === 'x' ? { x: p.x + s * TILE / 2, y: p.y } : { x: p.x, y: p.y + s * TILE / 2 };
+      ctx.emitters.push({ ...e, h, power: PLAN_LIGHT.troffer / 2, cone: 1 });
+    }
+  } else {
+    ctx.emitters.push({ x: p.x, y: p.y, h, power: PLAN_LIGHT.troffer, cone: 1 });
+  }
   if (ctx.low) {
-    box(WORLD, { bottom: lens }, p.x - hs, p.x + hs, p.y - hs, p.y + hs, h - 0.002, h);
+    box(WORLD, { bottom: lens }, p.x - hx, p.x + hx, p.y - hy, p.y + hy, h - 0.002, h);
     return;
   }
   const trim = B.get(ctx.mats.trim, false, true), y0 = h - depth, r = 0.003;
   const long = ['bottom', 'pu', 'nu', 's0', 's1'], short = ['bottom', 'pu', 'nu'];
-  rbox(ctx, WORLD, trim, p.x - hs, p.x + hs, p.y - hs, p.y - hs + rim, y0, h, r, { faces: long });
-  rbox(ctx, WORLD, trim, p.x - hs, p.x + hs, p.y + hs - rim, p.y + hs, y0, h, r, { faces: long });
+  rbox(ctx, WORLD, trim, p.x - hx, p.x + hx, p.y - hy, p.y - hy + rim, y0, h, r, { faces: long });
+  rbox(ctx, WORLD, trim, p.x - hx, p.x + hx, p.y + hy - rim, p.y + hy, y0, h, r, { faces: long });
   const side = { o: { x: 0, y: 0 }, d: { x: 0, y: 1 }, n: { x: -1, y: 0 } };
-  rbox(ctx, side, trim, p.y - hs + rim, p.y + hs - rim, -(p.x - hs + rim), -(p.x - hs), y0, h, r, { faces: short });
-  rbox(ctx, side, trim, p.y - hs + rim, p.y + hs - rim, -(p.x + hs), -(p.x + hs - rim), y0, h, r, { faces: short });
+  rbox(ctx, side, trim, p.y - hy + rim, p.y + hy - rim, -(p.x - hx + rim), -(p.x - hx), y0, h, r, { faces: short });
+  rbox(ctx, side, trim, p.y - hy + rim, p.y + hy - rim, -(p.x + hx), -(p.x + hx - rim), y0, h, r, { faces: short });
   // Reflector bands from the frame's inner edge up to the lens, facing down and in.
-  const a = hs - rim, l = a - 0.012, yl = h - 0.004;
-  const rise = yl - y0, run = a - l, k = Math.hypot(rise, run);
+  const ax = hx - rim, ay = hy - rim, lx = ax - 0.012, ly = ay - 0.012, yl = h - 0.004;
+  const rise = yl - y0, run = 0.012, k = Math.hypot(rise, run);
   const refl = B.get(ctx.mats.reflector, false, false);
   for (const [tx, tz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
     // Corners of the band on the side opposite (tx, tz): outer low edge, then inner high edge.
     const ox = -tx, oz = -tz, px = -oz, pz = ox;
+    const [ao, aa, lo, la] = tx ? [ax, ay, lx, ly] : [ay, ax, ly, lx];
     const at = (d, along, y) => [p.x + ox * d + px * along, y, p.y + oz * d + pz * along];
     const nrm = [tx * rise / k, -run / k, tz * rise / k];
     const V = (c) => [...c, ...nrm, c[0], -c[2]];
-    poly(refl, [V(at(a, -a, y0)), V(at(a, a, y0)), V(at(l, l, yl)), V(at(l, -l, yl))]);
+    poly(refl, [V(at(ao, -aa, y0)), V(at(ao, aa, y0)), V(at(lo, la, yl)), V(at(lo, -la, yl))]);
   }
-  quad(lens, [p.x - l, yl, p.y - l], [p.x + l, yl, p.y - l], [p.x + l, yl, p.y + l], [p.x - l, yl, p.y + l], DOWN, 0, 1, 1, 0);
-  ctx.luminaires.push({ x: p.x, y: yl - 0.002, z: p.y, length: 2 * l, breadth: 2 * l, dir: { x: 1, y: 0 }, radiance: LED.troffer });
+  quad(lens, [p.x - lx, yl, p.y - ly], [p.x + lx, yl, p.y - ly], [p.x + lx, yl, p.y + ly], [p.x - lx, yl, p.y + ly], DOWN, 0, 1, 1, 0);
+  ctx.luminaires.push({ x: p.x, y: yl - 0.002, z: p.y, length: 2 * lx, breadth: 2 * ly, dir: { x: 1, y: 0 }, radiance: LED.troffer });
 }
 
 function diffuser(ctx, p, h) {

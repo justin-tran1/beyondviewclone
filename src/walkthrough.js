@@ -49,7 +49,7 @@ const MIN_RATIO = 0.5;
 // back. Calibrated against the plan light map over every sample's saved views: on average a little
 // brighter than the original ACES look (interiors read as well-lit offices, not dim ones), with sun
 // patches by the windows kept below clipping by the grade's shoulder. Keep photo.js PHOTO_EXPOSURE equal.
-const EXPOSURE = 1.8;
+const EXPOSURE = 0.75;
 // In Walk the exposure follows the light where the walker looks, as a photographer meters each
 // view: daylit spots by the windows come down toward the level the exposure was calibrated for,
 // so their floors and white casework keep their texture. The meter is the light map's view meter

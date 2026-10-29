@@ -36,7 +36,7 @@ for (const key of ['backgroundRotation', 'environmentRotation']) {
 }
 
 /** Same as the walkthrough (src/walkthrough.js), so photos and the live view agree in brightness. */
-export const PHOTO_EXPOSURE = 1.8;
+export const PHOTO_EXPOSURE = 0.75;
 // Path traced light reaches walls and ceilings only by real bounces, while the live view adds a fill
 // from its light map and environment. Over ten lab, medical and office views (dev/photo-test.html,
 // same camera, median display luminance, fixtures at FIXTURE_RADIANCE) photos at the live exposure
@@ -1017,8 +1017,11 @@ function addLights(pt, photo, result, camera, patched, trash) {
   return { materialsChanged, fixtures: chosen.length, sunCopies: copies, sunSeen, probes: probe.points.length };
 }
 
-/** Smaller fixtures are brighter, so a downlight gives a useful share of a panel's light. */
-const fixtureBoost = (c) => Math.pow(THREE.MathUtils.clamp(FIXTURE_AREA / c.area, 1, 8), 0.9);
+/**
+ * Smaller fixtures are brighter, so a downlight gives a useful share of a panel's light; a larger
+ * panel (a 2 x 4 troffer) is dimmer by its area, giving about the light of a 2 x 2.
+ */
+const fixtureBoost = (c) => Math.pow(THREE.MathUtils.clamp(FIXTURE_AREA / c.area, 0.4, 8), 0.9);
 
 /** An area light just below a fixture face, shining down with the face's color and calibrated output. */
 function areaLight(c, copies = 1) {

@@ -697,7 +697,7 @@ async function traceImage({ auto = false } = {}) {
           : ' Use Calibrate scale to set its true size.';
   const named = count.named ? ` ${plural(count.named, 'room')} ${count.named === 1 ? 'is' : 'are'} named from the drawing's labels.` : '';
   const finished = count.finished
-    ? ` Finishes are set for ${plural(count.finished, 'room')} from ${count.named ? 'their names and furniture' : 'the furniture in them'}.`
+    ? ` Finishes are set for ${plural(count.finished, 'room')} from ${count.named ? (count.finished === 1 ? 'its name or furniture' : 'their names and furniture') : (count.finished === 1 ? 'the furniture in it' : 'the furniture in them')}.`
     : '';
   const found = toast(`Found ${foundText(count)}.${named}${finished}${scale}`, { duration: 12000, action: { label: 'Undo', onClick: () => store.undo() } });
   // An image without labels of its own (not a PDF page's) is read for them, to name its rooms.
@@ -740,7 +740,7 @@ async function nameRoomsFromImage(u, result, found) {
   let count = null;
   store.update((d) => { count = traceModule.addLabels(d, labels); }, { label: 'Name rooms from the drawing' });
   found();
-  const sets = count.finished ? ` Finishes are set for ${plural(count.finished, 'room')} from their names.` : '';
+  const sets = count.finished ? ` Finishes are set for ${plural(count.finished, 'room')} from ${count.finished === 1 ? 'its name' : 'their names'}.` : '';
   toast(`${plural(count.named, 'room')} ${count.named === 1 ? 'is' : 'are'} named from the drawing's labels.${sets}`, { duration: 12000, action: { label: 'Undo', onClick: () => store.undo() } });
 }
 

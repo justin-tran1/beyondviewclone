@@ -117,6 +117,7 @@ async function importDrawing(page) {
  */
 async function importImages(page) {
   const svg = `data:image/svg+xml;base64,${readFileSync(DRAWING).toString('base64')}`;
+  let first = true;
   for (const [type, quality, misses] of [['image/png', undefined, 1], ['image/jpeg', 0.8, 2]]) {
     const url = await page.evaluate(async ({ svg, type, quality }) => {
       const img = new Image();
@@ -132,7 +133,9 @@ async function importImages(page) {
       return c.toDataURL(type, quality);
     }, { svg, type, quality });
     const name = type === 'image/png' ? 'PNG' : 'JPG';
-    await page.goto(base, { waitUntil: 'load' });
+    // A fresh page for each but the first (the one just opened).
+    if (!first) await page.goto(base, { waitUntil: 'load' });
+    first = false;
     await page.waitForSelector('dialog[open]');
     await page.keyboard.press('Escape');
     const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('#empty-import')]);
@@ -141,6 +144,8 @@ async function importImages(page) {
     const got = await roomsNamed(page);
     errors.push(...roomErrors('image', name, got, misses));
     console.log(`image: ${name}, ${Object.entries(got.names).map(([n, u]) => `${n} [${u}]`).join(', ')}`);
+    // The 3D view the trace opened has loaded before the page is left (or its modules fail to load).
+    await page.waitForFunction(() => window.cbre.walk?._built, null, { timeout: DRAW_TIMEOUT });
   }
 }
 

@@ -368,7 +368,7 @@ export function createProperties(root, { store, editor, actions }) {
     const get = (fn) => () => { const e = room(); return e ? fn(e) : ''; };
     const byGroup = (table) => [...new Set(Object.values(table).map((v) => v.group))]
       .map((group) => [group, Object.entries(table).filter(([, v]) => v.group === group).map(([k, v]) => [k, v.label])]);
-    // The use its furniture tells, for applying these finishes to every room of that use.
+    // The use its name or furniture tells, for applying these finishes to every room of that use.
     const use = roomUse(store.plan, r);
     const copyTo = (label, pick) => {
       const src = room();
@@ -410,7 +410,7 @@ export function createProperties(root, { store, editor, actions }) {
         }),
         actionsRow(
           use ? btn(`Apply to all ${PACKAGES[use].rooms}`, 'duplicate', () => copyTo(`Apply finishes to all ${PACKAGES[use].rooms}`, (e) => roomUse(store.plan, e) === use),
-            undefined, `Give the other ${PACKAGES[use].rooms} (known by their furniture) these finishes`) : null,
+            undefined, `Give the other ${PACKAGES[use].rooms} (known by their names or furniture) these finishes`) : null,
           btn('Apply to all rooms', 'duplicate', () => copyTo('Apply finishes to all rooms', () => true), undefined, 'Give every room these finishes'))),
       actionsRow(deleteBtn('room')),
     ];
@@ -633,20 +633,20 @@ export function createProperties(root, { store, editor, actions }) {
   function finishesSection(plan) {
     if (!plan.rooms.length) return null;
     const match = () => {
-      // Only rooms whose furniture tells their use, and that do not have its finishes yet.
+      // Only rooms whose name or furniture tells their use, and that do not have its finishes yet.
       const ids = store.plan.rooms.filter((r) => { const use = roomUse(store.plan, r); return use && packageOf(r) !== use; }).map((r) => r.id);
       if (!ids.length) {
         toast(store.plan.rooms.some((r) => roomUse(store.plan, r))
-          ? 'Every room whose furniture shows its use has the finishes for it.'
-          : 'No room has furniture that shows its use. Place exam tables, lab benches, toilets or desks, or select a room to choose its finishes.', { type: 'info', duration: 7000 });
+          ? 'Every room whose name or furniture shows its use has the finishes for it.'
+          : 'No room has a name or furniture that shows its use. Name rooms for their use (Exam 3, Wet Lab), place exam tables, lab benches, toilets or desks, or select a room to choose its finishes.', { type: 'info', duration: 7000 });
         return;
       }
       store.update((d) => { for (const r of d.rooms) if (ids.includes(r.id)) applyPackage(r, roomUse(d, r)); }, { label: 'Match finishes to room use' });
-      toast(`Finishes set for ${ids.length} ${ids.length === 1 ? 'room' : 'rooms'} from the furniture in them`, { action: { label: 'Undo', onClick: () => store.undo() } });
+      toast(`Finishes set for ${ids.length} ${ids.length === 1 ? 'room' : 'rooms'} from their names and furniture`, { action: { label: 'Undo', onClick: () => store.undo() } });
     };
     return section('Finishes',
       h('p', { class: 'prop-note', text: 'Select a room to choose its floor, walls, base, wall protection and ceiling, or a package of finishes for its use.' }),
-      actionsRow(btn('Match finishes to room use', 'wand', match, undefined, 'Give exam rooms, restrooms, labs and other rooms the finishes their furniture calls for')));
+      actionsRow(btn('Match finishes to room use', 'wand', match, undefined, 'Give exam rooms, restrooms, labs and other rooms the finishes their names or furniture call for')));
   }
 
   function imageSection(b, plan) {

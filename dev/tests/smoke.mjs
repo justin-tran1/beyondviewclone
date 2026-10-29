@@ -2,7 +2,7 @@
 // Walk, then does the same for a floor plan image imported and traced into a new plan ('import'),
 // and for the floor plan sheet of a PDF drawing set ('pdf', see pdf-sheets.mjs), after importing
 // the sheet printed to fit, the set scanned and the sheet with its text drawn as lines (the last
-// two read with OCR).
+// two read with OCR). Each PDF's rooms must be named and finished from its labels.
 // Usage: node dev/tests/smoke.mjs <baseUrl> <outDir> [sampleId | import | pdf ...]
 // Software rendering takes seconds to a minute per Realistic frame, so each 3D capture waits for the
 // walkthrough to stop drawing and for the GPU to finish, not for a fixed time. Exits 1 on any error.
@@ -29,6 +29,13 @@ const SAMPLE_FINISHES = { 'medical-office': ['exam', 'corridor', 'restroom', 'pr
 // The PDF set's floor plan sheet is the trace demo at 1/4" = 1'-0": its building is 60 by 40 ft on
 // wall centerlines, which the scale note gives exactly and the doors to a few percent.
 const PDF_SPAN = [60 * 0.3048, 40 * 0.3048];
+// The rooms its labels name (CONFERENCE over 101 and so on), with the finishes their names give.
+const PDF_ROOMS = { 'Conference 101': 'conference', 'Office 102': 'office', 'Office 103': 'office', 'Office 104': 'office', 'Reception 105': 'waiting', 'Restroom 108': 'restroom' };
+// Rooms named, not matching PDF_ROOMS: a page's text names them all, OCR may miss a number.
+const roomErrors = (name, got, misses) => {
+  const wrong = Object.entries(PDF_ROOMS).filter(([room, use]) => got.names[room] !== use);
+  return wrong.length > misses ? [`pdf: the ${name}'s rooms were not named and finished from its labels: missing ${wrong.map(([r, u]) => `${r} (${u})`).join(', ')} in ${JSON.stringify(got.names)}`] : [];
+};
 let pdfs = null;
 const packages = (page) => page.evaluate(async () => {
   const { packageOf } = await import(new URL('src/finishes.js', document.baseURI).href);
@@ -106,13 +113,15 @@ async function importPdfFile(page, file) {
   const chosen = await page.evaluate(() => [...document.querySelectorAll('.pdf-page')].findIndex((b) => b.getAttribute('aria-pressed') === 'true') + 1);
   await page.click('.dialog-pdf .dialog-actions .btn-primary');
   await page.waitForFunction(() => window.cbre.store.plan.underlay?.traced, null, { timeout: 120000 });
-  const found = await page.evaluate(() => {
+  const found = await page.evaluate(async () => {
+    const { packageOf } = await import(new URL('src/finishes.js', document.baseURI).href);
     const p = window.cbre.store.plan;
     const xs = p.walls.flatMap((w) => [w.a.x, w.b.x]), ys = p.walls.flatMap((w) => [w.a.y, w.b.y]);
     const windows = p.openings.filter((o) => o.type === 'window').length;
     return {
       walls: p.walls.length, doors: p.openings.length - windows, windows, rooms: p.rooms.length, items: p.items.length,
       span: xs.length ? [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)] : [0, 0],
+      names: Object.fromEntries(p.rooms.map((r) => [r.name, packageOf(r)])),
       toasts: [...document.querySelectorAll('.toast-text')].map((t) => t.textContent),
     };
   });
@@ -136,7 +145,8 @@ async function importPdf(page) {
     if (got.chosen !== want) errors.push(`pdf: the ${name} chose page ${got.chosen}, not ${want}`);
     if (!got.toasts.some((t) => /scale note, 1\/4" = 1'-0", read from the page by OCR/.test(t))) errors.push(`pdf: the ${name}'s scale was not read from its note by OCR (${got.toasts.join(' | ')})`);
     if (spanOff(got.span) > 0.02) errors.push(`pdf: the ${name} traced ${got.span.map((v) => v.toFixed(2)).join(' x ')} m, expected ${PDF_SPAN.map((v) => v.toFixed(2)).join(' x ')}`);
-    console.log(`pdf: ${name}, page ${got.chosen}, ${got.walls} walls, ${got.doors} doors, ${got.rooms} rooms, ${got.span.map((v) => v.toFixed(2)).join(' x ')} m`);
+    errors.push(...roomErrors(name, got, 1));
+    console.log(`pdf: ${name}, page ${got.chosen}, ${got.walls} walls, ${got.doors} doors, ${got.rooms} rooms, ${got.span.map((v) => v.toFixed(2)).join(' x ')} m; ${Object.keys(got.names).join(', ')}`);
   }
   await page.goto(base, { waitUntil: 'load' });
   const set = await importPdfFile(page, pdfs.set);
@@ -146,7 +156,8 @@ async function importPdf(page) {
   for (const key of ['walls', 'doors', 'windows', 'rooms', 'items']) {
     if (set[key] < TRACED[key]) errors.push(`pdf: traced ${set[key]} ${key}, expected at least ${TRACED[key]}`);
   }
-  console.log(`pdf: page ${set.chosen}, ${set.walls} walls, ${set.doors} doors, ${set.windows} windows, ${set.rooms} rooms, ${set.items} items, ${set.span.map((v) => v.toFixed(2)).join(' x ')} m; printed to fit ${fit.span.map((v) => v.toFixed(2)).join(' x ')} m`);
+  errors.push(...roomErrors('drawing set', set, 0));
+  console.log(`pdf: page ${set.chosen}, ${set.walls} walls, ${set.doors} doors, ${set.windows} windows, ${set.rooms} rooms, ${set.items} items, ${set.span.map((v) => v.toFixed(2)).join(' x ')} m; printed to fit ${fit.span.map((v) => v.toFixed(2)).join(' x ')} m; ${Object.keys(set.names).join(', ')}`);
 }
 
 async function capture(page, id) {

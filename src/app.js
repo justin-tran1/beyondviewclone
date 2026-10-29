@@ -693,8 +693,11 @@ async function traceImage({ auto = false } = {}) {
           : ` The drawing's scale note (${note}) does not match its doors, so the page was likely printed to fit: the scale is set from the door widths. Use Calibrate scale if it is off.`
         : adopt && source === 'doors' ? ' The scale is set from the door widths. Use Calibrate scale if it is off.'
           : ' Use Calibrate scale to set its true size.';
-  const finished = count.finished ? ` Finishes are set for ${plural(count.finished, 'room')} from the furniture in them.` : '';
-  toast(`Found ${foundText(count)}.${finished}${scale}`, { duration: 12000, action: { label: 'Undo', onClick: () => store.undo() } });
+  const named = count.named ? ` ${plural(count.named, 'room')} ${count.named === 1 ? 'is' : 'are'} named from the drawing's labels.` : '';
+  const finished = count.finished
+    ? ` Finishes are set for ${plural(count.finished, 'room')} from ${count.named ? 'their names and furniture' : 'the furniture in them'}.`
+    : '';
+  toast(`Found ${foundText(count)}.${named}${finished}${scale}`, { duration: 12000, action: { label: 'Undo', onClick: () => store.undo() } });
   // Show the building in 3D beside the plan it came from, from above to take it all in.
   if (mode === 'plan') await setMode('split', { focus: false });
   if (mode === 'split') ensureWalk().then((w) => w.setMode('overview'), () => {});

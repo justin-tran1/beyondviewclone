@@ -24,13 +24,14 @@ export function buildOfficeFloor() {
 
   // Private offices with glass fronts
   const fronts = L.wall([0, 15], [120, 15], 'glass');
-  for (const x of [24, 36, 48, 60, 72, 84, 96, 108]) L.wall([x, 0], [x, 15]);
+  const sides = [24, 36, 48, 60, 72, 84, 96, 108].map((x) => L.wall([x, 0], [x, 15]));
   L.room('Executive office', [0, 0, 24, 15], 'carpet');
   L.door(fronts, 21, { swing: 'n', hinge: 'e' });
   L.item('executive-desk', 7.5, 4.6);
   L.row('side-chair', [6.3, 9.3], [2.4, 0], 2, 'n');
   L.item('round-table-4', 17.6, 7.4);
   L.against(shell.w, 11.6, 'bookshelf', 'e');
+  L.against(sides[0], 7.5, 'wall-art', 'w', { w: 5, h: 3.25, variant: 9 });
   for (let i = 0; i < 8; i++) {
     const x0 = 24 + 12 * i;
     L.room('Office', [x0, 0, x0 + 12, 15], 'carpet');
@@ -39,6 +40,8 @@ export function buildOfficeFloor() {
     L.row('side-chair', [x0 + 5.4, 9.2], [2.4, 0], 2, 'n');
     L.item('bookshelf', x0 + 0.8, 5.2, 'e');
     L.item('plant', x0 + 10.4, 13.8);
+    // On the east side wall, except in the corner office where that wall has a window
+    if (i < 7) L.against(sides[i + 1], 7, 'wall-art', 'w');
   }
 
   // South band: reception, conference rooms and the work cafe
@@ -64,6 +67,7 @@ export function buildOfficeFloor() {
   L.item('lounge-chair', 8.9, 70.4, 'w');
   L.item('plant', 1.8, 58.8);
   L.item('plant', 28.4, 73.2);
+  L.against(receptionEast, 66, 'wall-art', 'w', { w: 6, h: 3.5, variant: 3 });
 
   // Conference rooms
   L.against(receptionEast, 65.8, 'tv-display', 'e');
@@ -71,6 +75,8 @@ export function buildOfficeFloor() {
   L.against(conf10East, 65.8, 'tv-display', 'e');
   L.item('conference-table-6', 66.7, 65.8);
   L.item('plant', 74.6, 73.4);
+  L.against(shell.s, 43.7, 'wall-art', 'n', { w: 6, h: 3.5, variant: 1 });
+  L.against(cafeWest, 65.8, 'wall-art', 'w', { w: 5, h: 3.25, variant: 7 });
 
   // Work cafe
   L.against(cafeWest, 66, 'pantry-counter', 'e', { w: 14 });

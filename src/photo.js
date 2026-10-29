@@ -36,7 +36,7 @@ for (const key of ['backgroundRotation', 'environmentRotation']) {
 }
 
 /** Same as the walkthrough (src/walkthrough.js), so photos and the live view agree in brightness. */
-export const PHOTO_EXPOSURE = 0.75;
+export const PHOTO_EXPOSURE = 0.66;
 // Path traced light reaches walls and ceilings only by real bounces, while the live view adds a fill
 // from its light map and environment. Over ten lab, medical and office views (dev/photo-test.html,
 // same camera, median display luminance, fixtures at FIXTURE_RADIANCE) photos at the live exposure

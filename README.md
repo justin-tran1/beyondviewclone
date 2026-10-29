@@ -80,9 +80,13 @@ without a code change, run the workflow from the Actions tab.
    retail and industrial, general). Items snap flush to walls; `Q` and `E` rotate. Casework, lab
    benches and sinks, pantry counters, vanities, nurse stations and reception desks take a casework
    color (laminates or wood veneers) and a worksurface: quartz, solid surface, epoxy or phenolic
-   resin, stainless steel or laminate.
+   resin, stainless steel or laminate. **Framed art** hangs at eye level on any wall in one of a
+   dozen abstract paintings and prints: each piece picks its own, or choose one under **Artwork**.
 7. **Walk**: switch to **Walk** or **Split**. Drag to look, `W A S D` to move, click the floor to
    walk there, save viewpoints, and use **Overview** for a dollhouse view. Save images of any view.
+   Spaces look like a rendered architectural tour: warm greige walls on an espresso base, walnut
+   doors in dark bronze frames, acoustic tile ceilings with 2 x 4 troffers, weathered oak plank
+   floors, walnut casework with white tops, and warm light.
 8. **Render photo**: the camera button beside Save image path traces the current view into a
    photographic still for client decks (1280 x 720 up to 4K; Draft, Standard or High quality). It
    takes a minute or more on the graphics card while the 3D view keeps running; save the PNG when

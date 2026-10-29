@@ -133,7 +133,8 @@ const CAPTURE_DIM = 0.4;
 // Cube face size for the base and captured environments; both match so shaders are shared.
 const ENV_SIZE = 128;
 const PROBE_HEIGHT = 1.5;
-const PAINT = '#efece6';
+// Wall paint as made (finishes.js WALL_COLORS), for faces no room's finish covers and opening heads.
+const PAINT = '#d4ccc3';
 const WINDOW_TINT = '#dfe9e6';
 const PARTITION_TINT = '#edf1ef';
 
@@ -3825,11 +3826,11 @@ function buildItems(ctx) {
   for (const item of ctx.plan.items) {
     const def = getItem(item.type);
     const dims = itemSize(item);
-    const key = `${item.type}|${dims.w}|${dims.d}|${dims.h}|${item.color ?? ''}|${item.top ?? ''}`;
+    const key = `${item.type}|${dims.w}|${dims.d}|${dims.h}|${item.color ?? ''}|${item.top ?? ''}|${itemVariant(def, item) ?? ''}`;
     let parts = templates.get(key);
     if (parts === undefined) templates.set(key, (parts = itemTemplate(ctx, buildItem(ctx, def, dims, item))));
     const rotation = (-normDeg(item.rotation || 0) * Math.PI) / 180;
-    place.compose(_v.set(item.x, item.elevation ?? 0, item.y), _q.setFromAxisAngle(_y, rotation), _s.set(1, 1, 1));
+    place.compose(_v.set(item.x, itemBase(def, item, dims), item.y), _q.setFromAxisAngle(_y, rotation), _s.set(1, 1, 1));
     ctx.items.at(item.x, item.y);
     // What the item shades below it, once per template (see itemCover); rugs and the like shade nothing.
     const blocking = def.blocking !== false;
@@ -3858,11 +3859,28 @@ function buildItems(ctx) {
   }
 }
 
+/** The look a placed item shows when its type comes in several (ItemDef.variants): its own, or one fixed by its id. */
+function itemVariant(def, item) {
+  const n = def.variants?.length ?? 0;
+  if (n < 2) return undefined;
+  if (Number.isInteger(item.variant) && item.variant >= 0 && item.variant < n) return item.variant;
+  const id = String(item.id ?? '');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 0x01000193);
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+  return ((h ^ (h >>> 13)) >>> 0) % n;
+}
+
+/** Height of an item's base: its elevation, plus the lift that centers a wall-hung one (ItemDef.hang). */
+function itemBase(def, item, dims) {
+  return (item.elevation ?? 0) + (def.hang > 0 ? Math.max(0, def.hang - dims.h / 2) : 0);
+}
+
 /** A plain box over an item's footprint. */
 function itemBlock(ctx, item, dims) {
   const r = (normDeg(item.rotation || 0) * Math.PI) / 180;
   const F = frameOf({ x: item.x, y: item.y }, { x: Math.cos(r), y: Math.sin(r) });
-  const y0 = item.elevation ?? 0;
+  const y0 = itemBase(getItem(item.type), item, dims);
   box(F, noBottom(ctx.items.get(ctx.kit.mat.plastic, false)), -dims.w / 2, dims.w / 2, -dims.d / 2, dims.d / 2, y0, y0 + dims.h);
 }
 
@@ -4045,7 +4063,7 @@ function boxBlur(src, nx, nz, h) {
 
 function buildItem(ctx, def, dims, item) {
   try {
-    const obj = def.build(ctx.kit, { ...dims, color: item.color, top: item.top });
+    const obj = def.build(ctx.kit, { ...dims, color: item.color, top: item.top, variant: itemVariant(def, item) });
     if (obj?.isObject3D) return obj;
     throw new Error('build() did not return an Object3D');
   } catch (err) {

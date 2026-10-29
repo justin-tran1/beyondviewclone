@@ -4,3 +4,4 @@ import './lab.js';
 import './medical.js';
 import './office.js';
 import './retail.js';
+import './art.js';

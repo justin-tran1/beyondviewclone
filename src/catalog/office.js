@@ -1357,8 +1357,8 @@ function drawMedia(ctx, o) {
 
 function buildColumn(kit, { w, d, h, color }) {
   const g = kit.group();
-  // Painted like the walls, on a rubber cove base.
-  const paint = kit.paintMaterial(isColor(color) ? color : '#efece6');
+  // Painted like the walls (the paint as made, finishes.js WALL_COLORS), on a rubber cove base.
+  const paint = kit.paintMaterial(isColor(color) ? color : '#d4ccc3');
   kit.block(g, kit.mat.rubber, -w / 2, w / 2, 0, 0.1, -d / 2, d / 2);
   kit.block(g, paint, -w / 2 + 0.004, w / 2 - 0.004, 0.1, h, -d / 2 + 0.004, d / 2 - 0.004);
   return g;

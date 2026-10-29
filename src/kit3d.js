@@ -673,13 +673,14 @@ function textureLibrary() {
   }
 
   function ceilingTile(S, B) {
-    // Two by two 24 in mineral fiber tiles: fissured face, pinholes, and the 15/16 in T-bar grid.
+    // Two by two 24 in mineral fiber tiles in the 15/16 in T-bar grid: a fine sanded face, warm
+    // white, with a few faint fissures and pinholes, so the ceiling reads smooth from the floor.
     const s = surface(S), r = rng(43), tp = S / 2, f = S / 1024;
     const fiss = new Float32Array(S * S), pins = new Float32Array(S * S);
-    for (let k = 0; k < 3400 * f * f; k++) trail(fiss, S, r, r() * S, r() * S, (4 + r() * 14) * f, r() * 6.28, { turn: 0.9, width: 0.6 });
-    for (let k = 0; k < 7000 * f * f; k++) mark(pins, S, r() * S, r() * S, 0.5 + r() * 0.5);
+    for (let k = 0; k < 1400 * f * f; k++) trail(fiss, S, r, r() * S, r() * S, (4 + r() * 14) * f, r() * 6.28, { turn: 0.9, width: 0.6 });
+    for (let k = 0; k < 4000 * f * f; k++) mark(pins, S, r() * S, r() * S, 0.5 + r() * 0.5);
     const nod = view(B.mid, S, 15, 615);
-    const face = hex('#e7e5df'), tee = hex('#eeeeeb');
+    const face = hex('#e9e3d8'), tee = hex('#eeeeeb');
     const half = (0.024 / 2 / (2 * TILE)) * S;
     const tones = Array.from({ length: 4 }, () => 1 + (r() - 0.5) * 0.035);
     for (let y = 0; y < S; y++) {
@@ -692,8 +693,8 @@ function textureLibrary() {
           continue;
         }
         const lip = smooth(half + 3 * f, half, d);
-        const v = tones[tj * 2 + ti] * (0.97 + 0.05 * nod[i]) * (1 - 0.22 * fiss[i]) * (1 - 0.14 * pins[i]) * (1 - 0.16 * lip);
-        put(s, i, face, v, 0.25 * nod[i] - 0.7 * fiss[i] - 0.35 * pins[i] - 0.4 * lip, 0.97);
+        const v = tones[tj * 2 + ti] * (0.97 + 0.05 * nod[i]) * (1 - 0.1 * fiss[i]) * (1 - 0.07 * pins[i]) * (1 - 0.16 * lip);
+        put(s, i, face, v, 0.25 * nod[i] - 0.3 * fiss[i] - 0.18 * pins[i] - 0.4 * lip, 0.97);
       }
     }
     return s;
@@ -836,8 +837,8 @@ function textureLibrary() {
     epoxy: { size: 512, meters: 1, make: epoxyFloor },
     vinyl: {
       size: 1024, meters: 4 * TILE,
-      // Weathered oak: gray-brown planks, a few lighter and darker.
-      make: (S, B) => plankFloor(S, B, { rows: 12, minLen: 0.5, maxLen: 0.5, palette: ['#8f7d6f', '#857264', '#988675', '#8a7769', '#7f6d60', '#937f70'], seed: 21, contrast: 0.12, rings: 0.8, rough: 0.42, bevel: 0.25 }),
+      // Weathered oak: gray-brown planks close in tone, a few a little lighter or darker.
+      make: (S, B) => plankFloor(S, B, { rows: 12, minLen: 0.5, maxLen: 0.5, palette: ['#8e7c6e', '#877566', '#948271', '#8b786a', '#837164', '#917d6e'], seed: 21, contrast: 0.12, rings: 0.8, rough: 0.42, bevel: 0.25 }),
     },
     wood: {
       size: 1024, meters: 4 * TILE,

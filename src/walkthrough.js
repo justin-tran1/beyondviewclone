@@ -46,10 +46,11 @@ const STEP_UP_AFTER = 3000;
 const STEP_UP_TRIAL = 10000;
 const MIN_RATIO = 0.5;
 // AgX keeps highlights from clipping and shadows from crushing, and the post grade adds the contrast
-// back. Calibrated against the plan light map over every sample's saved views: on average a little
-// brighter than the original ACES look (interiors read as well-lit offices, not dim ones), with sun
-// patches by the windows kept below clipping by the grade's shoulder. Keep photo.js PHOTO_EXPOSURE equal.
-const EXPOSURE = 0.75;
+// back. Set against the plan light map over every sample's saved views to the key of rendered
+// architectural tours: lit walls a warm mid gray rather than white, so troffers, daylight and white
+// counters stand out and ceilings away from the fixtures fall off, with sun patches by the windows
+// kept below clipping by the grade's shoulder. Keep photo.js PHOTO_EXPOSURE equal.
+const EXPOSURE = 0.66;
 // In Walk the exposure follows the light where the walker looks, as a photographer meters each
 // view: daylit spots by the windows come down toward the level the exposure was calibrated for,
 // so their floors and white casework keep their texture. The meter is the light map's view meter

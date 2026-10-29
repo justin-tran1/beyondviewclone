@@ -292,11 +292,14 @@ export function addRoom(draft, points, props = {}) {
   return room;
 }
 
-/** The scale note an underlay keeps ({ text, metersPerPixel } from a PDF page), if it is valid. */
+/**
+ * The scale note an underlay keeps ({ text, metersPerPixel, ocr? } from a PDF page; ocr: read from
+ * the page by OCR), if it is valid.
+ */
 function scaleNoteOf(n) {
   const mpp = Number(n?.metersPerPixel);
   if (typeof n?.text !== 'string' || !n.text || n.text.length > 40 || !(mpp > 0 && mpp < 1e3)) return {};
-  return { scaleNote: { text: n.text, metersPerPixel: mpp } };
+  return { scaleNote: { text: n.text, metersPerPixel: mpp, ...(n.ocr === true ? { ocr: true } : {}) } };
 }
 
 /**

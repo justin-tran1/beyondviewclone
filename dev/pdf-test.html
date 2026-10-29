@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PDF Scan Test</title>
   <script type="importmap">
-    { "imports": { "pdfjs-dist": "../assets/vendor/pdfjs/pdf.min.mjs" } }
+    { "imports": { "pdfjs-dist": "../assets/vendor/pdfjs/pdf.min.mjs", "tesseract.js": "../assets/vendor/tesseract/tesseract.esm.min.js" } }
   </script>
   <style>
     body { margin: 0; font: 14px/1.4 system-ui, sans-serif; color: #435254; background: #f6f6f6; }
@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <header><h1>PDF scan test</h1><input type="file" id="file" accept=".pdf,application/pdf"><span id="state"></span></header>
+  <header><h1>PDF scan test</h1><input type="file" id="file" accept=".pdf,application/pdf"><label><input type="checkbox" id="ocr" checked> Read text with OCR</label><span id="state"></span></header>
   <main id="pages"></main>
   <script type="module" src="pdf-test.js"></script>
 </body>

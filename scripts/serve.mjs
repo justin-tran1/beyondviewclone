@@ -19,6 +19,8 @@ const TYPES = {
   '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.pdf': 'application/pdf',
+  '.wasm': 'application/wasm',
+  '.gz': 'application/gzip',
   '.txt': 'text/plain; charset=utf-8',
 };
 

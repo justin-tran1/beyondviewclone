@@ -1,6 +1,8 @@
 // End-to-end smoke test: opens each sample through the welcome dialog and captures Plan, Split and
 // Walk, then does the same for a floor plan image imported and traced into a new plan ('import'),
-// and for the floor plan sheet of a PDF drawing set ('pdf', see pdf-sheets.mjs).
+// and for the floor plan sheet of a PDF drawing set ('pdf', see pdf-sheets.mjs), after importing
+// the sheet printed to fit, the set scanned and the sheet with its text drawn as lines (the last
+// two read with OCR).
 // Usage: node dev/tests/smoke.mjs <baseUrl> <outDir> [sampleId | import | pdf ...]
 // Software rendering takes seconds to a minute per Realistic frame, so each 3D capture waits for the
 // walkthrough to stop drawing and for the GPU to finish, not for a fixed time. Exits 1 on any error.
@@ -98,7 +100,8 @@ async function importPdfFile(page, file) {
   await page.keyboard.press('Escape');
   const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('#empty-import')]);
   await chooser.setFiles(file);
-  await page.waitForSelector('.dialog-pdf[data-scanned]', { timeout: 120000 });
+  // Every page scanned, and read with OCR where it has no text: the page chosen is settled.
+  await page.waitForSelector('.dialog-pdf[data-scanned][data-read]', { timeout: 240000 });
   await page.waitForFunction(() => !document.querySelector('.dialog-pdf .dialog-actions .btn-primary').disabled, null, { timeout: 60000 });
   const chosen = await page.evaluate(() => [...document.querySelectorAll('.pdf-page')].findIndex((b) => b.getAttribute('aria-pressed') === 'true') + 1);
   await page.click('.dialog-pdf .dialog-actions .btn-primary');
@@ -116,13 +119,25 @@ async function importPdfFile(page, file) {
   return { chosen, ...found };
 }
 
-/** The PDF drawing set, after checking that a sheet printed to fit gets its scale from its doors. */
+/**
+ * The PDF drawing set, after checking that a sheet printed to fit gets its scale from its doors and
+ * that OCR reads the scale notes and titles of the set scanned and of the sheet with outlined text.
+ */
 async function importPdf(page) {
   pdfs ||= await makeTestPdfs(browser, base, `${out}/pdf`);
   const spanOff = (span) => Math.max(...span.map((v, i) => Math.abs(v / PDF_SPAN[i] - 1)));
   const fit = await importPdfFile(page, pdfs.tabloid);
   if (!fit.toasts.some((t) => /does not match its doors/.test(t))) errors.push(`pdf: the sheet printed to fit did not fall back to its doors (${fit.toasts.join(' | ')})`);
   if (spanOff(fit.span) > 0.05) errors.push(`pdf: the sheet printed to fit traced ${fit.span.map((v) => v.toFixed(2)).join(' x ')} m, expected ${PDF_SPAN.map((v) => v.toFixed(2)).join(' x ')}`);
+  // Read with OCR: the scanned set's floor plan is page 3, after a ceiling plan with more linework.
+  for (const [name, file, want] of [['scanned set', pdfs.scanset, 3], ['outlined sheet', pdfs.outlined, 0]]) {
+    await page.goto(base, { waitUntil: 'load' });
+    const got = await importPdfFile(page, file);
+    if (got.chosen !== want) errors.push(`pdf: the ${name} chose page ${got.chosen}, not ${want}`);
+    if (!got.toasts.some((t) => /scale note, 1\/4" = 1'-0", read from the page by OCR/.test(t))) errors.push(`pdf: the ${name}'s scale was not read from its note by OCR (${got.toasts.join(' | ')})`);
+    if (spanOff(got.span) > 0.02) errors.push(`pdf: the ${name} traced ${got.span.map((v) => v.toFixed(2)).join(' x ')} m, expected ${PDF_SPAN.map((v) => v.toFixed(2)).join(' x ')}`);
+    console.log(`pdf: ${name}, page ${got.chosen}, ${got.walls} walls, ${got.doors} doors, ${got.rooms} rooms, ${got.span.map((v) => v.toFixed(2)).join(' x ')} m`);
+  }
   await page.goto(base, { waitUntil: 'load' });
   const set = await importPdfFile(page, pdfs.set);
   if (set.chosen !== 2) errors.push(`pdf: the dialog chose page ${set.chosen}, not the floor plan on page 2`);

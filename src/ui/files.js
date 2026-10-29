@@ -208,7 +208,7 @@ export function underlayFor(image) {
     opacity: 0.6,
     visible: true,
     locked: true,
-    ...(note ? { scaleNote: { text: note.text, metersPerPixel: note.metersPerPixel } } : {}),
+    ...(note ? { scaleNote: { text: note.text, metersPerPixel: note.metersPerPixel, ...(note.ocr ? { ocr: true } : {}) } } : {}),
   };
 }
 

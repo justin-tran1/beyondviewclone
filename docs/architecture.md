@@ -21,8 +21,9 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
 | `src/autotrace.js` | `traceFloorPlan()`: the walls, doors, windows, rooms and scale in a floor plan image's pixels (no DOM) |
 | `src/autotrace-items.js` | `findItems()`: the furniture and fixtures drawn in the rooms, for the tracer |
 | `src/autotrace-worker.js`, `src/ui/trace.js` | Run the tracer on the underlay in a worker and add what it finds to the plan |
-| `src/pdf-scan.js` | The floor plan on a rendered drawing sheet, how much a page looks like one, and the scale notes in its text (no DOM) |
-| `src/ui/pdf.js` | PDF import: the page and area dialog, and the chosen area rendered (or its picture's own pixels) as the plan's image |
+| `src/pdf-scan.js` | The floor plan on a rendered drawing sheet, how much a page looks like one, and the scale notes in its text or in the words OCR read (no DOM) |
+| `src/ui/pdf.js` | PDF import: the page and area dialog, reading pages with no text with OCR, and the chosen area rendered (or its picture's own pixels) as the plan's image |
+| `src/ui/ocr.js` | The text reader: Tesseract in a worker, loaded with the first page to read |
 | `src/builder3d.js` | Plan to Three.js scene: walls with openings, floors, ceilings, items, exterior; lighting and the plan light map |
 | `src/postfx.js` | Post-processing for the walkthrough: AO, bloom, color grade, AgX, SMAA, quality levels (`createPostFX()`) |
 | `src/walkthrough.js` | `Walkthrough`: renderer, first-person and overview cameras, collisions, minimap, quality |
@@ -60,7 +61,8 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
     opacity, visible, locked,
     calibrated?,      // true once its scale was set from a known length
     traced?,          // true when the plan's walls were detected in it: calibrating resizes the plan too
-    scaleNote?,       // { text, metersPerPixel }: the drawing scale written on the PDF page it came from
+    scaleNote?,       // { text, metersPerPixel, ocr? }: the drawing scale written on the PDF page it came
+                      // from; ocr: true when OCR read it off the page
   },
   walls:    [{ id, a: {x, y}, b: {x, y}, kind: 'exterior' | 'interior' | 'glass' | 'partial', thickness, height }],
   openings: [{ id, wallId, type: 'door' | 'double-door' | 'sliding-door' | 'opening' | 'window',
@@ -254,12 +256,19 @@ with 2% of what it reports matching nothing drawn.
 // pdf-scan.js: plain functions on a rendered page (RGBA, px, y down) and its text
 export function findPlanArea({ width, height, data }) -> { box: { x0, y0, x1, y1 }, score, share } | null
 export function textLines(items /* [{ str, x, y, w, h }] */) -> [{ text, x0, x1, y, h }]
-export function scaleNotes(lines) -> [{ text, ratio, x, y }]     // ratio: real length per paper length; 0: not to scale
-export function chooseScaleNote(notes, box, long) -> { text, ratio } | null
+export function scaleNotes(lines) -> [{ text, ratio, x, y, ocr? }] // ratio: real length per paper length; 0: not to scale
+export function chooseScaleNote(notes, box, long) -> { text, ratio, ocr? } | null
 export function planWords(text) -> 1.6 | 1 | 0.6                 // a page's titles: floor plan, silent, another sheet
+export function pageTitles(lines) -> 1.6 | 1 | 0.6               // planWords of its larger lines (titles), else of all
+export function tsvWords(tsv) -> [{ str, x0, y0, x1, y1, conf }] // the words in Tesseract's TSV output
+export function ocrLines(words) -> [{ text, x0, x1, y, h, ocr: true }]
+export function ocrScale(text) -> { text, ratio } | null         // a note in text OCR read, written out in full
 // ui/pdf.js: pdf.js on the page
 export async function importPdf(file, { onOpen, onChosen }) -> { src, width, height, resized, scaleNote? } | null
-export async function openPdf(file), scanPage(page), renderArea(page, area, note)
+export async function openPdf(file), scanPage(page), readPage(page, scan, reader, onProgress), renderArea(page, area, note)
+// ui/ocr.js: Tesseract
+export function canReadText() -> boolean                         // WebAssembly SIMD is there
+export async function createReader() -> { read(canvas, dpi, onProgress) -> words, close() }
 ```
 
 `findPlanArea` reads a drawing from its straight lines: unbroken horizontal and vertical runs of ink
@@ -273,11 +282,14 @@ drawings near it (2.5%) that hold at least 3% of its linework (its dimensions, a
 a 1.2% margin, kept inside the borders around it. `score` is its linework in lengths of the page's
 long side. Scale notes are architectural (`1/4" = 1'-0"`), engineering (`1" = 20'-0"`) or metric
 ratios on a line that says scale (`SCALE 1:100`); the plan's note is the page's only scale, else the
-nearest within a quarter of the page, and a "not to scale" note beside the plan means none.
+nearest within a quarter of the page, and a "not to scale" note beside the plan means none. A page
+is named by its titles: its lines at least 1.4 times the size of its usual text (the title block's
+sheet title, a drawing's title), and only when those say nothing by all its text, so a note that
+mentions the equipment plan or a cover sheet's list of sheets names no page.
 
 `ui/pdf.js` loads pdf.js on first use and opens the file (`isEvalSupported: false`). The dialog lists
 the pages with thumbnails and scans them in turn at 1,600 px on the long side (keeping the full
-render of the last four), ranking each by `score × planWords(text)`. Until the user picks a page or
+render of the last four), ranking each by `score × pageTitles(lines)`. Until the user picks a page or
 moves the outline, it shows the best page so far. The area is an outline in fractions of the page
 that can be dragged, resized by its handles, redrawn by dragging on the page, or nudged with the
 arrow keys (with Shift to resize). Import stays enabled while another page loads, and waits for it.
@@ -288,6 +300,34 @@ rendering would resample and blur them. Otherwise it renders the area at 3,200 p
 (at most 8 px per point). A scan's paper is made white. The image is a PNG, or a JPEG when the PNG
 passes 2.5 MB, so the browser can keep the plan. With a scale note, `scaleNote.metersPerPixel` is
 `ratio × 0.0254 / 72 / (px per point)`, and the underlay starts at that scale.
+
+**OCR.** A page with a drawing and fewer than 20 characters of text (a scan, or a CAD export that
+draws its text as lines, as AutoCAD does SHX fonts) is read with OCR, and so is the page shown
+when its text has no scale note, once it is chosen or every page is scanned. `readPage` reads the
+page at about 200 dpi and at most 40 megapixels: a scan's own pixels, enlarged with smoothing when
+there are fewer (a 100 dpi scan reads far better twice as large), or the page rendered. The words
+(`tsvWords`, in the page's scan px) join into lines by their boxes (`ocrLines`: each word shares
+most of its height with the one before it, as a slash or an = sign need), and the page's note and
+rank are found again from its own text and these lines together. OCR misreads the marks of a
+scale note, so a line read by OCR goes through `ocrScale`: it takes I, l, i and | beside digits
+and marks for 1 and O for 0, a dropped foot mark (`1-0"`), doubled marks (`1/4"'`), a fraction's
+lost slash or its slash read as a 1 (`14"`, `114"`) and a whole number run into its fraction
+(`11/2"`), and it keeps only standard scales (architectural from 1/32" to 3" to the foot,
+engineering 1" = 5' to 1,000', metric 1:5 to 1:5,000), written out again. The tracer's door check
+(`NOTE_RATIO`) catches a misread one. Word confidences are not used: the words of a note often
+score low.
+
+The dialog reads one page at a time, the page shown first and then, once every page is scanned,
+the pages with no text in their order as floor plans while one could still be the best with a
+floor plan's title (`score × 1.6` above the best rank). Its scale line shows the reader starting
+and the page's progress; Import waits for the page shown to be read (choosing another page
+cancels that), and `dataset.read` is set when nothing is left to read. The reader
+(`ui/ocr.js`) runs Tesseract 5's LSTM engine in a worker with the English `best_int` model,
+reading sparse text (page segmentation mode 11) at the page's resolution (`user_defined_dpi`,
+which also keeps Tesseract from logging its estimate). It is given a gray PGM, which it opens
+without decoding. It loads with the first page to read (about 6 MB: the SIMD core and the model)
+and stops when the dialog closes. A browser without WebAssembly SIMD imports pages with no text
+without reading them.
 
 ### `kit3d.js`
 
@@ -571,6 +611,7 @@ pages carry the same map):
 | `three-gpu-pathtracer` | `three-gpu-pathtracer/index.module.js` | 0.0.23 (MIT) |
 | `three-mesh-bvh` | `three-mesh-bvh/index.module.js` | 0.8.3 (MIT), used by the path tracer |
 | `pdfjs-dist` | `pdfjs/pdf.min.mjs`, with `pdfjs/pdf.worker.min.mjs` | 4.10.38 (Apache-2.0), PDF import; `ui/pdf.js` points pdf.js at the worker by URL |
+| `tesseract.js` | `tesseract/tesseract.esm.min.js`, with `tesseract/worker.min.js`, `tesseract/tesseract-core-simd-lstm.js` and `.wasm`, and `tesseract/eng.traineddata.gz` | tesseract.js 7.0.0 and tesseract.js-core 7.0.0 (Apache-2.0; Tesseract 5), English `4.0.0_best_int` model from @tesseract.js-data/eng 1.0.0 (tessdata_best, Apache-2.0); OCR in `ui/ocr.js`. Only the SIMD LSTM core is kept; the core finds its `.wasm` beside the worker script, so the worker loads from its own URL (`workerBlobURL: false`) |
 
 three-gpu-pathtracer 0.0.23 expects r162 or later and reads `Scene.backgroundRotation` and
 `Scene.environmentRotation`, which r160 lacks; `photo.js` adds both to `THREE.Scene.prototype` as

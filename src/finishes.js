@@ -175,7 +175,7 @@ export const PACKAGES = {
   },
   vivarium: { label: 'Vivarium', rooms: 'vivarium rooms', group: 'Lab', floor: 'resinous', floorColor: '#c7bda9', wall: 'coating', wallColor: '#e5dfd3', base: 'cove', guard: 'rail', ceiling: 'drywall' },
   'lab-support': { label: 'Glass wash and lab support', rooms: 'lab support rooms', group: 'Lab', floor: 'epoxy', wall: 'frp', base: 'cove', guard: 'rail', ceiling: 'clean' },
-  office: { label: 'Office', rooms: 'offices', group: 'Workplace and support', floor: 'vinyl', wall: 'paint', base: 'rubber', ceiling: 'tile' },
+  office: { label: 'Office', rooms: 'offices', group: 'Workplace and support', floor: 'carpet', wall: 'paint', base: 'rubber', ceiling: 'tile' },
   conference: { label: 'Conference', rooms: 'conference rooms', group: 'Workplace and support', floor: 'carpet', floorColor: '#7a7262', wall: 'paint', base: 'rubber', ceiling: 'tile' },
   breakroom: { label: 'Break room', rooms: 'break rooms', group: 'Workplace and support', floor: 'tile', floorColor: '#c9bea9', wall: 'paint', base: 'rubber', ceiling: 'tile' },
   lobby: { label: 'Lobby', rooms: 'lobbies', group: 'Workplace and support', floor: 'terrazzo', wall: 'paint', wainscot: 'wood', base: 'tile', ceiling: 'drywall' },

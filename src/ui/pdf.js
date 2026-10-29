@@ -13,7 +13,7 @@ import { openDialog } from './widgets.js';
 import { FileError, canvasDataURL } from './files.js';
 import { findPlanArea, textLines, scaleNotes, chooseScaleNote, pageTitles, ocrLines, PLAN_TITLE_WEIGHT } from '../pdf-scan.js';
 import { labelKind, splitNumber, cleanLabel } from '../room-names.js';
-import { canReadText, createReader } from './ocr.js';
+import { canReadText, createReader, cleanStrip } from './ocr.js';
 
 const SCAN_SIDE = 1600; // px: pages are scanned and previewed this large on their long side
 const OUT_SIDE = 3200; // px: the imported area on its long side, as large as the tracer reads
@@ -203,58 +203,6 @@ function whitenPaper(canvas) {
   ctx.putImageData(img, 0, 0);
 }
 
-/**
- * A small image of a few characters made easier to read (the reader cannot tell them from a
- * scan's gray, speckled paper on its own, as it does on a whole page): dark specks smaller than
- * `speck` px on their longer side erased, and when `tone`, the paper and its grain made white with
- * the ink kept in its grays.
- */
-function cleanStrip(canvas, speck, tone) {
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  const W = canvas.width, H = canvas.height;
-  const img = ctx.getImageData(0, 0, W, H);
-  const d = img.data, n = W * H;
-  const lum = new Uint8Array(n), hist = new Uint32Array(256);
-  for (let i = 0, p = 0; i < n; i++, p += 4) hist[(lum[i] = (d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8)]++;
-  const level = (q) => {
-    for (let v = 0, c = 0; v < 256; v++) if ((c += hist[v]) >= q * n) return v;
-    return 255;
-  };
-  // The ink is the darkest 1%, the paper what most of the image is: its grain reaches down three
-  // quarters of the way to the ink.
-  const ink = level(0.01), paper = level(0.5);
-  if (paper - ink < 24) return;
-  const white = Math.max(120, ink + 0.75 * (paper - ink));
-  const seen = new Uint8Array(n), stack = [], blob = [];
-  for (let i0 = 0; i0 < n; i0++) {
-    if (seen[i0] || lum[i0] >= white) continue;
-    let x0 = W, x1 = -1, y0 = H, y1 = -1;
-    blob.length = 0;
-    stack.push(i0);
-    seen[i0] = 1;
-    while (stack.length) {
-      const i = stack.pop(), x = i % W, y = (i - x) / W;
-      blob.push(i);
-      if (x < x0) x0 = x;
-      if (x > x1) x1 = x;
-      if (y < y0) y0 = y;
-      if (y > y1) y1 = y;
-      if (x > 0 && !seen[i - 1] && lum[i - 1] < white) { seen[i - 1] = 1; stack.push(i - 1); }
-      if (x < W - 1 && !seen[i + 1] && lum[i + 1] < white) { seen[i + 1] = 1; stack.push(i + 1); }
-      if (y > 0 && !seen[i - W] && lum[i - W] < white) { seen[i - W] = 1; stack.push(i - W); }
-      if (y < H - 1 && !seen[i + W] && lum[i + W] < white) { seen[i + W] = 1; stack.push(i + W); }
-    }
-    if (Math.max(x1 - x0, y1 - y0) + 1 < speck) for (const i of blob) lum[i] = 255;
-  }
-  // Black stays black, the ink's grays are kept, the paper is white.
-  const k = 255 / (white - 40);
-  for (let i = 0, p = 0; i < n; i++, p += 4) {
-    const v = lum[i] >= 255 ? 255 : tone ? (lum[i] >= white ? 255 : Math.max(0, (lum[i] - 40) * k)) : lum[i];
-    d[p] = d[p + 1] = d[p + 2] = v;
-  }
-  ctx.putImageData(img, 0, 0);
-}
-
 /** The pictures a page draws and where: [{ id | data, width, height, ctm }], ctm mapping their unit square to the page. */
 async function pageImages(page) {
   const { OPS, Util } = lib;
@@ -414,6 +362,8 @@ export async function renderArea(page, area, note, { lines = [], scale = 1 } = {
     if (labels.length >= MAX_LABELS) break;
   }
   if (labels.length) image.labels = labels;
+  // The page's text was read for its labels, by OCR where it has none.
+  image.labelsRead = true;
   return image;
 }
 

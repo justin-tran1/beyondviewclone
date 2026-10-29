@@ -581,6 +581,8 @@ async function importImage(file, { replace = false } = {}) {
 let tracing = null; // { src, run }: the image being traced; a later run supersedes it
 let traceRuns = 0;
 let traceModule = null;
+let reading = null; // the src of the image being read for its room names
+let labelsModule = null;
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -697,10 +699,49 @@ async function traceImage({ auto = false } = {}) {
   const finished = count.finished
     ? ` Finishes are set for ${plural(count.finished, 'room')} from ${count.named ? 'their names and furniture' : 'the furniture in them'}.`
     : '';
-  toast(`Found ${foundText(count)}.${named}${finished}${scale}`, { duration: 12000, action: { label: 'Undo', onClick: () => store.undo() } });
+  const found = toast(`Found ${foundText(count)}.${named}${finished}${scale}`, { duration: 12000, action: { label: 'Undo', onClick: () => store.undo() } });
+  // An image without labels of its own (not a PDF page's) is read for them, to name its rooms.
+  const traced = store.plan.underlay;
+  if (!traced.labels?.length && !traced.labelsRead) nameRoomsFromImage(traced, result, found);
   // Show the building in 3D beside the plan it came from, from above to take it all in.
   if (mode === 'plan') await setMode('split', { focus: false });
   if (mode === 'split') ensureWalk().then((w) => w.setMode('overview'), () => {});
+}
+
+/**
+ * Read the room labels on a traced image with OCR (ui/image-labels.js), as it is enlarged for the
+ * scale the trace gave it, then name the rooms still called Room 1, Room 2... from them and give
+ * them the finishes their names tell: a step of its own, after the trace's (whose toast, `found`,
+ * goes, as its Undo would now take back the names).
+ */
+async function nameRoomsFromImage(u, result, found) {
+  if (reading === u.src) return;
+  reading = u.src;
+  const planId = store.plan.id;
+  let labels = null, working = null;
+  try {
+    labelsModule ||= await import('./ui/image-labels.js');
+    if (!labelsModule.canReadText()) return;
+    working = toast('Reading the room names in the image...', { type: 'info', duration: 600000 });
+    labels = await labelsModule.readImageLabels(u, { metersPerPixel: u.scale, area: traceModule.tracedArea(result) });
+  } catch (err) {
+    console.warn('The room names in the image could not be read.', err);
+  } finally {
+    if (reading === u.src) reading = null;
+    working?.();
+  }
+  // The plan or its image changed while it read, or the trace was taken back: the labels no longer apply.
+  const now = store.plan.underlay;
+  if (!labels || store.plan.id !== planId || now?.src !== u.src || !now.traced) return;
+  if (!traceModule.namedBy(store.plan, labels)) {
+    toast('No room names could be read in the image.', { type: 'info', duration: 6000 });
+    return;
+  }
+  let count = null;
+  store.update((d) => { count = traceModule.addLabels(d, labels); }, { label: 'Name rooms from the drawing' });
+  found();
+  const sets = count.finished ? ` Finishes are set for ${plural(count.finished, 'room')} from their names.` : '';
+  toast(`${plural(count.named, 'room')} ${count.named === 1 ? 'is' : 'are'} named from the drawing's labels.${sets}`, { duration: 12000, action: { label: 'Undo', onClick: () => store.undo() } });
 }
 
 function startCalibration() {

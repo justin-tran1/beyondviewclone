@@ -132,11 +132,72 @@ function addFurniture(draft, f, turn, turnBy) {
 }
 
 /**
+ * The part of the image a trace found walls in (in the image's px, with a margin): where its rooms'
+ * labels are.
+ */
+export function tracedArea({ trace, factor }) {
+  const xs = trace.walls.flatMap((w) => [w.a.x, w.b.x]), ys = trace.walls.flatMap((w) => [w.a.y, w.b.y]);
+  if (!xs.length) return null;
+  const pad = 0.03 * Math.max(trace.width, trace.height);
+  return {
+    x0: (Math.min(...xs) - pad) / factor, y0: (Math.min(...ys) - pad) / factor,
+    x1: (Math.max(...xs) + pad) / factor, y1: (Math.max(...ys) + pad) / factor,
+  };
+}
+
+/** Labels on an underlay image (its px) where they lie on the plan, as the rooms traced from it. */
+function onPlan(U, labels) {
+  const origin = { x: U.x, y: U.y };
+  const turn = (p) => (U.rotation ? rotate(p, U.rotation, origin) : p);
+  return labels.map((l) => ({
+    text: l.text, ...turn({ x: U.x + l.x * U.scale, y: U.y + l.y * U.scale }), h: l.h * U.scale, ...(l.w ? { w: l.w * U.scale } : {}),
+  }));
+}
+
+// Rooms with the name a room is given when it is added (Room 1, Room 2...), which labels may name.
+const unnamed = (r) => /^Room \d+$/.test(r.name);
+
+/**
+ * The names `labels` (on the plan's underlay, in its px) give the plan's rooms that `pick` takes,
+ * as [room, name]: every room counts, as a label is the innermost room's that holds it.
+ */
+function namesFrom(plan, labels, pick) {
+  if (!plan.underlay || !labels?.length) return [];
+  const names = roomNames(plan.rooms, onPlan(plan.underlay, labels));
+  return plan.rooms.map((r, i) => [r, names[i]]).filter(([r, name]) => name && pick(r));
+}
+
+/** Inside store.update: name `rooms` from the labels on the plan's underlay. Returns the rooms named. */
+function nameRooms(draft, rooms) {
+  return namesFrom(draft, draft.underlay?.labels, (r) => rooms.includes(r)).map(([r, name]) => {
+    r.name = name;
+    return r;
+  });
+}
+
+/** How many of a plan's rooms still called Room 1, Room 2... `labels` (on its underlay, in its px) would name. */
+export function namedBy(plan, labels) {
+  return namesFrom(plan, labels, unnamed).length;
+}
+
+/**
+ * Inside store.update: keep the labels read on the underlay image (in its px), name the rooms still
+ * called Room 1, Room 2... from them and give those the finishes their names tell. Returns how many
+ * rooms were named and how many changed finishes.
+ */
+export function addLabels(draft, labels) {
+  draft.underlay.labels = labels;
+  draft.underlay.labelsRead = true;
+  const named = nameRooms(draft, draft.rooms.filter(unnamed));
+  return { named: named.length, finished: matchFinishes(draft, named) };
+}
+
+/**
  * Inside store.update: add a trace's walls, openings, rooms and furniture where the image lies on
  * the plan (draft.underlay's position, rotation and scale). Rooms take their names from the labels
- * drawn in them (draft.underlay.labels, from a PDF page). Returns how many of each were added, how
- * many rooms were named (`named`), and in how many rooms their names or furniture set the finishes
- * (`finished`).
+ * drawn in them (draft.underlay.labels: a PDF page's, or an image's once read). Returns how many of
+ * each were added, how many rooms were named (`named`), and in how many rooms their names or
+ * furniture set the finishes (`finished`).
  */
 export function addTrace(draft, { trace, factor }) {
   const U = draft.underlay;
@@ -153,16 +214,7 @@ export function addTrace(draft, { trace, factor }) {
   }
   const rooms = geo.rooms.map((r) => addRoom(draft, r.points.map(turn)));
   for (const f of geo.items) count.items += addFurniture(draft, f, turn, U.rotation || 0);
-  // The labels on the plan, from the image's px as the rooms are.
-  const labels = (U.labels || []).map((l) => ({
-    text: l.text, ...turn({ x: U.x + l.x * U.scale, y: U.y + l.y * U.scale }), h: l.h * U.scale, ...(l.w ? { w: l.w * U.scale } : {}),
-  }));
-  count.named = 0;
-  roomNames(rooms, labels).forEach((name, i) => {
-    if (!name) return;
-    rooms[i].name = name;
-    count.named++;
-  });
+  count.named = nameRooms(draft, rooms).length;
   // Rooms whose name or furniture tells their use (an exam room, a restroom's toilet) take its finishes.
   count.finished = matchFinishes(draft, rooms);
   clampOpenings(draft);

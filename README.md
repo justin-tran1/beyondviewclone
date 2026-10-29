@@ -45,9 +45,13 @@ without a code change, run the workflow from the Actions tab.
      other page. The dialog reads the page shown first and shows its progress. Import waits for
      the page shown to be read. A sheet's titles pick the floor plan over a reflected ceiling
      plan or a schedule.
-   - **Rooms are named from the drawing's labels**, read from the PDF's text or by OCR: a room
-     tagged OFFICE over 102 is Office 102. A room's name sets its finishes (an exam room, a soiled
-     utility room, a wet lab), and where it says nothing (Room 3, Workroom), its furniture does.
+   - **Rooms are named from the drawing's labels**: a room tagged OFFICE over 102 is Office 102,
+     and EXAM ROOM #4 is Exam Room #4. A PDF's labels come from its text, or by OCR from a page
+     with none. A PNG, JPG, WebP or SVG drawing is read with OCR once it is traced, and its rooms
+     are named a few seconds later, in a step of their own that Undo takes back. A room's name
+     sets its finishes (an exam room, a soiled utility room, a wet lab), and where it says nothing
+     (Room 3, Workroom), its furniture does. Labels read best at about 6 px tall or more in the
+     image; on smaller or blurred text, OCR may miss or misread a room's number.
 3. **Check the scale**: use **Calibrate scale** to click two points of a known distance and type the
    real length, for example `24' 6"` or `7.5m`; a traced plan is resized with its image.
 4. **Trace**: fix or add anything the detection missed. Draw walls (exterior, interior, glass
@@ -110,7 +114,8 @@ src/autotrace.js, src/ui/trace.js  Finding walls, doors, windows and rooms in a 
 src/autotrace-items.js           Finding the furniture and fixtures drawn in it
 src/pdf-scan.js, src/ui/pdf.js   PDF import: the plan on a drawing sheet, its scale note, the dialog
 src/ui/ocr.js                    OCR for pages with no text in them (Tesseract)
-src/room-names.js                Room names from the tags drawn in a PDF's rooms
+src/ui/image-labels.js           Room labels read on floor plan images with OCR
+src/room-names.js                Room names from the tags drawn in a drawing's rooms
 src/builder3d.js, kit3d.js       Plan to 3D scene and lighting, shared materials and primitives
 src/walkthrough.js, postfx.js    First-person and overview viewer, post-processing and quality
 src/photo.js, src/ui/photo.js    Ray-traced Render photo
@@ -127,10 +132,10 @@ Module contracts and coordinate conventions are in [docs/architecture.md](docs/a
 ```bash
 npm install                      # Playwright, for tests only
 npm start                        # in one terminal
-npm run smoke                    # opens every sample, an imported drawing and a PDF drawing set it traces, in Plan, Split and Walk, and PDFs read with OCR; screenshots to smoke-out/, fails on any error
+npm run smoke                    # opens every sample, an imported drawing (SVG, PNG, JPG) and a PDF drawing set it traces, in Plan, Split and Walk, PDFs read with OCR and the rooms named from their labels; screenshots to smoke-out/, fails on any error
 node dev/tests/pdf-sheets.mjs http://localhost:8080/ pdf-out   # the smoke test's PDFs: a drawing set, a sheet printed to fit, scans, a sheet with outlined text
 node dev/tests/pdf-text.mjs      # scale notes, OCR's misreads of them and sheet titles (no browser)
-node dev/tests/room-names.mjs    # room tags to room names, and the room use names tell (no browser)
+node dev/tests/room-names.mjs    # room tags to room names, OCR's room words put right, and the room use names tell (no browser)
 node scripts/shot.mjs <url> <out.png> [--wait=expr]   # screenshot any page and report console errors
 ```
 

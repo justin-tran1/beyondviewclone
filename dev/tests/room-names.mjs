@@ -19,6 +19,7 @@ for (const [text, want] of [
   ['101', 'number'], ['1203', 'number'], ['B-112', 'number'], ['RM 101', 'number'], ['101A', 'number'],
   ['OFFICE', 'name'], ['BREAK ROOM', 'name'], ['Conf. Rm.', 'name'],
   ['12\'-6"', null], ['150 SF', null], ['9\'-0" AFF', null], ['TYP.', null], ['UP', null], ['FE-1', null], ['3', null], ['W', null],
+  ['36"', null], ['200"', null], ['200°', null], ['ll', null], ['Lab', 'name'], ['IT', 'name'],
   ['VERIFY ALL DIMENSIONS IN THE FIELD BEFORE STARTING', null],
 ]) check(`kind "${text}"`, labelKind(text), want);
 
@@ -39,6 +40,8 @@ check('name on two lines over its number', name([label('BREAK', 3, 1.6), label('
 check('name alone', name([label('CORRIDOR', 3, 2)]), 'Corridor');
 check('OCR scraps around a tag', name([label('RESTROOM 0', 3, 1.8), label('108.', 3, 2.05), label('|', 1, 1)]), 'Restroom 108');
 check('number alone', name([label('105', 3, 2)]), 'Room 105');
+check('a dimension under a name is not its number', name([label('OFFICE', 3, 1.8), label('36"', 3, 2.05)]), 'Office');
+check("OCR's misread dimension is not a room number", name([label('200°', 3, 2)]), null);
 check('dimensions and annotations left out', name([label('12\'-0"', 3, 0.4), label('STORAGE', 3, 2), label('TYP.', 1, 3), label('150 SF', 3, 2.3)]), 'Storage');
 check('the largest name, not an annotation', name([label('EXAM', 3, 2, 0.25), label('SCALE ROOM', 1, 3.5, 0.12)]), 'Exam');
 check('rooms traced as one: every tag, nearest the middle first', name([label('OPEN OFFICE', 4.5, 2.6), label('106', 4.5, 2.85), label('RECEPTION', 1.5, 1), label('105', 1.5, 1.25)]), 'Open Office 106 / Reception 105');

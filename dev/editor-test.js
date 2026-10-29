@@ -29,7 +29,7 @@ async function loadCatalog() {
     registry = await import('../src/catalog/index.js');
   } catch {
     registry = await import('../src/catalog/registry.js');
-    await Promise.allSettled(['lab', 'medical', 'office', 'retail'].map((c) => import(`../src/catalog/${c}.js`)));
+    await Promise.allSettled(['lab', 'medical', 'office', 'retail', 'art'].map((c) => import(`../src/catalog/${c}.js`)));
   }
   if (!registry.allItems().length) registry.registerItems(fallbackItems());
   const all = registry.allItems();

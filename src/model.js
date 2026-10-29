@@ -184,6 +184,8 @@ export function normalizePlan(input) {
     if (typeof i.color === 'string' && /^#(?:[0-9a-f]{3}){1,2}$/i.test(i.color)) out.color = i.color;
     // Counter or bench top (a WORKSURFACES key).
     if (Object.hasOwn(WORKSURFACES, i.top ?? '')) out.top = i.top;
+    // Which of its looks (ItemDef.variants) it shows; unset, one picked from its id.
+    if (Number.isInteger(i.variant) && i.variant >= 0 && i.variant < 100) out.variant = i.variant;
     if (typeof i.label === 'string') out.label = i.label;
     // Found in the floor plan image: detecting its walls again replaces it.
     if (i.traced === true) out.traced = true;
@@ -334,7 +336,7 @@ function roomFinishes(r, ceiling) {
 
 export function addItem(draft, type, x, y, props = {}) {
   const item = { id: uid('i'), type, x, y, rotation: props.rotation ?? 0 };
-  for (const k of ['w', 'd', 'h', 'color', 'top', 'label']) if (props[k] !== undefined) item[k] = props[k];
+  for (const k of ['w', 'd', 'h', 'color', 'top', 'variant', 'label']) if (props[k] !== undefined) item[k] = props[k];
   if (props.traced) item.traced = true;
   draft.items.push(item);
   return item;

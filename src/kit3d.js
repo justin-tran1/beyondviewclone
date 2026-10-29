@@ -673,13 +673,14 @@ function textureLibrary() {
   }
 
   function ceilingTile(S, B) {
-    // Two by two 24 in mineral fiber tiles: fissured face, pinholes, and the 15/16 in T-bar grid.
+    // Two by two 24 in mineral fiber tiles in the 15/16 in T-bar grid: a fine sanded face, warm
+    // white, with a few faint fissures and pinholes, so the ceiling reads smooth from the floor.
     const s = surface(S), r = rng(43), tp = S / 2, f = S / 1024;
     const fiss = new Float32Array(S * S), pins = new Float32Array(S * S);
-    for (let k = 0; k < 3400 * f * f; k++) trail(fiss, S, r, r() * S, r() * S, (4 + r() * 14) * f, r() * 6.28, { turn: 0.9, width: 0.6 });
-    for (let k = 0; k < 7000 * f * f; k++) mark(pins, S, r() * S, r() * S, 0.5 + r() * 0.5);
+    for (let k = 0; k < 1400 * f * f; k++) trail(fiss, S, r, r() * S, r() * S, (4 + r() * 14) * f, r() * 6.28, { turn: 0.9, width: 0.6 });
+    for (let k = 0; k < 4000 * f * f; k++) mark(pins, S, r() * S, r() * S, 0.5 + r() * 0.5);
     const nod = view(B.mid, S, 15, 615);
-    const face = hex('#e7e5df'), tee = hex('#eeeeeb');
+    const face = hex('#e9e3d8'), tee = hex('#eeeeeb');
     const half = (0.024 / 2 / (2 * TILE)) * S;
     const tones = Array.from({ length: 4 }, () => 1 + (r() - 0.5) * 0.035);
     for (let y = 0; y < S; y++) {
@@ -692,8 +693,8 @@ function textureLibrary() {
           continue;
         }
         const lip = smooth(half + 3 * f, half, d);
-        const v = tones[tj * 2 + ti] * (0.97 + 0.05 * nod[i]) * (1 - 0.22 * fiss[i]) * (1 - 0.14 * pins[i]) * (1 - 0.16 * lip);
-        put(s, i, face, v, 0.25 * nod[i] - 0.7 * fiss[i] - 0.35 * pins[i] - 0.4 * lip, 0.97);
+        const v = tones[tj * 2 + ti] * (0.97 + 0.05 * nod[i]) * (1 - 0.1 * fiss[i]) * (1 - 0.07 * pins[i]) * (1 - 0.16 * lip);
+        put(s, i, face, v, 0.25 * nod[i] - 0.3 * fiss[i] - 0.18 * pins[i] - 0.4 * lip, 0.97);
       }
     }
     return s;
@@ -836,7 +837,8 @@ function textureLibrary() {
     epoxy: { size: 512, meters: 1, make: epoxyFloor },
     vinyl: {
       size: 1024, meters: 4 * TILE,
-      make: (S, B) => plankFloor(S, B, { rows: 12, minLen: 0.5, maxLen: 0.5, palette: ['#a89884', '#9c8b77', '#b2a28e', '#a1907c', '#ab9a85', '#958571'], seed: 21, contrast: 0.12, rings: 0.8, rough: 0.42, bevel: 0.25 }),
+      // Weathered oak: gray-brown planks close in tone, a few a little lighter or darker.
+      make: (S, B) => plankFloor(S, B, { rows: 12, minLen: 0.5, maxLen: 0.5, palette: ['#8e7c6e', '#877566', '#948271', '#8b786a', '#837164', '#917d6e'], seed: 21, contrast: 0.12, rings: 0.8, rough: 0.42, bevel: 0.25 }),
     },
     wood: {
       size: 1024, meters: 4 * TILE,
@@ -857,7 +859,7 @@ function textureLibrary() {
     deck: { size: 512, meters: TILE, make: metalDeck },
     fabric: { size: 512, meters: 0.12, make: fabricWeave, normalize: true },
     oak: { size: 1024, meters: 1.2, make: (S, B) => veneer(S, B, { base: '#bf9a6e', seed: 111, figure: 24, period: 7, contrast: 0.12, pores: 0.16 }), normalize: true },
-    walnut: { size: 1024, meters: 1.2, make: (S, B) => veneer(S, B, { base: '#6a4834', seed: 121, figure: 60, period: 11, contrast: 0.18, pores: 0.1 }), normalize: true },
+    walnut: { size: 1024, meters: 1.2, make: (S, B) => veneer(S, B, { base: '#5f4737', seed: 121, figure: 60, period: 11, contrast: 0.18, pores: 0.1 }), normalize: true },
     laminate: { size: 512, meters: 0.3, make: (S, B) => finishDetail(S, B, { radius: 1, height: 0.012, seed: 131 }), normalize: true },
     stipple: { size: 512, meters: 0.15, make: (S, B) => finishDetail(S, B, { radius: 2, height: 0.02, seed: 141 }), normalize: true },
     powder: { size: 512, meters: 0.25, make: (S, B) => finishDetail(S, B, { radius: 2, height: 0.02, seed: 151, flake: 0.08 }), normalize: true },
@@ -1201,8 +1203,8 @@ const FLOOR_SPECS = {
  * whose color is their mean albedo (`dark` names the recipe for dark colors, as walnut for wood).
  */
 const WALL_SPECS = {
-  paint: { paint: true, color: '#efece6', roughness: 0.6 },
-  coating: { paint: true, color: '#efece6', roughness: 0.26 },
+  paint: { paint: true, color: '#d4ccc3', roughness: 0.6 },
+  coating: { paint: true, color: '#d4ccc3', roughness: 0.26 },
   frp: { recipe: 'frp', color: '#eceae4', roughness: 0.5, normal: 0.8, macro: [0.015, 0.06] },
   tile: { recipe: 'wall-tile', color: '#eceae4', roughness: 0.14, normal: 0.7, clearcoat: 0.5, clearcoatRoughness: 0.08, macro: [0.01, 0.05] },
   wood: { recipe: 'oak', dark: 'walnut', color: '#b48c60', roughness: 0.5, normal: 1, clearcoat: 0.45, clearcoatRoughness: 0.28 },
@@ -1230,13 +1232,15 @@ const PRESETS = {
   screen: { color: '#101417', roughness: 0.07, emissive: '#1b3a4f', emissiveIntensity: 0.3 },
   led: { color: '#ffffff', emissive: '#fff6e8', emissiveIntensity: 1.6 },
   oak: { color: '#b48c60', roughness: 0.5, detail: 'oak', clearcoat: 0.45, clearcoatRoughness: 0.28 },
-  walnut: { color: '#644531', roughness: 0.46, detail: 'walnut', clearcoat: 0.5, clearcoatRoughness: 0.26 },
+  walnut: { color: '#5c4537', roughness: 0.46, detail: 'walnut', clearcoat: 0.5, clearcoatRoughness: 0.26 },
   fabricCharcoal: { color: '#3e4446', roughness: 0.95, detail: 'fabric', fabric: true },
   fabricGrey: { color: '#858b8b', roughness: 0.95, detail: 'fabric', fabric: true },
   fabricGreen: { color: '#38574d', roughness: 0.95, detail: 'fabric', fabric: true },
   fabricSage: { color: '#5a7c7d', roughness: 0.95, detail: 'fabric', fabric: true },
   fabricCeladon: { color: '#8bb0a6', roughness: 0.95, detail: 'fabric', fabric: true },
   fabricWheat: { color: '#c7c194', roughness: 0.95, detail: 'fabric', fabric: true },
+  fabricTaupe: { color: '#9a8e80', roughness: 0.95, detail: 'fabric', fabric: true },
+  fabricOatmeal: { color: '#c3b9aa', roughness: 0.95, detail: 'fabric', fabric: true },
   vinylBlue: { color: '#30495b', roughness: 0.5, detail: 'leather' },
   leaf: { color: '#4f7349', roughness: 0.55 },
   soil: { color: '#46392c', roughness: 0.98, detail: 'stipple' },

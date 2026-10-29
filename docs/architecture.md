@@ -16,6 +16,7 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
 | `src/kit3d.js` | Physically based materials, procedural textures and primitive builders (`createKit()`) |
 | `src/catalog/registry.js` | `registerItems`, `getItem`, `itemDims`, `searchItems`, `CATEGORIES` |
 | `src/catalog/{lab,medical,office,retail}.js` | Item definitions for each space type (`general` items live in `office.js`) |
+| `src/catalog/art.js` | Framed wall art (`general`): a dozen abstract paintings and prints drawn on canvas |
 | `src/plan-render.js` | Draws a plan onto a 2D canvas (editor and minimap share it) |
 | `src/editor2d.js` | `PlanEditor`: interactive 2D tracing and layout editor |
 | `src/autotrace.js` | `traceFloorPlan()`: the walls, doors, windows, rooms and scale in a floor plan image's pixels (no DOM) |
@@ -84,8 +85,9 @@ and walk through it in 3D. Plain ES modules, Three.js r160 and the libraries bel
                guard: 'none' | 'corners' | 'rail' | 'handrail',   // wall protection
                ceiling: 'tile' | 'clean' | 'drywall' | 'open',
                height? }],          // ceiling height (m); defaults to settings.wallHeight
-  items:    [{ id, type, x, y, rotation, w?, d?, h?, elevation?, color?, top?, label?,
-               traced? }],    // elevation: base height above floor (m); top: worksurface key; traced: found in the underlay
+  items:    [{ id, type, x, y, rotation, w?, d?, h?, elevation?, color?, top?, variant?, label?,
+               traced? }],    // elevation: base height above floor (m); top: worksurface key; variant: which of
+                              // its looks (ItemDef.variants) it shows; traced: found in the underlay
   cameras:  [{ id, name, x, y, yaw, pitch }],
 }
 ```
@@ -142,8 +144,12 @@ only (no external assets), sized to the `opts.w/d/h` passed in (so resized items
 footprint), base at `y = 0`, front `+z`. `colorable: true` recolors an item's fabric or finish from
 the fabric swatches; `colorable: 'casework'` recolors its cabinet doors and panels from
 `CASEWORK_COLORS`, and `worksurface` (the key of its top as made) lets `opts.top` pick another top
-from `WORKSURFACES`. `draw2d` draws an architectural plan symbol inside the
-footprint. Unknown types fall back to a placeholder box.
+from `WORKSURFACES`. `variants` names the looks an item comes in (the artworks of `wall-art`): a
+placed item shows the one its `variant` names, or when that is unset one picked from a hash of its
+id, so it keeps its look and a run of them varies; `build` gets the index as `opts.variant`, and the
+properties panel offers the names under `variantLabel`. `hang` is the height a wall-hung item's
+middle hangs at: the model is still built from `y = 0`, `h` tall, and the builder lifts it. `draw2d`
+draws an architectural plan symbol inside the footprint. Unknown types fall back to a placeholder box.
 
 ### `plan-render.js`
 
@@ -491,7 +497,9 @@ maps in place of a uniform fill. A shadowed sun draws the sun patches, area ligh
 and fixture lenses nearest the viewer add their reflections to glossy floors, quartz and metals
 (only within the room they light), and the outdoors reads several stops brighter than the
 interior. Fixture, bounce and fill light are a neutral 4000 K white. Levels are scene-linear,
-before exposure.
+before exposure. Acoustic and washable tile ceilings get lay-in troffers on the 2 ft grid: 2 x 4s
+laid along the room's longer side where they fit (each with the light of a 2 x 2, from two points
+along its length), else 2 x 2s; drywall gets downlights, and ceilings open to structure pendants.
 
 - `buildPlanScene` calls `kit.setEnvironmentIntensity(0.75)`. Builder materials that do not
   depend on the plan, the plan-lit twins and their uniforms (and the items' cover grids, up to 400)
@@ -558,8 +566,8 @@ edges thinner than a pixel, such as trim and pendant lights, draw as lines; SMAA
 dotted) and copies the resolved image into the chain, whose buffers carry no depth. AO, bloom and
 the grade work in linear light; `OutputPass` applies `renderer.toneMapping` (AgX) and `toneMappingExposure` exactly once,
 then sRGB with half-step dithering; SMAA runs last on display values. The grade (in exposed
-units, so it holds if the exposure changes) is a white balance a touch cool (lit warm-white paint
-reads white), a log-space contrast below a lit wall that eases to none above it, a small toe and a
+units, so it holds if the exposure changes) is a warm white balance (as interiors under 3500 K
+fixtures read), a log-space contrast below a lit wall that eases to none above it, a small toe and a
 smooth shoulder (sun patches, pale floors and the view out of the windows keep their texture
 instead of clipping), a little saturation and a barely visible lens falloff. AO reads the
 scene pass's resolved depth (no second geometry pass), rebuilds normals from it, denoises with a
@@ -614,10 +622,11 @@ start: the first saved view, else a free spot in the middle of the largest room 
 clear view (along the plan's long axis unless another is half again as long). The overview frames
 the plan, and frames it again when the view is resized until it is orbited, panned or zoomed.
 
-Rendering: AgX tone mapping at exposure 1.8 (`EXPOSURE`; keep `PHOTO_EXPOSURE` equal) in the overview.
-In Walk the exposure is metered per view from the light map (`planLight.meter`, daylight counted
-twice): daylit spots by the windows come down to as little as 0.6 times that, views with little
-daylight keep 1.8; it eases over about 0.3 s while walking and is set at once on a jump, a rebuild
+Rendering: AgX tone mapping at exposure 0.66 (`EXPOSURE`; keep `PHOTO_EXPOSURE` equal) in the
+overview, the key of a rendered architectural tour: lit walls a warm mid gray, so fixtures, daylight
+and white counters stand out. In Walk the exposure is metered per view from the light map
+(`planLight.meter`, daylight counted twice): daylit spots by the windows come down to as little as
+0.6 times that, views with little daylight keep 0.66; it eases over about 0.3 s while walking and is set at once on a jump, a rebuild
 and for `screenshot()`; easing alone does not count as moving. Photos start from the live exposure
 and are metered against the live view (see `renderPhoto`). PCF soft shadows updated only when the
 scene changes, and frames drawn only when something moved or changed. While moving

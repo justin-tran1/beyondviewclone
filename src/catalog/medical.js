@@ -15,7 +15,7 @@ const FINE = 0.75;      // plan detail weight in px
 const DASH = [4, 3];    // hidden or overhead elements, in px
 const MAX_REPEAT = 200; // most modules or seats a run repeats, so absurd sizes stay fast
 
-const VINYL = '#557b7a';            // clinical upholstery (sage)
+const VINYL = '#8a857d';            // clinical upholstery (warm gray)
 const GLOVES = ['#80bbad', '#538184', '#032842'];
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -42,6 +42,7 @@ function palette(kit) {
     screen: kit.mat.screen,
     led: kit.mat.led,
     oak: kit.mat.oak,
+    walnut: kit.mat.walnut,
     status: kit.mat.accentGreen,
     reveal: kit.material('#3d4245', { roughness: 0.9 }),
     plinth: kit.mat.rubber,
@@ -420,7 +421,7 @@ function buildCasework(kit, { w, d, h, color, top }, withSink = true) {
   const g = kit.group();
   const m = palette(kit);
   // Colored casework carries its color onto the cabinet bodies and end panels.
-  const door = caseworkFinish(kit, color, m.case), body = door;
+  const door = caseworkFinish(kit, color, m.walnut), body = door;
   const surface = topMaterial(kit, top, m.quartz);
   const L = caseworkLayout(w, d, h, withSink);
   const ct = TOP - 0.03, bowlDepth = 0.18, cutY = TOP - bowlDepth - 0.03;
@@ -547,10 +548,10 @@ function sideChairLayout(w, d) {
 
 function buildSideChair(kit, { w, d, h, color }) {
   const g = kit.group();
-  const wood = kit.mat.oak;
-  const fabric = finish(kit, color, kit.mat.fabricSage);
+  const wood = kit.mat.walnut;
+  const fabric = finish(kit, color, kit.mat.fabricTaupe);
   const { hx, hz, t, seatY, armY } = sideChairLayout(w, d);
-  // Solid oak frame with softened edges; legs taper toward the floor glides.
+  // Solid walnut frame with softened edges; legs taper toward the floor glides.
   const ease = { bevel: 0.006 };
   const taper = (y1) => warpAt(`side-leg-${q(y1)}`, 0, y1 / 2, 0, (v) => {
     const k = 1 - 0.22 * clamp(1 - v.y / y1, 0, 1);
@@ -701,8 +702,8 @@ function drawDesk(ctx, o, variant) {
 
 const RECEPTION = {
   pitch: 1.5,
-  face: (kit) => kit.mat.oak,
-  /** Vertical oak slats with dark shadow gaps over a recessed backer, wrapping the ends. */
+  face: (kit) => kit.mat.walnut,
+  /** Vertical walnut slats with dark shadow gaps over a recessed backer, wrapping the ends. */
   dress(kit, g, m, w, fz, ledgeY, face) {
     // A dark stained backer keeps the gaps reading as shadow without the hard contrast that
     // shimmers when the desk is seen from across a room.
@@ -721,8 +722,8 @@ const RECEPTION = {
 
 const NURSE = {
   pitch: 1.2,
-  face: (kit) => tint(kit, kit.mat.laminate, '#5b7e7c'),
-  /** Laminate panels with vertical reveals under a white solid surface band with a steel reveal. */
+  face: (kit) => kit.mat.walnut,
+  /** Walnut panels with vertical reveals under a white solid surface band with a steel reveal. */
   dress(kit, g, m, w, fz, ledgeY, face) {
     kit.block(g, face, -w / 2, w / 2, 0.08, ledgeY, fz - 0.02, fz);
     const n = repeats(Math.round(w / 0.8));
@@ -749,7 +750,7 @@ function waitingLayout(w, d) {
 function buildWaitingChairs(kit, { w, d, color }) {
   const g = kit.group();
   const m = palette(kit);
-  const fabric = finish(kit, color, kit.mat.fabricGreen);
+  const fabric = finish(kit, color, kit.mat.fabricTaupe);
   const frame = m.darkSteel;
   const L = waitingLayout(w, d);
   const bz = L.beamZ;
@@ -757,7 +758,7 @@ function buildWaitingChairs(kit, { w, d, color }) {
   for (const [i, x] of L.arms.entries()) {
     kit.block(g, frame, x - 0.012, x + 0.012, 0.36, 0.6, bz + 0.065, bz + 0.105);
     kit.block(g, frame, x - 0.012, x + 0.012, 0.33, 0.37, bz - 0.015, bz + 0.105);
-    cushion(kit, g, m.oak, x - L.armT / 2, x + L.armT / 2, 0.6, 0.63, L.seatZ0 - 0.02, L.seatZ1 - 0.02, { r: 0.01 });
+    cushion(kit, g, m.walnut, x - L.armT / 2, x + L.armT / 2, 0.6, 0.63, L.seatZ0 - 0.02, L.seatZ1 - 0.02, { r: 0.01 });
     if (i % 2 && i !== L.n) continue;
     kit.block(g, frame, x - 0.02, x + 0.02, 0.03, 0.3, bz - 0.025, bz + 0.015);
     kit.block(g, frame, x - 0.022, x + 0.022, 0.012, 0.045, -L.foot, L.foot);
@@ -845,7 +846,7 @@ function bedRail(kit, g, m, mat, x, { y0, y1, z0, z1 }, { pod = false, s = 1 } =
 
 function buildHospitalBed(kit, { w, d, h, color }) {
   const m = palette(kit);
-  const blanket = finish(kit, color, kit.mat.fabricCeladon);
+  const blanket = finish(kit, color, kit.mat.fabricOatmeal);
   // The parts merge into one mesh per material, cached per finish (the bed is a fixed size).
   return assembly(kit, `hospital-bed|${blanket.uuid}`, (a) => bedParts(kit, a, m, blanket, w, d, h));
 }
@@ -1102,7 +1103,7 @@ function curtainLayout(w, d, h) {
 function buildCurtain(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = palette(kit);
-  const fabric = finish(kit, color, kit.mat.fabricCeladon);
+  const fabric = finish(kit, color, kit.mat.fabricOatmeal);
   const mesh = kit.material('#f1f3f2', { roughness: 0.9, transparent: true, opacity: 0.5, depthWrite: false });
   const C = curtainLayout(w, d, h);
   const { top } = C;
@@ -1209,7 +1210,7 @@ function cartLayout(w, d, h) {
 function buildSupplyCart(kit, { w, d, h, color }) {
   const g = kit.group();
   const m = palette(kit);
-  const drawer = finish(kit, color, tint(kit, kit.mat.plastic, '#8db3a9'));
+  const drawer = finish(kit, color, tint(kit, kit.mat.plastic, '#c9cbc7'));
   const body = tint(kit, kit.mat.plastic, '#e4e7e6');
   const C = cartLayout(w, d, h);
   const { x0, x1, z0, z1, by0, by1 } = C;

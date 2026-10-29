@@ -29,9 +29,15 @@ const REGISTRY = new Map();
  *             'casework' when it recolors cabinet doors and panels in CASEWORK_COLORS (finishes.js).
  *   worksurface optional: the WORKSURFACES key (finishes.js) of its counter or bench top as made;
  *             opts.top picks another.
+ *   variants  optional: names of the looks the item comes in (artworks). A placed item shows the
+ *             one its `variant` index names, or when that is unset one picked from its id (so it
+ *             keeps it); build() gets the index as opts.variant. variantLabel names the choice
+ *             in the properties panel ('Look' by default).
+ *   hang      optional: for wall-hung items, the height in meters their middle hangs at. The
+ *             builder lifts the model (still built from y = 0) to center there, never below the floor.
  *   build(kit, opts) -> THREE.Object3D
- *             opts = { w, d, h, color, top }. Model is centered on its footprint, base at y = 0,
- *             front facing +z, fitting inside [-w/2, w/2] x [0, h] x [-d/2, d/2].
+ *             opts = { w, d, h, color, top, variant }. Model is centered on its footprint, base at
+ *             y = 0, front facing +z, fitting inside [-w/2, w/2] x [0, h] x [-d/2, d/2].
  *   draw2d(ctx, opts) -> void
  *             Plan symbol. ctx is pre-transformed: origin at the item center, 1 unit = 1 meter,
  *             rotated, front toward +y. opts = { w, d, h, px, theme } where px is the size of one

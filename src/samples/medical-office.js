@@ -18,6 +18,7 @@ function examRoom(L, x0, y0, x1, y1, corridorWall, door) {
   L.item('physician-stool', x0 + 7.4, at(6.4));
   L.item('side-chair', x0 + 6.4, at(10.9), door === 's' ? 'n' : 's');
   L.item('privacy-curtain', x0 + 0.6, at(7.2), 90);
+  L.against(corridorWall, x0 + 6.4, 'wall-art', door === 's' ? 'n' : 's', { w: 3, h: 2.25 });
 }
 
 export function buildMedicalOffice() {
@@ -107,6 +108,7 @@ export function buildMedicalOffice() {
     L.item('executive-desk', x0 + 6.6, 4.4);
     L.row('side-chair', [x0 + 5.4, 8.9], [2.4, 0], 2, 'n');
     L.item('bookshelf', x0 + 0.81, 6.6, 'e');
+    L.against(north, x0 + 6.6, 'wall-art', 'n');
   }
 
   // Nurse station
@@ -149,6 +151,20 @@ export function buildMedicalOffice() {
   L.against(south, 49.5, 'desk', 's', { w: 5 });
   L.item('task-chair', 49.5, 40.9, 'n');
   L.against(ctWest, 43, 'supply-cart', 'w');
+
+  // Art (looks by index in catalog/art.js): behind reception, over the waiting chairs, along the
+  // corridors and in the break room. The exam rooms and offices take the looks their ids pick.
+  L.against(officeSouth, 12, 'wall-art', 's', { w: 6, h: 3.5, variant: 0 });
+  L.against(front, 34, 'wall-art', 'w', { variant: 10 });
+  L.against(front, 40, 'wall-art', 'w', { variant: 4 });
+  L.against(north, 31.9, 'wall-art', 's', { variant: 3 });
+  L.against(north, 53.9, 'wall-art', 's', { variant: 1 });
+  L.against(north, 76.4, 'wall-art', 's', { variant: 8 });
+  L.against(coreNorth, 47.5, 'wall-art', 'n', { variant: 2 });
+  L.against(coreNorth, 79, 'wall-art', 'n', { variant: 9 });
+  L.against(coreSouth, 51, 'wall-art', 's', { variant: 7 });
+  L.against(south, 42.2, 'wall-art', 'n', { variant: 11 });
+  L.against(coreSouth, 50, 'wall-art', 'n', { variant: 5 });
 
   L.camera('Waiting', 16.6, 47.4, 320, -3);
   L.camera('Corridor', 25.6, 16, 90, -2);

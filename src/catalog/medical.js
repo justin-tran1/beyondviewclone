@@ -548,10 +548,10 @@ function sideChairLayout(w, d) {
 
 function buildSideChair(kit, { w, d, h, color }) {
   const g = kit.group();
-  const wood = kit.mat.oak;
+  const wood = kit.mat.walnut;
   const fabric = finish(kit, color, kit.mat.fabricTaupe);
   const { hx, hz, t, seatY, armY } = sideChairLayout(w, d);
-  // Solid oak frame with softened edges; legs taper toward the floor glides.
+  // Solid walnut frame with softened edges; legs taper toward the floor glides.
   const ease = { bevel: 0.006 };
   const taper = (y1) => warpAt(`side-leg-${q(y1)}`, 0, y1 / 2, 0, (v) => {
     const k = 1 - 0.22 * clamp(1 - v.y / y1, 0, 1);
